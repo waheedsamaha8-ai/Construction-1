@@ -90,12 +90,39 @@ const Dashboard: React.FC = () => {
   };
   const [projectForm, setProjectForm] = useState(initialProjectState);
 
+  const handleLogin = () => { 
+      try {
+          api.signIn(); 
+      } catch (e) {
+          api.signInGuest();
+      }
+  };
+
+  const fetchData = async () => {
+    try {
+        const localData = await api.getLocalProjects();
+        setProjects(localData);
+        setLoading(false); 
+    } catch(e) { 
+        setLoading(false); 
+    }
+
+    try {
+      const projectsData = await api.getProjects();
+      if (projectsData && projectsData.length > 0) {
+          setProjects(projectsData);
+      }
+    } catch (error) { 
+        console.error("Fetch Error:", error); 
+    } finally { 
+        setLoading(false); 
+    }
+  };
+
   useEffect(() => {
       const checkAuth = async () => {
-          // Try to init auth immediately
           if (typeof google !== 'undefined') { api.initAuth(); }
           
-          // Poll for google object just in case it loads late
           const interval = setInterval(() => {
               if (typeof google !== 'undefined') {
                   api.initAuth();
@@ -112,35 +139,16 @@ const Dashboard: React.FC = () => {
               setLoading(false); 
           }
       };
+
       checkAuth();
+
+      // Guaranteed safety timeout to remove skeleton cards after 1.5s max
+      const safetyTimer = setTimeout(() => {
+          setLoading(false);
+      }, 1500);
+
+      return () => clearTimeout(safetyTimer);
   }, []);
-
-  const handleLogin = () => { 
-      try {
-          api.signIn(); 
-      } catch (e) {
-          api.signInGuest();
-      }
-  };
-  
-  const fetchData = async () => {
-    try {
-        const localData = await api.getLocalProjects();
-        if (localData.length > 0) {
-            setProjects(localData);
-            setLoading(false); 
-        }
-    } catch(e) { /* Ignore local fetch error */ }
-
-    try {
-      const projectsData = await api.getProjects();
-      setProjects(projectsData || []);
-    } catch (error) { 
-        console.error("Fetch Error:", error); 
-    } finally { 
-        setLoading(false); 
-    }
-  };
 
   useEffect(() => {
       if (!isAuthenticated) return;
