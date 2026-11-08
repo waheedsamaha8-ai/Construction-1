@@ -4,6 +4,7 @@
   Global Styles & Theme Overrides
 */
 
+@import 'leaflet/dist/leaflet.css';
 @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap');
 
 :root {

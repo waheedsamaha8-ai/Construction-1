@@ -538,9 +538,12 @@ export const api = {
       if (!navigator.onLine || authService.isGuest()) return processedLocal; 
       
       try { 
-          const querySnapshot = await getDocs(collection(db, "projects")); 
+          const querySnapshot = await Promise.race([
+              getDocs(collection(db, "projects")),
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 2500))
+          ]);
           let firestoreProjects: Project[] = []; 
-          if (!querySnapshot.empty) { 
+          if (querySnapshot && !querySnapshot.empty) { 
               firestoreProjects = querySnapshot.docs.map(doc => { 
                   const data = doc.data() as any; 
                   return enrichProjectWithAI({ id: doc.id, ...data }); 
@@ -555,8 +558,8 @@ export const api = {
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, mergedProjects); 
           return mergedProjects; 
       } catch (e: any) { 
-          if (e.code === 'permission-denied') {
-              console.warn("Firestore sync unavailable (Permissions). Using local data.");
+          if (e.code === 'permission-denied' || e.message === 'Firestore timeout') {
+              console.warn("Firestore sync skipped or timed out. Serving local projects.");
           }
           return processedLocal; 
       } 
