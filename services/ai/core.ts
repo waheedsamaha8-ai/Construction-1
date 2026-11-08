@@ -1,4 +1,5 @@
 import { AI_REPORT_INSTRUCTION } from "../reportGenerator";
+import { GoogleGenAI } from "@google/genai";
 
 // --- GENAI TYPE DEFINITIONS (CLIENT-SAFE REPLACEMENTS) ---
 export enum Type {
@@ -158,7 +159,9 @@ export const safeGenerateContent = async (primaryModel: string, params: any): Pr
             usedModel: data.usedModel || model,
         };
     } catch (error: any) {
-        console.warn("Server-side Gemini generate failed, checking emergency fallback:", error.message || error);
+        if (!String(error.message || '').includes('405')) {
+            console.warn("Server-side Gemini generate skipped or fallback active:", error.message || error);
+        }
         
         // Static emergency fallback to ensure UX continuity
         const fallbackText = `

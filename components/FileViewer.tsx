@@ -326,13 +326,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                 ))}
             </div>
             
-            {pdfDoc && !isPdfLoading && (
-                <div className="absolute bottom-6 left-0 right-0 z-30 flex justify-center px-4 pointer-events-none">
-                    <button onClick={handleAnalyze} disabled={analyzing} className="pointer-events-auto bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-full shadow-2xl backdrop-blur-md border border-indigo-400/30 flex items-center gap-2 text-sm font-bold disabled:opacity-50 transition-transform transform active:scale-95">
-                        {analyzing ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i>} تحليل مستندات المكتب الفني
-                    </button>
-                </div>
-            )}
+
         </div>
       );
       
@@ -353,7 +347,6 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             />
           }
           {siblings.length > 1 && scale === 1 && (<> {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>} {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>} </>)}
-          {displayUrl && <div className="absolute bottom-6 left-0 right-0 flex justify-center z-20 pointer-events-none gap-2"><button onClick={handleAnalyze} disabled={analyzing} className="pointer-events-auto bg-indigo-600/90 hover:bg-indigo-500 text-white px-6 py-3 rounded-full shadow-lg backdrop-blur-sm flex items-center gap-2 text-sm font-bold disabled:opacity-50 transition-transform transform active:scale-95">{analyzing ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i>} تحليل فني للمكتب الفني</button></div>}
       </div>;
       
       // FIX: Ensure Video is perfectly centered
@@ -387,14 +380,6 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                 </div>
             )}
         </div>
-        {displayUrl && (
-            <div className="absolute bottom-10 left-0 right-0 flex justify-center z-20 pointer-events-none gap-2">
-                <button onClick={handleAnalyze} disabled={analyzing} className="pointer-events-auto bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white px-8 py-3 rounded-full shadow-2xl backdrop-blur-md border border-teal-400/30 flex items-center gap-2 text-sm font-bold disabled:opacity-50 transition-all transform active:scale-95">
-                    {analyzing ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i>}
-                    {analyzing ? 'جاري التحليل والتفريغ...' : 'تحليل وتفريغ التسجيل'}
-                </button>
-            </div>
-        )}
       </div>;
       if (isText && textContent !== null) return <div className="w-full h-full overflow-auto bg-slate-50 p-4 sm:p-8"><div className="bg-white text-slate-800 p-6 rounded-lg shadow-sm border border-slate-200 min-h-full font-mono text-sm whitespace-pre-wrap leading-relaxed" dir="ltr">{textContent}</div></div>;
       if (embedUrl || isOffice) { if (api.isGuest()) return <div className="flex flex-col items-center justify-center h-full text-white p-6 text-center"><i className="fa-solid fa-cloud-slash text-slate-500 text-6xl mb-4"></i><h3 className="text-xl font-bold mb-2">المعاينة غير متاحة في وضع الزائر</h3><p className="text-slate-400 max-w-xs mb-6">يتطلب العرض السحابي تسجيل الدخول.</p></div>; return <div className="w-full h-full relative overflow-hidden flex flex-col"><div className={`absolute top-0 left-0 right-0 text-white p-2 text-center text-xs font-bold z-20 shadow-md flex items-center justify-center gap-2 ${isWord ? 'bg-blue-600' : isExcel ? 'bg-emerald-600' : 'bg-slate-700'}`}><i className={`fa-solid ${isWord ? 'fa-file-word' : isExcel ? 'fa-file-excel' : 'fa-file'} text-lg`}></i><span>يتم عرض الملف عبر Google Cloud Viewer</span></div><div className="flex-1 relative w-full h-full bg-slate-100 flex flex-col items-center justify-center"><iframe src={embedUrl} className="w-full h-full border-0 relative z-10" allow="autoplay; fullscreen" title="File Viewer"></iframe><div className="absolute inset-0 flex items-center justify-center z-0"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-slate-300 border-t-blue-500 rounded-full animate-spin mb-3"></div><p className="text-slate-500 font-bold text-sm">جاري جلب الملف...</p></div></div></div><div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-50"><a href={currentItem.webViewLink || embedUrl} target="_blank" rel="noreferrer" className="bg-slate-800/90 text-white px-5 py-2.5 rounded-full backdrop-blur-md shadow-xl border border-white/20 flex items-center gap-2 hover:bg-slate-700 transition text-sm font-bold"><i className="fa-solid fa-arrow-up-right-from-square"></i> فتح في نافذة جديدة</a></div></div>; }
@@ -408,25 +393,39 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   return (
     <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col animate-fade-in safe-bottom safe-top">
       {!isDwg && (
-          <div className={`flex justify-between items-center p-4 text-white shadow-md z-20 ${isWord ? 'bg-blue-800 border-b border-blue-600' : isExcel ? 'bg-emerald-800 border-b border-emerald-600' : isPowerPoint ? 'bg-orange-800 border-b border-orange-600' : isDwg ? 'bg-[#0f172a] border-b border-slate-700' : 'bg-slate-900'}`}>
-            <div className="flex items-center gap-3 overflow-hidden">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isWord ? 'bg-blue-600' : isExcel ? 'bg-emerald-600' : isPowerPoint ? 'bg-orange-600' : isImage ? 'bg-purple-600' : isVideo ? 'bg-rose-600' : isPdf ? 'bg-red-600' : isAudio ? 'bg-teal-600' : isDwg ? 'bg-[#c41e3a]' : isText ? 'bg-slate-600' : 'bg-blue-600'}`}>
-                    <i className={`fa-solid ${isWord ? 'fa-file-word' : isExcel ? 'fa-file-excel' : isPowerPoint ? 'fa-file-powerpoint' : isImage ? 'fa-image' : isVideo ? 'fa-clapperboard' : isPdf ? 'fa-file-pdf' : isAudio ? 'fa-headphones' : isDwg ? 'fa-layer-group' : isText ? 'fa-file-code' : 'fa-file-lines'} text-xl`}></i>
+          <div className={`flex justify-between items-center px-3 py-2 text-white shadow-md z-20 ${isWord ? 'bg-blue-800 border-b border-blue-600' : isExcel ? 'bg-emerald-800 border-b border-emerald-600' : isPowerPoint ? 'bg-orange-800 border-b border-orange-600' : isDwg ? 'bg-[#0f172a] border-b border-slate-700' : 'bg-slate-900'}`}>
+            <div className="flex items-center gap-2 overflow-hidden min-w-0 flex-1 ml-2">
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${isWord ? 'bg-blue-600' : isExcel ? 'bg-emerald-600' : isPowerPoint ? 'bg-orange-600' : isImage ? 'bg-purple-600' : isVideo ? 'bg-rose-600' : isPdf ? 'bg-red-600' : isAudio ? 'bg-teal-600' : isDwg ? 'bg-[#c41e3a]' : isText ? 'bg-slate-600' : 'bg-blue-600'}`}>
+                    <i className={`fa-solid ${isWord ? 'fa-file-word' : isExcel ? 'fa-file-excel' : isPowerPoint ? 'fa-file-powerpoint' : isImage ? 'fa-image' : isVideo ? 'fa-clapperboard' : isPdf ? 'fa-file-pdf' : isAudio ? 'fa-headphones' : isDwg ? 'fa-layer-group' : isText ? 'fa-file-code' : 'fa-file-lines'} text-xs`}></i>
                 </div>
-                <div className="min-w-0 flex flex-col">
-                    <h3 className="font-bold text-lg flex items-center gap-2 truncate">{currentItem.name}</h3>
-                    {siblings.length > 1 && <span className="text-[10px] text-slate-400 font-mono">Item {currentIndex + 1} / {siblings.length}</span>}
+                <div className="min-w-0 flex flex-col justify-center">
+                    <h3 className="font-bold text-xs sm:text-sm truncate max-w-[180px] sm:max-w-[320px] leading-tight" title={currentItem.name}>{currentItem.name}</h3>
+                    {siblings.length > 1 && <span className="text-[9px] text-slate-400 font-mono leading-tight">{currentIndex + 1} / {siblings.length}</span>}
                 </div>
             </div>
-            <div className="flex gap-2 shrink-0">
-                {!isDwg && (<button onClick={handleShare} disabled={isSharing} className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition disabled:opacity-50" title={isSharing ? "جاري التحميل..." : "مشاركة الملف"}>{isSharing ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-share-nodes"></i>}</button>)}
-                {isImage && ( <button onClick={() => setIsEditing(true)} className="w-10 h-10 rounded-full bg-white/20 hover:bg-white/40 flex items-center justify-center transition" title="تعديل ورسم"><i className="fa-solid fa-pen-nib"></i></button> )}
-                {currentItem.webViewLink && !isDwg && ( <a href={currentItem.webViewLink} target="_blank" rel="noreferrer" className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-2 rounded-lg transition flex items-center gap-2 font-bold shadow-md"><i className="fa-solid fa-arrow-up-right-from-square"></i></a> )}
-                <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/10 hover:bg-red-500/80 flex items-center justify-center transition"><i className="fa-solid fa-times"></i></button>
+            <div className="flex gap-1.5 shrink-0 items-center">
+                {!isDwg && (<button onClick={handleShare} disabled={isSharing} className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition disabled:opacity-50 text-xs" title={isSharing ? "جاري التحميل..." : "مشاركة الملف"}>{isSharing ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-share-nodes text-xs"></i>}</button>)}
+                {isImage && ( <button onClick={() => setIsEditing(true)} className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition text-xs" title="تعديل ورسم"><i className="fa-solid fa-pen-nib text-xs"></i></button> )}
+                {currentItem.webViewLink && !isDwg && ( <a href={currentItem.webViewLink} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition flex items-center justify-center font-bold shadow-md text-xs" title="فتح في نافذة جديدة"><i className="fa-solid fa-arrow-up-right-from-square text-xs"></i></a> )}
+                <button onClick={onClose} className="w-8 h-8 rounded-xl bg-white/10 hover:bg-red-500/80 flex items-center justify-center transition text-xs" title="إغلاق"><i className="fa-solid fa-times text-xs"></i></button>
             </div>
           </div>
       )}
       <div className="flex-1 w-full h-full bg-slate-900 relative flex flex-col items-center justify-center overflow-hidden">{renderContent()}</div>
+      
+      {/* Dedicated Bottom Action Bar - Placed CLEANLY BELOW the media (Omitted for videos) */}
+      {!isDwg && displayUrl && !isEditing && !isVideo && (
+          <div className="bg-slate-950 border-t border-slate-800/80 py-2.5 px-4 flex items-center justify-center shrink-0 z-30 shadow-2xl no-print">
+              <button 
+                  onClick={handleAnalyze} 
+                  disabled={analyzing} 
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-full shadow-lg border border-indigo-400/30 flex items-center gap-2 text-xs font-bold disabled:opacity-50 transition transform active:scale-95 cursor-pointer"
+              >
+                  {analyzing ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-wand-magic-sparkles text-yellow-300 text-xs"></i>}
+                  <span>{analyzing ? 'جاري التحليل...' : (isAudio ? 'تحليل وتفريغ التسجيل' : 'تحليل فني للمكتب الفني')}</span>
+              </button>
+          </div>
+      )}
       
       {/* Analysis Modal - UPDATED FOR FULL WIDTH */}
       {isAnalysisOpen && (

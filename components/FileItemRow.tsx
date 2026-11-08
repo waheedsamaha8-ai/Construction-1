@@ -68,8 +68,11 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
         return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border border-red-100' };
     }
 
-    // Images
+    // Images & Videos
     if (item.previewUrl && mime.startsWith('image/')) return { type: 'image', url: item.previewUrl };
+    if ((item.previewUrl || item.thumbnailLink) && (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov'))) {
+        return { type: 'video', url: item.previewUrl || item.thumbnailLink };
+    }
     if (mime.startsWith('image/')) return { icon: 'fa-file-image', color: 'text-purple-600', bg: 'bg-purple-50' };
 
     // Documents
@@ -101,9 +104,16 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
       onClick={onClick}
       className={`group bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer mb-2 relative overflow-visible ${showMenu ? 'z-50' : 'z-10'}`}
     >
-      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden ${config.type !== 'image' ? config.bg : 'bg-slate-50'}`}>
+      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type !== 'image' && config.type !== 'video' ? config.bg : 'bg-slate-50'}`}>
         {config.type === 'image' ? (
              <img src={config.url} alt="" className="w-full h-full object-cover" />
+        ) : config.type === 'video' ? (
+             <>
+                <video src={`${config.url}#t=0.5`} className="w-full h-full object-cover" preload="metadata" muted playsInline />
+                <div className="absolute inset-0 bg-black/30 flex items-center justify-center pointer-events-none">
+                    <i className="fa-solid fa-play text-white text-[10px] drop-shadow-md"></i>
+                </div>
+             </>
         ) : (
             // @ts-ignore
              <i className={`fa-solid ${config.icon} ${config.color} text-2xl`}></i>

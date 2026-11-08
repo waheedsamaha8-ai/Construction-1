@@ -234,7 +234,7 @@ export const marketService = {
             }));
 
         } catch (e) {
-            console.warn(`Market Category Fallback Triggered for ${categoryKey}`);
+            console.info(`Serving offline market data for ${categoryKey}`);
             
             let fallbackData = OFFLINE_MARKET_DATA[categoryKey];
             

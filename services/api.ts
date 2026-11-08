@@ -617,7 +617,7 @@ export const api = {
       try { 
           const querySnapshot = await Promise.race([
               getDocs(collection(db, "projects")),
-              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 2500))
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 1200))
           ]);
           let firestoreProjects: Project[] = []; 
           if (querySnapshot && !querySnapshot.empty) { 
@@ -636,7 +636,7 @@ export const api = {
           return mergedProjects; 
       } catch (e: any) { 
           if (e.code === 'permission-denied' || e.message === 'Firestore timeout') {
-              console.warn("Firestore sync skipped or timed out. Serving local projects.");
+              console.info("Serving local cached projects (Firestore sync offline or timed out).");
           }
           return processedLocal; 
       } 
