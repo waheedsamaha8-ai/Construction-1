@@ -6,6 +6,7 @@ import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, s
 import { triggerLoadingStart, triggerLoadingStop, triggerLoadingProgress } from '../components/GlobalLoadingBar';
 import { dbService } from './db'; 
 import { autoSync } from './backgroundSync'; 
+import appletConfig from '../firebase-applet-config.json';
 
 declare const google: any;
 
@@ -13,7 +14,10 @@ const getClientId = () => {
     if ((import.meta as any).env && (import.meta as any).env.VITE_CLIENT_ID) {
         return (import.meta as any).env.VITE_CLIENT_ID;
     }
-    return '733235164678-7s2coakkktir5a6v424du0jvb03v0vkt.apps.googleusercontent.com';
+    if (appletConfig && appletConfig.oAuthClientId) {
+        return appletConfig.oAuthClientId;
+    }
+    return '431585344846-sl2nbjv6np9hu63p1c0cjhfi710h0cq8.apps.googleusercontent.com';
 };
 
 const CLIENT_ID = getClientId();
@@ -69,10 +73,14 @@ const authService = {
             scope: SCOPES,
             callback: (response: any) => {
                 if (response.error !== undefined) {
+                    if (response.error === 'popup_closed') {
+                        // User closed the Google login popup window manually
+                        console.log("OAuth popup closed by user.");
+                        return;
+                    }
                     console.error("Google OAuth Error:", response);
                     if (response.error === 'origin_mismatch' || response.error === 'idpiframe_initialization_failed') {
-                        alert(`تنبيه: نطاق الموقع الحالي (${window.location.origin}) غير مسجل في Google Cloud Console للـ Client ID.\n\nسيتم دخولك الآن بـ "وضع الزائر" لاستخدام جميع مميزات النظام والذكاء الاصطناعي بنجاح.`);
-                        authService.signInGuest();
+                        alert(`تنبيه: نطاق الموقع الحالي (${window.location.origin}) غير مسجل في Google Cloud Console للمعرف الحالي.\n\nيمكنك الضغط على "الدخول كزائر" لاستخدام جميع مميزات التطبيق والذكاء الاصطناعي بنجاح.`);
                         return;
                     }
                     alert("حدث خطأ أثناء تسجيل الدخول: " + (response.error_description || response.error));
@@ -83,9 +91,15 @@ const authService = {
                 window.location.reload(); 
             },
             error_callback: (err: any) => {
+                const errStr = String(err?.message || err?.type || err || '');
+                if (errStr.includes('popup_closed') || errStr.includes('Popup window closed') || err?.type === 'popup_closed') {
+                    console.log("OAuth popup closed by user.");
+                    return;
+                }
                 console.error("Google OAuth Error Callback:", err);
-                alert(`تنبيه: حظر Google OAuth الوصول بسبب عدم تطابق النطاق (origin_mismatch).\n\nجاري تفعيل "وضع الزائر" للعمل بكامل الميزات محلياً.`);
-                authService.signInGuest();
+                if (errStr.includes('origin_mismatch')) {
+                    alert(`تنبيه: حظر Google OAuth الوصول بسبب عدم تطابق النطاق (origin_mismatch).\n\nيمكنك استخدام "الدخول كزائر" للعمل بكامل المميزات.`);
+                }
             }
         });
      } catch (e) {
@@ -101,21 +115,17 @@ const authService = {
   signIn: () => {
       if (tokenClient) {
           try {
-              tokenClient.requestAccessToken();
+              tokenClient.requestAccessToken({ prompt: '' });
           } catch(e) {
-              alert("تعذر فتح تسجيل دخول جوجل. جاري تفعيل وضع الزائر.");
-              authService.signInGuest();
+              console.warn("Could not request access token:", e);
           }
       } else {
           authService.init();
           setTimeout(() => {
               if (tokenClient) {
-                  try { tokenClient.requestAccessToken(); } catch(e) { authService.signInGuest(); }
-              } else {
-                  alert("جاري تحويلك لوضع العمل المحلي (الزائر)...");
-                  authService.signInGuest();
+                  try { tokenClient.requestAccessToken({ prompt: '' }); } catch(e) { console.warn(e); }
               }
-          }, 800);
+          }, 300);
       }
   },
   signInGuest: () => {

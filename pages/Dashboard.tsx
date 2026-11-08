@@ -115,7 +115,13 @@ const Dashboard: React.FC = () => {
       checkAuth();
   }, []);
 
-  const handleLogin = () => { if (isIframe) { alert("تنبيه: يرجى فتح التطبيق في تبويب جديد."); return; } api.signIn(); };
+  const handleLogin = () => { 
+      try {
+          api.signIn(); 
+      } catch (e) {
+          api.signInGuest();
+      }
+  };
   
   const fetchData = async () => {
     try {
