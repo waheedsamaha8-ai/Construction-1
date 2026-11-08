@@ -1,0 +1,12 @@
+{
+  "name": "جوجل شيت 5مدير مشروعات التشييد برو",
+  "description": "تطبيق لإدارة مستندات المشروعات، الصور، والخطابات مع دعم الطباعة والتصدير.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

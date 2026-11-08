@@ -1,0 +1,344 @@
+
+export enum ItemType {
+  FILE = 'file',
+  FOLDER = 'folder'
+}
+
+export enum ProjectStatus {
+  ONGOING = 'جاري التنفيذ',
+  DESIGN = 'قيد الدراسة', 
+  PAUSED = 'متوقف',
+  COMPLETED = 'منتهي'
+}
+
+// NEW: Sync Action Types
+export enum SyncActionType {
+  CREATE_PROJECT = 'CREATE_PROJECT',
+  UPDATE_PROJECT = 'UPDATE_PROJECT',
+  DELETE_PROJECT = 'DELETE_PROJECT',
+  UPLOAD_FILE = 'UPLOAD_FILE',
+  DELETE_FILE = 'DELETE_FILE',
+  SAVE_LETTER = 'SAVE_LETTER'
+}
+
+export interface SyncQueueItem {
+  id: string;
+  action: SyncActionType;
+  payload: any;
+  createdAt: number;
+  retryCount: number;
+  status?: 'pending' | 'failed'; // NEW
+  errorMessage?: string; // NEW
+}
+
+export interface Task {
+  id: string;
+  content: string;
+  isDone: boolean;
+  createdAt: string;
+  type?: 'manual' | 'auto';
+  priority?: 'high' | 'normal' | 'low';
+  relatedProjectId?: string;
+}
+
+export interface ProjectLog {
+  id: string;
+  date: string;
+  content: string;
+  images?: string[]; // Array of Base64 strings or URLs
+}
+
+export interface PaymentItem {
+  itemCode?: string;      // Matches BOQ
+  description: string;    // Matches BOQ
+  unit?: string;
+  
+  // Quantities
+  contractQuantity?: number; // Matches BOQ
+  prevQuantity?: number;
+  currQuantity?: number;
+  totalQuantity?: number; // Cumulative
+  
+  // Financials
+  unitPrice?: number;     // Matches BOQ
+  completionRatio?: number; // Percentage
+  totalValue?: number;    // totalQuantity * unitPrice * ratio
+}
+
+export interface ProjectPayment {
+  id: string;
+  invoiceNumber?: string; // NEW
+  date: string;
+  
+  // Financials
+  cumulativeAmount: number; // إجمالي الأعمال حتى تاريخه
+  netAmount: number;        // صافي هذا المستخلص
+  
+  note: string;
+  items?: PaymentItem[]; // Analyzed items from the document
+  attachments?: string[]; // Base64 or URLs
+}
+
+export interface BOQItem {
+  id: string;
+  itemCode: string;
+  description: string;
+  unit: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  executedQuantity: number;
+  batchId?: string;
+  batchName?: string;
+}
+
+export interface MaterialRequirement {
+  materialName: string;
+  unit: string;
+  quantityPerUnit: number;
+  totalQuantity: number;
+  wastePercentage: number;
+  totalWithWaste: number;
+}
+
+export interface MaterialCalculationResult {
+  itemName: string;
+  inputQuantity: string;
+  materials: MaterialRequirement[];
+  notes: string;
+  calculationBasis: string;
+}
+
+export interface CostElement {
+  type: 'Material' | 'Labor' | 'Equipment' | 'Other' | 'Tools';
+  description: string;
+  unit: string;
+  rate: number;
+  consumption: number;
+  cost: number;
+}
+
+export interface PricingCalculationResult {
+  itemName: string;
+  unit: string;
+  directCost: number;
+  indirectCostPercent: number;
+  profitPercent: number;
+  finalUnitPrice: number;
+  breakdown: CostElement[];
+  currency: string;
+  pricingBasis: string;
+}
+
+export interface ScheduleTask {
+    id: string;
+    taskName: string;
+    startDay: number;
+    duration: number;
+    endDay: number;
+    dependencies: string[];
+    phase: string;
+}
+
+export interface ScheduleResult {
+    projectName: string;
+    totalDuration: number;
+    tasks: ScheduleTask[];
+    criticalPath: string[];
+    recommendations: string;
+}
+
+// NEW: Expanded Market Categories (Added Solar, Pools, Smart Home, etc.)
+export type MarketCategory = 
+    // Ministry Bulletin (Updated Name Logic)
+    'ministry_bulletin' |
+    // Structural
+    'steel' | 'cement' | 'bricks' | 'aggregates' | 'concrete' | 'additives' | 'blocks' |
+    // Insulation & Chemicals
+    'insulation_water' | 'insulation_thermal' | 'insulation_sound' | 'chemicals_flooring' | 'chemicals_repair' |
+    // Finishing - Walls/Floors
+    'paints_interior' | 'paints_exterior' | 'gypsum_board' | 'cornices' | 'wallpaper' |
+    'ceramics' | 'porcelain' | 'marble' | 'granite' | 'parquet' | 'hdl_flooring' |
+    // Openings
+    'aluminum' | 'upvc' | 'wood_doors' | 'glass' | 'accessories_door' |
+    // MEP - Plumbing
+    'plumbing_pipes' | 'plumbing_fittings' | 'sanitary_ware' | 'water_tanks' | 'pumps' | 'swimming_pools' |
+    // MEP - Electrical
+    'cables_wires' | 'conduits' | 'lighting_units' | 'switches_sockets' | 'panels_breakers' | 'low_current' | 'smart_home' | 'solar_energy' |
+    // MEP - HVAC & Fire
+    'hvac_units' | 'ducts' | 'fire_fighting' | 'fire_alarm' |
+    // External & Landscape
+    'interlock' | 'basalt' | 'artificial_grass' | 'fences' | 'landscape_soft' |
+    // Labor & Equip
+    'labor_daily' | 'equipment_rental' | 'scaffolding' | 'tools_hardware' |
+    // Elevators
+    'elevators' |
+    // Other
+    'other';
+
+// NEW: Detail Structure for Material Info
+export interface MaterialDetailData {
+    description: string;
+    specifications: string[];
+    usageSteps: string[];
+    consumptionRates: string;
+    technicalTips: string[];
+    safetyPrecautions: string;
+}
+
+export interface MarketItem {
+    id: string;
+    name: string;
+    unit: string;
+    price: number;
+    category: MarketCategory;
+    lastUpdated: string;
+    trend?: 'up' | 'down' | 'stable';
+    source?: string;
+    details?: MaterialDetailData; // NEW: Persisted details
+    isWatchlisted?: boolean; // NEW: For Pulse Ticker
+    
+    // NEW: Bulletin Support
+    bulletinId?: string; // ID grouping items into one bulletin card
+    bulletinName?: string; // Display name of the bulletin (e.g. "نشرة مايو 2024")
+}
+
+export interface EngineeringReportItem {
+    id: string;
+    type: 'soil' | 'concrete' | 'proctor' | 'steel_test' | 'general' | 'memo';
+    title: string;
+    content: string; // HTML content
+    date: string;
+    summary?: string;
+}
+
+export interface RFI {
+  id: string;
+  refNumber: string;
+  subject: string;
+  date: string;
+  location: string;
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Approved with Notes';
+  attachments?: string[];
+  response?: string;
+  responseDate?: string;
+  htmlContent?: string; // NEW: AI Generated HTML
+}
+
+export interface Submittal {
+  id: string;
+  refNumber: string;
+  type: 'Material' | 'Shop Drawing' | 'Method Statement' | 'Other';
+  description: string;
+  submissionDate: string;
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Revise and Resubmit';
+  attachments?: string[];
+  response?: string;
+  responseDate?: string;
+  htmlContent?: string; // NEW: AI Generated HTML
+}
+
+export interface Correspondence {
+  id: string;
+  refNumber: string;
+  direction: 'Incoming' | 'Outgoing';
+  subject: string;
+  entity: string; // To/From whom
+  date: string;
+  content?: string;
+  htmlContent?: string; // NEW: AI Generated HTML
+  attachments?: string[];
+}
+
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  isChecked: boolean;
+  notes?: string;
+}
+
+export interface Checklist {
+  id: string;
+  refNumber: string;
+  activityName: string; // e.g., "صب خرسانة سقف", "أعمال مباني"
+  items: ChecklistItem[];
+  status: 'Open' | 'Completed' | 'Verified';
+  inspectorName?: string;
+  date: string;
+  location?: string;
+  htmlContent?: string; // NEW: AI Generated HTML
+}
+
+export interface NCR {
+  id: string;
+  ncrNumber: string;
+  description: string;
+  rootCause?: string;
+  correctiveAction?: string;
+  status: 'Open' | 'Closed';
+  issueDate: string;
+  closureDate?: string;
+  photos?: string[];
+  location?: string;
+  htmlContent?: string; // NEW: AI Generated HTML
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  location: string;
+  contractor: string;
+  value: string;
+  handoverDate: string;
+  completionDate: string;
+  status: ProjectStatus;
+  autoStatusReason?: string;
+  
+  fullDescription: string;
+  executionLogs: ProjectLog[];
+  payments: ProjectPayment[];
+  boqItems: BOQItem[];
+  
+  // NEW: Store exact coordinates to avoid geocoding every time
+  lat?: number;
+  lng?: number;
+
+  // NEW: Multiple Engineering Reports Array
+  engineeringReports?: EngineeringReportItem[];
+  
+  // NEW: Document Control System (DCS)
+  rfis?: RFI[];
+  submittals?: Submittal[];
+  correspondence?: Correspondence[];
+
+  // NEW: Quality, Health, Safety & Environment (QHSE)
+  checklists?: Checklist[];
+  ncrs?: NCR[];
+
+  // DEPRECATED: Old single field (Keep for backward compatibility during migration)
+  soilReportAnalysis?: string;
+
+  calculatedProgress: number;
+  boqFolderId: string;
+  createdAt: string;
+  driveFolderId?: string; // Explicitly optional now
+}
+
+export interface FileItem {
+  id: string;
+  parentId: string;
+  name: string;
+  type: ItemType;
+  mimeType?: string;
+  url?: string;
+  previewUrl?: string;
+  webViewLink?: string;
+  webContentLink?: string;
+  fileCount?: number;
+  folderCount?: number;
+  createdTime: string;
+  content?: string;
+  isSystem?: boolean;
+  projectName?: string;
+  size?: number; // ADDED: File size in bytes
+}

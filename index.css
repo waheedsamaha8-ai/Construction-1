@@ -1,0 +1,312 @@
+
+
+/* 
+  Global Styles & Theme Overrides
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap');
+
+:root {
+  /* Prevent layout shift by reserving scrollbar space */
+  scrollbar-gutter: stable;
+}
+
+html {
+  height: 100%;
+  width: 100%;
+  overflow: hidden; /* Stop page-level scrolling */
+  overscroll-behavior: none; /* Stop rubber-banding on Mac/iOS */
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Tajawal', sans-serif;
+  font-size: 16px; 
+  background-color: #f1f5f9;
+  color: #0f172a;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* Crucial for app-like feel */
+  position: fixed; /* Lock body in place */
+  top: 0;
+  left: 0;
+  touch-action: manipulation;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Custom Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+/* Enlarge text in tabs */
+.enlarged-tabs .text-xs { font-size: 0.875rem !important; } /* text-sm */
+.enlarged-tabs .text-sm { font-size: 1rem !important; } /* text-base */
+.enlarged-tabs .text-\[10px\] { font-size: 0.75rem !important; } /* text-xs */
+.enlarged-tabs *:not(i) { font-weight: bold !important; }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+#nprogress {
+  pointer-events: none;
+}
+
+#nprogress .bar {
+  background: #3b82f6;
+  position: fixed;
+  z-index: 1031;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+}
+
+@media (max-width: 640px) {
+    .text-xs, .text-\[10px\], .text-\[9px\] {
+        font-size: 13px !important;
+        line-height: 1.5 !important;
+    }
+    .fa-solid, .fa-regular, .fa-brands { font-size: 1.1em; }
+    button { min-height: 44px; }
+    
+    /* Global Table Tweak for Mobile */
+    td, th {
+        padding: 4px 6px !important;
+    }
+}
+
+.prose {
+    max-width: 100% !important;
+    min-width: 100% !important;
+    width: 100% !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+/* --- ENHANCED REPORT TYPOGRAPHY (MATCHING PDF STYLE) --- */
+
+/* Report Header Styling */
+.report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 4px solid #000;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+    direction: rtl;
+}
+
+.report-header .right-side {
+    text-align: right;
+}
+
+.report-header .left-side {
+    text-align: left;
+    font-family: 'Courier New', Courier, monospace; /* For Ref/Date numbers */
+    font-weight: 700;
+}
+
+.report-footer {
+    margin-top: 40px;
+    padding-top: 10px;
+    border-top: 1px solid #ccc;
+    text-align: center;
+    font-size: 14px !important;
+    color: #64748b;
+    font-weight: 700;
+}
+
+/* Base Typography */
+.prose p, .prose li, .prose div, .prose td, .prose span, .prose a {
+    font-size: 20px !important; 
+    font-weight: 700 !important; 
+    color: #000000 !important; /* Pure Black for high contrast like PDF */
+    line-height: 1.6 !important;
+}
+
+/* Headings - Underlined Style */
+.prose h1, .prose h2 {
+    font-size: 26px !important;
+    font-weight: 900 !important;
+    color: #000000 !important;
+    text-align: center;
+    border-bottom: 3px solid #000;
+    padding-bottom: 8px;
+    margin-top: 30px !important;
+    margin-bottom: 20px !important;
+    display: block; /* Ensure it takes full width for the underline */
+}
+
+.prose h3 {
+    font-size: 22px !important;
+    font-weight: 800 !important;
+    color: #000000 !important;
+    border-bottom: 2px solid #000;
+    padding-bottom: 5px;
+    margin-top: 25px !important;
+    margin-bottom: 15px !important;
+    display: inline-block; /* Subheadings might not need full width underline, but PDF shows full width often. Let's stick to block for consistency or inline-block for specific look. PDF shows "الأطراف الرئيسية..." underlined. Let's use block for H3 too to be safe. */
+    display: block;
+    width: fit-content; /* Underline only the text */
+    padding-right: 0;
+}
+
+/* Boxes - Specific Colors from PDF */
+.info-box, .warning-box, .success-box, .cost-box, .editable-box {
+    margin: 20px 0 !important;
+    width: 100% !important;
+    border-radius: 12px !important;
+    padding: 20px !important;
+    box-sizing: border-box !important;
+    font-weight: 700 !important;
+    box-shadow: 2px 2px 0px rgba(0,0,0,0.1); /* Slight shadow for depth */
+}
+
+/* Blue Box (Definition/Info) */
+.info-box { 
+    background-color: #e0f2fe !important; /* Light Blue */
+    color: #000000 !important; 
+    border: 2px solid #0284c7 !important; /* Dark Blue Border */
+}
+
+/* Green Box (Recommendations) */
+.success-box { 
+    background-color: #dcfce7 !important; /* Light Green */
+    color: #000000 !important; 
+    border: 2px solid #16a34a !important; /* Dark Green Border */
+}
+
+/* Red Box (Risks) */
+.warning-box { 
+    background-color: #fee2e2 !important; /* Light Red */
+    color: #000000 !important; 
+    border: 2px solid #dc2626 !important; /* Dark Red Border */
+}
+
+/* Orange Box (Analysis/Cost) */
+.cost-box { 
+    background-color: #ffedd5 !important; /* Light Orange */
+    color: #000000 !important; 
+    border: 2px solid #ea580c !important; /* Dark Orange Border */
+}
+
+/* Tables */
+table, .prose table {
+    border: 3px solid #000 !important;
+    border-radius: 8px;
+    margin: 20px 0 !important;
+    width: 100% !important;
+    table-layout: auto !important;
+    border-collapse: collapse !important;
+    word-break: break-word !important;
+}
+
+@media (max-width: 640px) {
+    table, .prose table {
+        font-size: 14px !important; /* Smaller font for mobile tables */
+    }
+    th, td {
+        padding: 6px 4px !important;
+        font-size: 14px !important;
+    }
+    .report-header h2 {
+        font-size: 20px !important;
+    }
+}
+
+thead tr {
+    background-color: #e2e8f0 !important; /* Grey Header */
+    border-bottom: 3px solid #000 !important;
+}
+
+th {
+    color: #000 !important;
+    font-weight: 900 !important;
+    text-align: center !important;
+    border: 2px solid #000 !important;
+    padding: 12px !important;
+    font-size: 20px !important;
+}
+
+td {
+    border: 2px solid #000 !important;
+    color: #000 !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    padding: 10px !important;
+}
+
+.prose img {
+    max-width: 100% !important;
+    height: auto !important;
+    margin: 10px auto !important;
+    display: block;
+    border: 2px solid #000 !important;
+    box-shadow: none !important;
+}
+
+.archive-card-content { direction: rtl; color: #1e293b; font-size: 1.25rem; line-height: 1.8; font-weight: 700; }
+.archive-card-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; background-color: #fff; border: 2px solid #000 !important; }
+.archive-card-content th, .archive-card-content td { padding: 0.75rem; border-bottom: 1px solid #000; }
+
+.prose-invert { color: #e2e8f0; }
+.prose-invert h1, .prose-invert h2, .prose-invert h3 { color: #ffffff; }
+.prose-invert blockquote { color: #cbd5e1; border-left-color: #3b82f6; }
+
+.box-row {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    margin: 5px 0 !important;
+    overflow: hidden !important;
+}
+
+/* Leaflet Map Styles */
+.leaflet-container {
+    width: 100%;
+    height: 100%;
+    border-radius: 1.5rem; 
+    font-family: 'Tajawal', sans-serif !important;
+}
+.leaflet-control-attribution { font-size: 8px !important; }
+.custom-pin { background: transparent; border: none; }
+.pin-outer {
+    width: 40px; height: 40px; background: white; border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg); box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+    display: flex; align-items: center; justify-content: center;
+    border: 3px solid white; transition: transform 0.2s; position: relative;
+}
+.pin-outer:hover { transform: rotate(-45deg) scale(1.1); z-index: 1000; }
+.pin-inner {
+    width: 24px; height: 24px; border-radius: 50%; transform: rotate(45deg);
+    display: flex; align-items: center; justify-content: center; color: white; font-size: 12px;
+}
+.pin-pulse {
+    position: absolute; width: 100%; height: 100%; background: inherit;
+    border-radius: 50% 50% 50% 0; z-index: -1; animation: pin-pulse 1.5s infinite;
+}
+@keyframes pin-pulse { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
+.leaflet-popup-content-wrapper { border-radius: 16px !important; padding: 0 !important; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.15) !important; }
+.leaflet-popup-content { margin: 0 !important; width: 260px !important; }
+.leaflet-popup-tip { background: white !important; }
+.leaflet-container a.leaflet-popup-close-button { color: #64748b !important; font-size: 18px !important; padding: 8px !important; z-index: 10; }
