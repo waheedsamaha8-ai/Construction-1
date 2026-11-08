@@ -130,7 +130,7 @@ export const createContextCache = async (model: string, systemInstruction: strin
 
 // --- SERVER-SIDE GENERATION CALL ---
 export const safeGenerateContent = async (primaryModel: string, params: any): Promise<{ text: string, usedModel: string, functionCalls?: any[], response?: any }> => {
-    const model = primaryModel === 'gemini-3.1-pro-preview' || primaryModel === 'gemini-3-flash-preview' ? MODEL_SMART : primaryModel;
+    const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest')) ? MODEL_SMART : primaryModel;
 
     try {
         const res = await fetch('/api/gemini/generate', {

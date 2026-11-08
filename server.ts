@@ -9,16 +9,38 @@ import { GoogleGenAI } from '@google/genai';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// --- LOAD .ENV IF PRESENT ---
+if (fs.existsSync('.env')) {
+  try {
+    const envContent = fs.readFileSync('.env', 'utf-8');
+    for (const line of envContent.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const idx = trimmed.indexOf('=');
+      if (idx !== -1) {
+        const k = trimmed.slice(0, idx).trim();
+        const v = trimmed.slice(idx + 1).trim();
+        if (!process.env[k]) {
+          process.env[k] = v;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Could not read .env file:', e);
+  }
+}
+
 // --- MULTI-KEY ROTATION & API KEY SETUP ---
 const rawKeys = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
 const API_KEYS = rawKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
 let currentKeyIndex = API_KEYS.length > 0 ? Math.floor(Math.random() * API_KEYS.length) : 0;
 
 const getAiClient = () => {
-  const key = API_KEYS.length > 0 ? API_KEYS[currentKeyIndex % API_KEYS.length] : (process.env.GEMINI_API_KEY || process.env.API_KEY || '');
+  const key = process.env.GEMINI_API_KEY || (API_KEYS.length > 0 ? API_KEYS[currentKeyIndex % API_KEYS.length] : (process.env.API_KEY || ''));
   return new GoogleGenAI({
     apiKey: key,
     httpOptions: {
+      apiVersion: 'v1beta',
       headers: {
         'User-Agent': 'aistudio-build',
       },
@@ -33,8 +55,15 @@ const rotateKey = () => {
   return true;
 };
 
-// Supported models according to guidelines
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+// Supported models according to guidelines (never use gemini-flash-latest or deprecated names)
+const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
+
+const normalizeModel = (model: string | undefined): string => {
+  if (!model || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview' || model === 'gemini-3-flash-preview') {
+    return 'gemini-3.8-flash';
+  }
+  return model;
+};
 
 const app = express();
 const server = createHttpServer(app);
@@ -51,16 +80,18 @@ app.get('/api/health', (_req: Request, res: Response) => {
 // --- GEMINI GENERATE CONTENT ENDPOINT ---
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
   const { model: requestedModel, contents, config, cachedContent } = req.body;
-  const primaryModel = requestedModel || 'gemini-3.8-flash';
+  const primaryModel = normalizeModel(requestedModel);
 
   const sequence = [primaryModel, ...FALLBACK_MODELS];
   const uniqueSequence = [...new Set(sequence)];
 
   let lastError: any = null;
 
+  let stopAllModels = false;
+
   for (const model of uniqueSequence) {
-    let keysTried = 0;
-    const maxAttempts = Math.max(2, API_KEYS.length * 2);
+    if (stopAllModels) break;
+    const maxAttempts = Math.max(1, API_KEYS.length);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -88,31 +119,37 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         lastError = error;
         const status = error.status || 0;
         const msg = (error.message || '').toLowerCase();
-        const isRecoverable = status === 429 || status === 503 || msg.includes('429') || msg.includes('503') || msg.includes('overloaded') || msg.includes('quota');
 
         if (status === 404 || msg.includes('404')) {
-          console.warn(`Model ${model} returned 404. Trying next model...`);
-          break; // Break attempt loop to move to next model in sequence
-        }
-
-        if (isRecoverable) {
-          keysTried++;
-          rotateKey();
-          if (keysTried < API_KEYS.length) {
-            continue; // Retry with next key immediately
-          } else {
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-            continue;
-          }
-        } else {
-          console.error(`Non-recoverable error for model ${model}:`, error.message || error);
+          console.warn(`Model ${model} returned 404. Moving to next model...`);
           break;
         }
+
+        if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+          if (attempt < API_KEYS.length - 1) {
+            rotateKey();
+            continue;
+          } else {
+            stopAllModels = true;
+            break;
+          }
+        }
+
+        if (status === 429 || status === 503) {
+          if (attempt < API_KEYS.length - 1) {
+            rotateKey();
+            continue;
+          } else {
+            break;
+          }
+        }
+
+        break;
       }
     }
   }
 
-  console.error('All server-side Gemini generation attempts failed:', lastError);
+  console.error('All server-side Gemini generation attempts failed:', lastError?.message || lastError);
   return res.status(lastError?.status || 500).json({
     error: lastError?.message || 'Failed to generate content from AI services',
     status: lastError?.status || 500,
@@ -122,7 +159,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 // --- GEMINI STREAMING ENDPOINT (Server-Sent Events) ---
 app.post('/api/gemini/stream', async (req: Request, res: Response) => {
   const { model: requestedModel, contents, config } = req.body;
-  const primaryModel = requestedModel || 'gemini-3.8-flash';
+  const primaryModel = normalizeModel(requestedModel);
   const sequence = [primaryModel, ...FALLBACK_MODELS];
   const uniqueSequence = [...new Set(sequence)];
 
@@ -152,7 +189,12 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
       break;
     } catch (error: any) {
       lastError = error;
+      const status = error.status || 0;
+      const msg = (error.message || '').toLowerCase();
       console.warn(`Streaming attempt with model ${model} failed:`, error.message || error);
+      if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+        break;
+      }
       rotateKey();
     }
   }
