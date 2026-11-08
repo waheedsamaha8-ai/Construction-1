@@ -370,6 +370,48 @@ const enrichProjectWithAI = (project: Project): Project => {
     return { ...project, calculatedProgress, status: smartStatus, autoStatusReason: statusReason };
 };
 
+const DEFAULT_STARTER_PROJECT: Project = {
+    id: 'proj_demo_default_1',
+    name: 'مشروع برج السلام السكني (نموذج متكامل)',
+    location: 'القاهرة - التجمع الخامس',
+    contractor: 'شركة النيل للمقاولات العامة',
+    value: '15000000',
+    status: ProjectStatus.ONGOING,
+    calculatedProgress: 45,
+    driveFolderId: 'proj_demo_default_1',
+    createdAt: new Date().toISOString(),
+    boqFolderId: 'boq_demo_1',
+    autoStatusReason: 'جاري التنفيذ - أعمال الهيكل الخرساني والتشطيبات',
+    executionLogs: [
+        {
+            id: 'log_demo_1',
+            date: new Date().toISOString().split('T')[0],
+            content: 'تم استلام موقع المشروع وردم القواعد المسلحة واستكمال صب أعمدة الدور الأرضي وفقاً للمواصفات الفنية الهندسية والكود المصري.'
+        }
+    ],
+    boqItems: [
+        { id: 'boq_1', itemNumber: '1', description: 'أعمال حفر في تربة رملية وتجهيز الموقع', unit: 'م3', quantity: 1200, unitPrice: 150 },
+        { id: 'boq_2', itemNumber: '2', description: 'خرسانة مسلحة للقواعد والسملات عيار 350 كجم/م3', unit: 'م3', quantity: 450, unitPrice: 4800 },
+        { id: 'boq_3', itemNumber: '3', description: 'أعمال هيكل خرساني مسلّح للأعمدة والأسقف', unit: 'م3', quantity: 600, unitPrice: 5200 },
+        { id: 'boq_4', itemNumber: '4', description: 'أعمال مباني وأقاطع طوب أسمنتي مفرغ', unit: 'م2', quantity: 2500, unitPrice: 280 }
+    ],
+    payments: [
+        { id: 'pay_1', number: 1, date: new Date().toISOString().split('T')[0], amount: 3500000, cumulativeAmount: 6750000, status: 'approved', notes: 'دفعة مقدمة ومستخلص جاري رقم 1' }
+    ]
+};
+
+const ensureStarterProjectIfNeeded = async (projects: Project[]): Promise<Project[]> => {
+    const validProjects = projects.filter(p => p && p.name && p.name !== ARCHIVE_FOLDER_NAME);
+    if (validProjects.length === 0) {
+        try {
+            await dbService.putItem('projects', DEFAULT_STARTER_PROJECT);
+            saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, [DEFAULT_STARTER_PROJECT]);
+            return [enrichProjectWithAI(DEFAULT_STARTER_PROJECT)];
+        } catch(e) {}
+    }
+    return validProjects;
+};
+
 const createCardHtml = (title: string, content: string) => `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>${title}</title><style>@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap'); body { font-family: 'Tajawal', sans-serif; padding: 20px; line-height: 1.6; color: #1e293b; direction: rtl; background-color: white; } .archive-content { font-size: 1.1em; } table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; } th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: right; } th { background: #f8fafc; color: #334155; } h1, h2, h3 { color: #1e3a8a; margin-top: 0; } strong { color: #0f172a; } .highlight-box, blockquote { background-color: #f0fdfa; border-right: 4px solid #0d9488; padding: 12px; margin: 15px 0; border-radius: 4px; color: #115e59; } .warning-box { background-color: #fef2f2; border-right: 4px solid #ef4444; padding: 12px; margin: 15px 0; color: #991b1b; }</style></head><body><div class="archive-content">${content}</div></body></html>`;
 
 export const api = {
@@ -474,7 +516,45 @@ export const api = {
   async saveToArchive(title: string, content: string, sectionName?: string): Promise<string> { triggerLoadingStart(); try { const archiveId = await this.getArchiveFolderId(); if (!archiveId) { throw new Error("Could not find archive folder"); } let targetFolderId = archiveId; if (sectionName) { const archiveContents = await this.getContents(archiveId, true); const sectionFolder = archiveContents.find(f => f.name === sectionName && f.type === ItemType.FOLDER); if (sectionFolder) { targetFolderId = sectionFolder.id; } } const htmlDoc = createCardHtml(title, content); const file = await this.saveLetter(targetFolderId, title, htmlDoc); return file.id; } finally { triggerLoadingStop(); } },
   getCachedContents(folderId: string): FileItem[] | null { const cached = contentCache.get(folderId); if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) { return cached.data; } return null; },
   getCachedProjects(): Project[] | null { const cached = contentCache.get('projects_list'); if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) { return cached.data; } return null; },
-  async getLocalProjects(): Promise<Project[]> { const localProjects = await dbService.getAllItems<Project>('projects'); const processed = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processed); return processed; },
+  async getLocalProjects(): Promise<Project[]> { 
+      const localProjects = await dbService.getAllItems<Project>('projects'); 
+      let processed = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); 
+      processed = await ensureStarterProjectIfNeeded(processed);
+      saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processed); 
+      return processed; 
+  },
+  
+  async exportProjectsBackup(): Promise<string> {
+      const projects = await dbService.getAllItems<Project>('projects');
+      const dataStr = JSON.stringify(projects, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `construction_projects_backup_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return dataStr;
+  },
+  
+  async importProjectsBackup(jsonData: string): Promise<number> {
+      try {
+          const parsed = JSON.parse(jsonData);
+          const list = Array.isArray(parsed) ? parsed : [parsed];
+          let count = 0;
+          for (const item of list) {
+              if (item && item.name && item.id) {
+                  await dbService.putItem('projects', item);
+                  count++;
+              }
+          }
+          const current = await this.getLocalProjects();
+          saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, current);
+          return count;
+      } catch(e) {
+          throw new Error("ملف النسخة الاحتياطية غير صالح.");
+      }
+  },
   
   async getProjectById(id: string, forceRefresh = false): Promise<Project | undefined> { 
       const cachedList = this.getCachedProjects(); 
@@ -498,7 +578,6 @@ export const api = {
       }
 
       const local = await dbService.getItem<Project>('projects', id); 
-      // If forceRefresh, we prefer network, but if local is available and network fails, use local
       
       if (navigator.onLine) {
           try {
@@ -529,9 +608,7 @@ export const api = {
   },
   
   async getProjects(): Promise<Project[]> { 
-      if (!authService.isAuthenticated()) return []; 
-      const localProjects = await dbService.getAllItems<Project>('projects'); 
-      const processedLocal = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); 
+      let processedLocal = await this.getLocalProjects(); 
       saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processedLocal); 
       
       // If offline or guest, return local cache

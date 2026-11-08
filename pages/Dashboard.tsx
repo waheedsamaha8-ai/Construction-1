@@ -349,6 +349,38 @@ const Dashboard: React.FC = () => {
       } 
   };
   
+  const handleExportBackup = async () => {
+      try {
+          await api.exportProjectsBackup();
+      } catch(e) {
+          alert("حدث خطأ أثناء تصدير المشروعات.");
+      }
+  };
+
+  const handleImportBackup = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = async (e: any) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = async (evt) => {
+              try {
+                  const content = evt.target?.result as string;
+                  const count = await api.importProjectsBackup(content);
+                  const updated = await api.getLocalProjects();
+                  setProjects(updated);
+                  alert(`تم استيراد ${count} مشروع بنجاح!`);
+              } catch(err: any) {
+                  alert("خطأ أثناء استيراد الملف: " + (err.message || 'تعذر القراءة'));
+              }
+          };
+          reader.readAsText(file);
+      };
+      input.click();
+  };
+
   const handleOpenArchive = async () => { 
       if (isOpeningArchive) return; 
       setIsOpeningArchive(true); 
@@ -463,20 +495,36 @@ const Dashboard: React.FC = () => {
                         </div>
                     )}
 
-                    <div className="flex justify-between items-end mb-2">
+                    <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
                         <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
                             <i className="fa-solid fa-building-columns text-blue-600"></i>
                             {searchQuery ? 'نتائج البحث' : 'مشاريعك الحالية'}
-                            {!searchQuery && (
+                        </h3>
+                        {!searchQuery && (
+                            <div className="flex items-center gap-1.5">
                                 <button 
                                     onClick={openCreateModal} 
-                                    className="mr-2 bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition-colors rounded-lg px-3 py-1 text-[10px] font-bold shadow-sm"
+                                    className="bg-blue-600 text-white hover:bg-blue-700 transition-colors rounded-xl px-3 py-1.5 text-[10px] font-bold shadow-md flex items-center gap-1.5"
                                     title="إضافة مشروع جديد"
                                 >
-                                    إضافة مشروع جديد
+                                    <i className="fa-solid fa-plus"></i> إضافة مشروع جديد
                                 </button>
-                            )}
-                        </h3>
+                                <button 
+                                    onClick={handleExportBackup} 
+                                    className="bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors rounded-xl px-2.5 py-1.5 text-[10px] font-bold border border-slate-200 shadow-sm flex items-center gap-1"
+                                    title="تصدير نسخة احتياطية من جميع المشروعات"
+                                >
+                                    <i className="fa-solid fa-file-export text-blue-600"></i> تصدير
+                                </button>
+                                <button 
+                                    onClick={handleImportBackup} 
+                                    className="bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors rounded-xl px-2.5 py-1.5 text-[10px] font-bold border border-slate-200 shadow-sm flex items-center gap-1"
+                                    title="استيراد نسخة احتياطية من ملف"
+                                >
+                                    <i className="fa-solid fa-file-import text-teal-600"></i> استيراد
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
 
