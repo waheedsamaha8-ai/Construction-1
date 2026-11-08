@@ -74,13 +74,13 @@ const authService = {
             callback: (response: any) => {
                 if (response.error !== undefined) {
                     if (response.error === 'popup_closed') {
-                        // User closed the Google login popup window manually
                         console.log("OAuth popup closed by user.");
                         return;
                     }
                     console.error("Google OAuth Error:", response);
                     if (response.error === 'origin_mismatch' || response.error === 'idpiframe_initialization_failed') {
-                        alert(`تنبيه: نطاق الموقع الحالي (${window.location.origin}) غير مسجل في Google Cloud Console للمعرف الحالي.\n\nيمكنك الضغط على "الدخول كزائر" لاستخدام جميع مميزات التطبيق والذكاء الاصطناعي بنجاح.`);
+                        console.warn(`Origin mismatch for domain ${window.location.origin}. Automatically activating local mode.`);
+                        authService.signInGuest();
                         return;
                     }
                     alert("حدث خطأ أثناء تسجيل الدخول: " + (response.error_description || response.error));
@@ -98,7 +98,8 @@ const authService = {
                 }
                 console.error("Google OAuth Error Callback:", err);
                 if (errStr.includes('origin_mismatch')) {
-                    alert(`تنبيه: حظر Google OAuth الوصول بسبب عدم تطابق النطاق (origin_mismatch).\n\nيمكنك استخدام "الدخول كزائر" للعمل بكامل المميزات.`);
+                    console.warn(`Origin mismatch for domain ${window.location.origin}. Automatically activating local mode.`);
+                    authService.signInGuest();
                 }
             }
         });
