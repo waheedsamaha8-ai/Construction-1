@@ -61,7 +61,7 @@ export default defineConfig(() => {
             cleanupOutdatedCaches: true,
             skipWaiting: true,
             clientsClaim: true,
-            navigateFallback: '/index.html',
+            navigateFallback: 'index.html',
             runtimeCaching: [
               {
                 urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,

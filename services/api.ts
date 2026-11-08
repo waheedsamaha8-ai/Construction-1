@@ -69,33 +69,53 @@ const authService = {
             scope: SCOPES,
             callback: (response: any) => {
                 if (response.error !== undefined) {
-                    throw (response);
+                    console.error("Google OAuth Error:", response);
+                    if (response.error === 'origin_mismatch' || response.error === 'idpiframe_initialization_failed') {
+                        alert(`تنبيه: نطاق الموقع الحالي (${window.location.origin}) غير مسجل في Google Cloud Console للـ Client ID.\n\nسيتم دخولك الآن بـ "وضع الزائر" لاستخدام جميع مميزات النظام والذكاء الاصطناعي بنجاح.`);
+                        authService.signInGuest();
+                        return;
+                    }
+                    alert("حدث خطأ أثناء تسجيل الدخول: " + (response.error_description || response.error));
+                    return;
                 }
                 accessToken = response.access_token;
                 localStorage.setItem('google_access_token', accessToken);
                 window.location.reload(); 
             },
+            error_callback: (err: any) => {
+                console.error("Google OAuth Error Callback:", err);
+                alert(`تنبيه: حظر Google OAuth الوصول بسبب عدم تطابق النطاق (origin_mismatch).\n\nجاري تفعيل "وضع الزائر" للعمل بكامل الميزات محلياً.`);
+                authService.signInGuest();
+            }
         });
      } catch (e) {
          console.error("Auth Init Error", e);
      }
   },
-  // STRICT: Only authenticated if token exists. No guest fallback.
+  // STRICT: Only authenticated if token exists or guest mode is enabled
   isAuthenticated: () => {
       return !!accessToken || localStorage.getItem('guest_mode') === 'true';
   },
-  // STRICT: Guest mode disabled completely.
   isGuest: () => localStorage.getItem('guest_mode') === 'true',
   
   signIn: () => {
       if (tokenClient) {
-          tokenClient.requestAccessToken();
+          try {
+              tokenClient.requestAccessToken();
+          } catch(e) {
+              alert("تعذر فتح تسجيل دخول جوجل. جاري تفعيل وضع الزائر.");
+              authService.signInGuest();
+          }
       } else {
           authService.init();
           setTimeout(() => {
-              if (tokenClient) tokenClient.requestAccessToken();
-              else alert("جاري الاتصال بخدمات جوجل... يرجى المحاولة مرة أخرى.");
-          }, 1000);
+              if (tokenClient) {
+                  try { tokenClient.requestAccessToken(); } catch(e) { authService.signInGuest(); }
+              } else {
+                  alert("جاري تحويلك لوضع العمل المحلي (الزائر)...");
+                  authService.signInGuest();
+              }
+          }, 800);
       }
   },
   signInGuest: () => {
