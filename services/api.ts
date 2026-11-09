@@ -608,6 +608,19 @@ export const api = {
   },
   
   async getProjects(): Promise<Project[]> { 
+      // 1. Instant 0ms response from memory or localStorage
+      const cachedList = this.getCachedProjects();
+      if (cachedList && cachedList.length > 0) {
+          this.refreshProjectsInBackground();
+          return cachedList;
+      }
+
+      const syncLocal = this.getSyncProjects();
+      if (syncLocal && syncLocal.length > 0) {
+          this.refreshProjectsInBackground();
+          return syncLocal;
+      }
+
       let processedLocal = await this.getLocalProjects(); 
       saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processedLocal); 
       
@@ -617,7 +630,7 @@ export const api = {
       try { 
           const querySnapshot = await Promise.race([
               getDocs(collection(db, "projects")),
-              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 1200))
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 800))
           ]);
           let firestoreProjects: Project[] = []; 
           if (querySnapshot && !querySnapshot.empty) { 
@@ -630,17 +643,74 @@ export const api = {
           firestoreProjects.forEach(p => projectMap.set(p.id, p));
           processedLocal.forEach(p => { if (!projectMap.has(p.id)) { projectMap.set(p.id, p); } });
           const mergedProjects = Array.from(projectMap.values());
-          for (const fp of firestoreProjects) await dbService.putItem('projects', fp); 
+          for (const fp of firestoreProjects) dbService.putItem('projects', fp).catch(()=>{}); 
           updateCache('projects_list', mergedProjects); 
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, mergedProjects); 
           return mergedProjects; 
       } catch (e: any) { 
-          if (e.code === 'permission-denied' || e.message === 'Firestore timeout') {
-              console.info("Serving local cached projects (Firestore sync offline or timed out).");
-          }
           return processedLocal; 
       } 
   },
+
+  async refreshProjectsInBackground(): Promise<void> {
+      if (!navigator.onLine || authService.isGuest()) return;
+      try {
+          const querySnapshot = await getDocs(collection(db, "projects"));
+          if (!querySnapshot.empty) {
+              const list = querySnapshot.docs.map(doc => {
+                  const data = doc.data() as any;
+                  return enrichProjectWithAI({ id: doc.id, ...data });
+              });
+              updateCache('projects_list', list);
+              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
+              for (const p of list) {
+                  dbService.putItem('projects', p).catch(() => {});
+              }
+          }
+      } catch (e) {}
+  },
+
+  // Instant real-time multi-device project synchronization listener
+  subscribeToProjectsList(onUpdate: (projects: Project[]) => void): () => void {
+      // 1. Deliver local sync cache instantly (0ms)
+      const cached = this.getSyncProjects();
+      if (cached && cached.length > 0) {
+          onUpdate(cached);
+      }
+
+      this.getLocalProjects().then(local => {
+          if (local && local.length > 0) {
+              onUpdate(local);
+          }
+      }).catch(() => {});
+
+      if (!navigator.onLine || authService.isGuest()) return () => {};
+
+      try {
+          const unsub = onSnapshot(collection(db, "projects"), (snapshot) => {
+              if (!snapshot.empty) {
+                  const list = snapshot.docs.map(doc => {
+                      const data = doc.data() as any;
+                      return enrichProjectWithAI({ id: doc.id, ...data });
+                  });
+                  updateCache('projects_list', list);
+                  saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
+                  for (const p of list) {
+                      dbService.putItem('projects', p).catch(() => {});
+                  }
+                  onUpdate(list);
+              }
+          }, (err) => {
+              if (err.code !== 'permission-denied') {
+                  console.warn("Real-time projects listener warning:", err);
+              }
+          });
+          return unsub;
+      } catch (e) {
+          return () => {};
+      }
+  },
+
   subscribeToProject(projectId: string, onUpdate: (data: Project) => void): () => void { 
       // STRICT: No offline subscription
       if (!navigator.onLine) return () => {};
@@ -892,7 +962,7 @@ export const api = {
       
       autoSync.prioritizeFolder(localChildren); 
 
-      if (!contentCache.has(targetId)) triggerLoadingStart(); 
+      if (!contentCache.has(targetId) && localChildren.length === 0) triggerLoadingStart(); 
       
       try { 
           let query = `'${targetId}' in parents and trashed = false and name != 'metadata.json'`; 
@@ -1072,6 +1142,32 @@ export const api = {
   async toggleTask(id: string): Promise<void> { const index = localTasks.findIndex(t => t.id === id); if (index !== -1) { localTasks[index].isDone = !localTasks[index].isDone; localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); } },
   async deleteTask(id: string): Promise<void> { localTasks = localTasks.filter(t => t.id !== id); localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); },
   async getRecentFiles(): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; try { const result = await fetchDrive(`files?q=trashed = false and mimeType != 'application/vnd.google-apps.folder' and name != 'metadata.json'&pageSize=10&orderBy=createdTime desc&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, webContentLink: f.webContentLink, size: f.size ? parseInt(f.size) : 0 })); } catch (e) { return []; } },
+  subscribeToMarketPrices(onUpdate: (prices: MarketItem[]) => void): () => void {
+      if (!navigator.onLine) {
+          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
+          if (saved) {
+              try { onUpdate(JSON.parse(saved)); } catch(e){}
+          }
+          return () => {};
+      }
+      try {
+          const docRef = doc(db, "market_data", "current_prices");
+          const unsubscribe = onSnapshot(docRef, (docSnap) => {
+              if (docSnap.exists()) {
+                  const data = docSnap.data();
+                  if (data.items && Array.isArray(data.items)) {
+                      localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items));
+                      onUpdate(data.items as MarketItem[]);
+                  }
+              }
+          }, (error) => {
+              console.info("Market real-time sync offline or fallback active:", error);
+          });
+          return unsubscribe;
+      } catch (e) {
+          return () => {};
+      }
+  },
   async getMarketPrices(defaultPrices: MarketItem[]): Promise<MarketItem[]> { if (!navigator.onLine) { const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } try { const docRef = doc(db, "market_data", "current_prices"); const docSnap = await getDoc(docRef); if (docSnap.exists()) { const data = docSnap.data(); if (data.items && Array.isArray(data.items)) { localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items)); return data.items as MarketItem[]; } } const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } catch (e: any) { if (e.code === 'permission-denied') console.warn("Market Sync Permission Denied"); const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } },
   async saveMarketPrices(prices: MarketItem[]): Promise<void> { 
       localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(prices)); 

@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "MarketItem": {
+      "title": "Building Material Item",
+      "description": "Represents a building material item in the exchange with current market price and details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "unit": { "type": "string" },
+        "category": { "type": "string" },
+        "lastUpdated": { "type": "string" },
+        "trend": { "type": "string" },
+        "source": { "type": "string" },
+        "details": { "type": "object" }
+      },
+      "required": ["id", "name", "price", "unit", "category"]
+    }
+  },
+  "firestore": {
+    "/market_data/current_prices": {
+      "schema": "MarketItem",
+      "description": "Global building materials market exchange prices synced in real-time"
+    }
+  }
+}

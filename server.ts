@@ -31,12 +31,30 @@ if (fs.existsSync('.env')) {
 }
 
 // --- MULTI-KEY ROTATION & API KEY SETUP ---
-const rawKeys = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-const API_KEYS = rawKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
+const collectEnvKeys = (): string[] => {
+  const envCandidates = [
+    process.env.GEMINI_API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.API_KEY,
+    process.env.VITE_API_KEY,
+  ];
+  const keys: string[] = [];
+  for (const cand of envCandidates) {
+    if (cand) {
+      const parts = cand.split(',').map(k => k.trim()).filter(k => k.length > 0);
+      keys.push(...parts);
+    }
+  }
+  return [...new Set(keys)];
+};
+
+const API_KEYS = collectEnvKeys();
 let currentKeyIndex = API_KEYS.length > 0 ? Math.floor(Math.random() * API_KEYS.length) : 0;
 
-const getAiClient = () => {
-  const key = process.env.GEMINI_API_KEY || (API_KEYS.length > 0 ? API_KEYS[currentKeyIndex % API_KEYS.length] : (process.env.API_KEY || ''));
+const getAiClient = (overrideKey?: string) => {
+  const customKey = overrideKey?.trim();
+  const key = customKey || (API_KEYS.length > 0 ? API_KEYS[currentKeyIndex % API_KEYS.length] : (process.env.GEMINI_API_KEY || process.env.API_KEY || ''));
   return new GoogleGenAI({
     apiKey: key,
     httpOptions: {
@@ -55,12 +73,12 @@ const rotateKey = () => {
   return true;
 };
 
-// Supported models according to guidelines (never use deprecated model names)
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+// Supported standard Gemini models
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
 const normalizeModel = (model: string | undefined): string => {
-  if (!model || model === 'gemini-flash-latest' || model === 'gemini-3.1-pro-preview' || model === 'gemini-3-flash-preview' || model === 'gemini-2.5-flash') {
-    return 'gemini-3.8-flash';
+  if (!model || model.includes('3.') || model.includes('preview') || model.includes('latest')) {
+    return 'gemini-2.5-flash';
   }
   return model;
 };
@@ -79,23 +97,25 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // --- GEMINI GENERATE CONTENT ENDPOINT ---
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config, cachedContent } = req.body;
+  const { model: requestedModel, contents, config, cachedContent, apiKey: bodyKey } = req.body;
+  const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
+  const customUserKey = (headerKey || bodyKey || '').trim();
+
   const primaryModel = normalizeModel(requestedModel);
 
   const sequence = [primaryModel, ...FALLBACK_MODELS];
   const uniqueSequence = [...new Set(sequence)];
 
   let lastError: any = null;
-
   let stopAllModels = false;
 
   for (const model of uniqueSequence) {
     if (stopAllModels) break;
-    const maxAttempts = Math.max(1, API_KEYS.length);
+    const maxAttempts = customUserKey ? 1 : Math.max(1, API_KEYS.length);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const client = getAiClient();
+        const client = getAiClient(customUserKey);
         const requestParams: any = {
           model,
           contents,
@@ -126,7 +146,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         }
 
         if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
-          if (attempt < API_KEYS.length - 1) {
+          if (!customUserKey && attempt < API_KEYS.length - 1) {
             rotateKey();
             continue;
           } else {
@@ -136,7 +156,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         }
 
         if (status === 429 || status === 503) {
-          if (attempt < API_KEYS.length - 1) {
+          if (!customUserKey && attempt < API_KEYS.length - 1) {
             rotateKey();
             continue;
           } else {

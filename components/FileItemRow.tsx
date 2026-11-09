@@ -1,6 +1,7 @@
 
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { FileItem, ItemType } from '../types';
+import VideoThumbnail from './VideoThumbnail';
 
 interface FileItemRowProps {
   item: FileItem;
@@ -19,6 +20,9 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
   const menuRef = useRef<HTMLDivElement>(null);
   
   const isFolder = item.type === ItemType.FOLDER;
+  const mime = (item.mimeType || '').toLowerCase();
+  const name = item.name.toLowerCase();
+  const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi');
 
   // Handle outside click to close menu
   useEffect(() => {
@@ -59,20 +63,17 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
 
   const getIconConfig = () => {
     if (isFolder) return { icon: 'fa-folder', color: 'text-yellow-500', bg: 'bg-yellow-50' };
-    
-    const mime = (item.mimeType || '').toLowerCase();
-    const name = item.name.toLowerCase();
 
     // AutoCAD Special Icon
     if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) {
         return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border border-red-100' };
     }
 
-    // Images & Videos
+    // Videos
+    if (isVideo) return { type: 'video' };
+
+    // Images
     if (item.previewUrl && mime.startsWith('image/')) return { type: 'image', url: item.previewUrl };
-    if ((item.previewUrl || item.thumbnailLink) && (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov'))) {
-        return { type: 'video', url: item.previewUrl || item.thumbnailLink };
-    }
     if (mime.startsWith('image/')) return { icon: 'fa-file-image', color: 'text-purple-600', bg: 'bg-purple-50' };
 
     // Documents
@@ -83,8 +84,7 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
     if (mime.includes('text') || name.endsWith('.txt')) return { icon: 'fa-file-lines', color: 'text-slate-500', bg: 'bg-slate-100' };
     if (name.endsWith('.html')) return { icon: 'fa-file-code', color: 'text-orange-500', bg: 'bg-slate-50' };
 
-    // Media
-    if (mime.startsWith('video/') || name.endsWith('.mp4')) return { icon: 'fa-file-video', color: 'text-rose-500', bg: 'bg-rose-50' };
+    // Audio
     if (mime.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav')) return { icon: 'fa-file-audio', color: 'text-cyan-600', bg: 'bg-cyan-50' };
 
     // Archives
@@ -104,16 +104,11 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
       onClick={onClick}
       className={`group bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer mb-2 relative overflow-visible ${showMenu ? 'z-50' : 'z-10'}`}
     >
-      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type !== 'image' && config.type !== 'video' ? config.bg : 'bg-slate-50'}`}>
+      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type !== 'image' && config.type !== 'video' ? config.bg : 'bg-slate-900'}`}>
         {config.type === 'image' ? (
              <img src={config.url} alt="" className="w-full h-full object-cover" />
         ) : config.type === 'video' ? (
-             <>
-                <video src={`${config.url}#t=0.5`} className="w-full h-full object-cover" preload="metadata" muted playsInline />
-                <div className="absolute inset-0 bg-black/30 flex items-center justify-center pointer-events-none">
-                    <i className="fa-solid fa-play text-white text-[10px] drop-shadow-md"></i>
-                </div>
-             </>
+             <VideoThumbnail item={item} className="w-full h-full" />
         ) : (
             // @ts-ignore
              <i className={`fa-solid ${config.icon} ${config.color} text-2xl`}></i>

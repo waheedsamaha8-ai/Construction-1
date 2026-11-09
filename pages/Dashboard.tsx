@@ -120,6 +120,8 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
+      let unsubProjects: (() => void) | null = null;
+
       const checkAuth = async () => {
           if (typeof google !== 'undefined') { api.initAuth(); }
           
@@ -134,7 +136,15 @@ const Dashboard: React.FC = () => {
           setIsAuthenticated(isAuth);
           
           if (isAuth) { 
-              await fetchData(); 
+              // 1. Subscribe to instant real-time synchronization across all tabs and devices
+              unsubProjects = api.subscribeToProjectsList((updatedProjects) => {
+                  if (updatedProjects && updatedProjects.length > 0) {
+                      setProjects(updatedProjects);
+                      setLoading(false);
+                  }
+              });
+              // 2. Fetch fresh data in parallel
+              fetchData(); 
           } else { 
               setLoading(false); 
           }
@@ -142,12 +152,15 @@ const Dashboard: React.FC = () => {
 
       checkAuth();
 
-      // Guaranteed safety timeout to remove skeleton cards after 1.5s max
+      // Guaranteed safety timeout to remove skeleton cards after 600ms max
       const safetyTimer = setTimeout(() => {
           setLoading(false);
-      }, 1500);
+      }, 600);
 
-      return () => clearTimeout(safetyTimer);
+      return () => {
+          clearTimeout(safetyTimer);
+          if (unsubProjects) unsubProjects();
+      };
   }, []);
 
   useEffect(() => {
@@ -239,7 +252,29 @@ const Dashboard: React.FC = () => {
       }
   };
 
-  const handleSaveProject = async (e: React.FormEvent) => { e.preventDefault(); if (!projectForm.name) return; setIsModalOpen(false); if (modalMode === 'create') { try { await api.createProject(projectForm); fetchData(); } catch (err) { alert("حدث خطأ"); } } else if (modalMode === 'edit' && editingProjectId) { try { await api.updateProject(editingProjectId, projectForm); fetchData(); } catch (err) { alert("تعذر تحديث البيانات"); } } };
+  const handleSaveProject = async (e: React.FormEvent) => { 
+      e.preventDefault(); 
+      if (!projectForm.name) return; 
+      setIsModalOpen(false); 
+      if (modalMode === 'create') { 
+          try { 
+              const newProj = await api.createProject(projectForm); 
+              if (newProj) {
+                  setProjects(prev => {
+                      const exists = prev.some(p => p.id === newProj.id);
+                      return exists ? prev : [newProj, ...prev];
+                  });
+              }
+          } catch (err) { alert("حدث خطأ"); } 
+      } else if (modalMode === 'edit' && editingProjectId) { 
+          try { 
+              const updated = await api.updateProject(editingProjectId, projectForm); 
+              if (updated) {
+                  setProjects(prev => prev.map(p => p.id === editingProjectId ? { ...p, ...updated } : p));
+              }
+          } catch (err) { alert("تعذر تحديث البيانات"); } 
+      } 
+  };
   
   // Updated Handler to trigger Modal
   const handleDeleteProjectClick = (e: React.MouseEvent, project: Project) => { 
@@ -626,24 +661,50 @@ const Dashboard: React.FC = () => {
                           </div>
                       ) : (
                           <>
-                            {/* Full Width Wrapper for injected HTML with visible padding */}
-                            <div className="prose prose-sm max-w-none text-slate-800 leading-relaxed w-full px-6 py-8 md:px-12 md:py-10" dangerouslySetInnerHTML={{ __html: explainContent }}></div>
+                            {/* Full Width Wrapper for injected HTML with minimal lateral margins and responsive tables */}
+                            <div 
+                                className="prose prose-sm max-w-none text-slate-800 leading-relaxed w-full px-2 py-3 sm:px-6 sm:py-5" 
+                                dangerouslySetInnerHTML={{ 
+                                    __html: (() => {
+                                        if (!explainContent) return '';
+                                        let html = explainContent;
+                                        try {
+                                            const parser = new DOMParser();
+                                            const doc = parser.parseFromString(html, 'text/html');
+                                            const tables = doc.querySelectorAll('table');
+                                            tables.forEach((table) => {
+                                                const parent = table.parentElement;
+                                                if (parent && !parent.classList.contains('table-responsive-wrapper')) {
+                                                    const wrapper = doc.createElement('div');
+                                                    wrapper.className = 'table-responsive-wrapper';
+                                                    parent.insertBefore(wrapper, table);
+                                                    wrapper.appendChild(table);
+                                                }
+                                            });
+                                            return doc.body.innerHTML;
+                                        } catch (e) {
+                                            return html.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
+                                        }
+                                    })()
+                                }}
+                            ></div>
                           </>
                       )}
                   </div>
-                  <div className="p-3 bg-white border-t border-slate-200 flex justify-end shrink-0 gap-2">
+                  {/* Compact Bottom Action Bar - Fully Contained Within Screen */}
+                  <div className="p-2 sm:p-2.5 bg-slate-50 border-t border-slate-200 flex flex-wrap sm:flex-nowrap justify-center sm:justify-end shrink-0 gap-1.5 sm:gap-2">
                       {!isExplaining && (
                           <>
-                            <button onClick={handleSaveTipToArchive} disabled={isSavingToArchive} className="bg-teal-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-teal-700 transition flex items-center gap-2 shadow-sm disabled:opacity-50 text-[10px] sm:text-xs">
-                                {isSavingToArchive ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-box-archive"></i>} حفظ
+                            <button onClick={handleSaveTipToArchive} disabled={isSavingToArchive} className="bg-teal-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-teal-700 transition flex items-center gap-1.5 shadow-sm disabled:opacity-50 text-xs">
+                                {isSavingToArchive ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-box-archive text-xs"></i>} حفظ
                             </button>
-                            <button onClick={async () => { if (!explainContent) return; try { const archiveId = await api.getArchiveFolderId(); const rootId = await api.ensureRootFolder(); if (archiveId && rootId) { navigate(`/editor/${rootId}/${archiveId}`, { state: { initialContent: explainContent } }); } } catch (e) { alert("حدث خطأ."); } }} className="bg-blue-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-blue-700 transition flex items-center gap-2 shadow-sm text-[10px] sm:text-xs">
-                                <i className="fa-solid fa-pen-to-square"></i> تعديل
+                            <button onClick={async () => { if (!explainContent) return; try { const archiveId = await api.getArchiveFolderId(); const rootId = await api.ensureRootFolder(); if (archiveId && rootId) { navigate(`/editor/${rootId}/${archiveId}`, { state: { initialContent: explainContent } }); } } catch (e) { alert("حدث خطأ."); } }} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition flex items-center gap-1.5 shadow-sm text-xs">
+                                <i className="fa-solid fa-pen-to-square text-xs"></i> تعديل
                             </button>
-                            <button onClick={() => handlePrint(explainContent)} className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-indigo-700 transition flex items-center gap-2 shadow-sm text-[10px] sm:text-xs"><i className="fa-solid fa-print"></i> طباعة</button>
+                            <button onClick={() => handlePrint(explainContent)} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-indigo-700 transition flex items-center gap-1.5 shadow-sm text-xs"><i className="fa-solid fa-print text-xs"></i> طباعة</button>
                           </>
                       )}
-                      <button onClick={() => setIsExplainModalOpen(false)} className="bg-slate-100 text-slate-700 px-6 py-2 rounded-xl font-bold hover:bg-slate-200 transition text-[10px] sm:text-xs">إغلاق</button>
+                      <button onClick={() => setIsExplainModalOpen(false)} className="bg-white border border-slate-300 text-slate-700 px-4 py-1.5 rounded-lg font-bold hover:bg-slate-100 transition text-xs shadow-sm">إغلاق</button>
                   </div>
               </div>
           </div>

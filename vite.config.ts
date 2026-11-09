@@ -80,6 +80,24 @@ export default defineConfig(() => {
                   expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
                   cacheableResponse: { statuses: [0, 200] }
                 }
+              },
+              {
+                urlPattern: /^https:\/\/cdnjs\.cloudflare\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'cdnjs-cdn-cache',
+                  expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 60 },
+                  cacheableResponse: { statuses: [0, 200] }
+                }
+              },
+              {
+                urlPattern: /^https:\/\/cdn\.tailwindcss\.com\/.*/i,
+                handler: 'CacheFirst',
+                options: {
+                  cacheName: 'tailwind-cdn-cache',
+                  expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                  cacheableResponse: { statuses: [0, 200] }
+                }
               }
             ]
           }

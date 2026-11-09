@@ -448,21 +448,45 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                             <p className="text-sm">{isAudio ? 'قد تستغرق العملية بضع لحظات حسب مدة التسجيل' : `يتم تحليل ${isPdf ? 'بنود وشروط المستند' : 'العناصر الإنشائية والجودة'}`}</p>
                         </div> 
                     ) : ( 
-                        // Full width container for content
-                        <div className="w-full min-h-full bg-white p-0 sm:p-8">
-                            <div className="prose prose-sm max-w-none text-slate-800 leading-relaxed w-full" dangerouslySetInnerHTML={{ __html: analysisResult || '' }}></div>
+                        <div className="w-full min-h-full bg-white p-1 sm:p-2">
+                            <div 
+                                className="report-body w-full text-slate-900 leading-relaxed" 
+                                dangerouslySetInnerHTML={{ 
+                                    __html: (() => {
+                                        if (!analysisResult) return '';
+                                        let html = analysisResult;
+                                        try {
+                                            const parser = new DOMParser();
+                                            const doc = parser.parseFromString(html, 'text/html');
+                                            const tables = doc.querySelectorAll('table');
+                                            tables.forEach((table) => {
+                                                const parent = table.parentElement;
+                                                if (parent && !parent.classList.contains('table-responsive-wrapper')) {
+                                                    const wrapper = doc.createElement('div');
+                                                    wrapper.className = 'table-responsive-wrapper';
+                                                    parent.insertBefore(wrapper, table);
+                                                    wrapper.appendChild(table);
+                                                }
+                                            });
+                                            return doc.body.innerHTML;
+                                        } catch (e) {
+                                            return html.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
+                                        }
+                                    })()
+                                }}
+                            ></div>
                         </div> 
                     )}
                 </div>
                 {!analyzing && ( 
-                    <div className="bg-white p-4 border-t border-slate-200 flex justify-end gap-3 shrink-0 shadow-upper">
-                        <button onClick={handleEditAnalysis} className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-4 py-2.5 rounded-xl font-bold hover:bg-indigo-100 transition flex items-center gap-2 shadow-sm">
-                            <i className="fa-solid fa-pen-to-square"></i> تعديل
+                    <div className="bg-white p-2.5 sm:p-3 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2 shrink-0 shadow-upper w-full max-w-full overflow-hidden no-print">
+                        <button onClick={handleEditAnalysis} className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-3.5 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 transition flex items-center gap-1.5 shadow-sm">
+                            <i className="fa-solid fa-pen-to-square text-xs"></i> تعديل
                         </button>
-                        <button onClick={handlePrintAnalysis} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition flex items-center gap-2 shadow-lg">
-                            <i className="fa-solid fa-print"></i> طباعة
+                        <button onClick={handlePrintAnalysis} className="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 transition flex items-center gap-1.5 shadow-md">
+                            <i className="fa-solid fa-print text-xs"></i> طباعة
                         </button>
-                        <button onClick={() => setIsAnalysisOpen(false)} className="bg-slate-100 text-slate-700 px-6 py-2.5 rounded-xl font-bold hover:bg-slate-200 transition">
+                        <button onClick={() => setIsAnalysisOpen(false)} className="bg-slate-100 text-slate-700 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-200 transition">
                             إغلاق
                         </button>
                     </div> 

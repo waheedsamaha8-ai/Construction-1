@@ -122,15 +122,24 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
 
     // --- ADD ITEM MANUALLY STATE (NEW) ---
     const [showAddModal, setShowAddModal] = useState(false);
-    const [addForm, setAddForm] = useState<{ name: string, price: string, unit: string, bulletinId: string }>({ name: '', price: '', unit: '', bulletinId: '' });
+    const [addForm, setAddForm] = useState<{ name: string, price: string, unit: string, category?: MarketCategory, bulletinId: string }>({ name: '', price: '', unit: '', bulletinId: '' });
 
     useEffect(() => {
-        const loadPrices = async () => {
-            // Load from persistent storage (IndexedDB via API service which checks Firestore)
-            const data = await api.getMarketPrices([]);
-            setPrices(data);
+        // 1. Initial local load
+        api.getMarketPrices([]).then(data => {
+            if (data && data.length > 0) setPrices(data);
+        });
+
+        // 2. Instant real-time Firestore synchronization across all users
+        const unsubscribe = api.subscribeToMarketPrices((liveItems) => {
+            if (liveItems && Array.isArray(liveItems)) {
+                setPrices(liveItems);
+            }
+        });
+
+        return () => {
+            unsubscribe();
         };
-        loadPrices();
     }, []);
 
     useEffect(() => {
@@ -362,19 +371,20 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
 
     // --- ADD MANUAL ITEM HANDLERS (NEW) ---
     const openAddModal = (bulletinId: string = '') => {
-        setAddForm({ name: '', price: '', unit: '', bulletinId: bulletinId });
+        setAddForm({ name: '', price: '', unit: '', category: selectedCategory || 'steel', bulletinId: bulletinId });
         setShowAddModal(true);
     };
 
     const confirmAddItem = async () => {
-        if (!addForm.name.trim() || !addForm.price || !selectedCategory) return;
+        const cat = selectedCategory || addForm.category || 'steel';
+        if (!addForm.name.trim() || !addForm.price) return;
         
         const newItem: MarketItem = {
             id: `man_${Date.now()}`,
-            name: addForm.name,
+            name: addForm.name.trim(),
             price: parseFloat(addForm.price),
-            unit: addForm.unit || 'وحدة',
-            category: selectedCategory,
+            unit: addForm.unit.trim() || 'وحدة',
+            category: cat,
             bulletinId: addForm.bulletinId || undefined,
             bulletinName: addForm.bulletinId ? prices.find(p => p.bulletinId === addForm.bulletinId)?.bulletinName : undefined,
             lastUpdated: new Date().toISOString(),
@@ -382,10 +392,8 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
             trend: 'stable'
         };
 
-        const updatedPrices = [newItem, ...prices];
-        setPrices(updatedPrices);
-        await api.saveMarketPrices(updatedPrices);
         setShowAddModal(false);
+        await api.mergeAndSaveMarketPrices([newItem], prices);
     };
 
     // Grouping Logic for Bulletin View
@@ -436,6 +444,14 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                     </div>
                     
                     <div className="flex gap-2">
+                        {/* Global Add Material Button on Categories view */}
+                        {viewMode === 'categories' && !isSearching && (
+                            <button onClick={() => openAddModal()} className="bg-green-600 text-white px-3 py-2 rounded-xl font-bold hover:bg-green-700 transition flex items-center gap-2 text-[10px] shadow-lg">
+                                <i className="fa-solid fa-plus"></i>
+                                <span className="hidden sm:inline">إضافة خامة</span>
+                            </button>
+                        )}
+
                         {/* Bulletin Upload Button - Only visible inside Ministry Category */}
                         {viewMode === 'items' && selectedCategory === 'ministry_bulletin' && (
                             <>
@@ -842,6 +858,21 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                         </div>
                         
                         <div className="space-y-3">
+                            {!selectedCategory && !addForm.bulletinId && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 mb-1">القسم / التصنيف</label>
+                                    <select 
+                                        value={addForm.category || 'steel'} 
+                                        onChange={(e) => setAddForm({...addForm, category: e.target.value as MarketCategory})} 
+                                        className="w-full p-2.5 border border-slate-300 rounded-xl outline-none focus:border-green-500 text-sm font-bold bg-slate-50 cursor-pointer"
+                                    >
+                                        {Object.entries(CATEGORY_CONFIG).map(([catKey, catCfg]) => (
+                                            <option key={catKey} value={catKey}>{catCfg.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+
                             <div>
                                 <label className="block text-xs font-bold text-slate-600 mb-1">اسم البند/الخامة</label>
                                 <input 

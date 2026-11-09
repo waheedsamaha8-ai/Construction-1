@@ -127,19 +127,20 @@ const getPrintStyles = (marginCm: number = 0.5) => {
 
         /* HEADER & FOOTER */
         .print-header { 
-            background-color: #eff6ff !important; 
-            color: #1e3a8a !important; 
-            border-bottom: 3px solid #1e3a8a !important; 
-            padding: 20px !important; 
-            margin-bottom: 20px; 
+            background-color: #1e3a8a !important; 
+            color: #ffffff !important; 
+            border-bottom: 4px solid #3b82f6 !important; 
+            padding: 18px 12px !important; 
+            margin-bottom: 16px; 
             display: flex; 
             justify-content: space-between; 
-            align-items: center; 
+            align-items: flex-start; 
             width: 100%; 
+            direction: rtl;
         }
 
-        .print-header h1 { font-size: 32px; margin: 0; padding: 0; border: none !important; }
-        .print-header p, .print-header div { font-weight: 800; color: #000 !important; }
+        .print-header h1 { font-size: 28px; font-weight: 900; margin: 0; padding: 0; border: none !important; color: #ffffff !important; }
+        .print-header p, .print-header div, .print-header span, .print-header strong { font-weight: 800; color: #ffffff !important; }
         
         .print-footer { 
             margin-top: 30px;
@@ -293,7 +294,7 @@ export const printService = {
     printReport: (bodyContent: string, reportTitle: string, projectRef?: string, options: PrintOptions = {}) => {
         const dateStr = new Date().toLocaleDateString('en-CA'); 
         const refStr = projectRef || `AI-${Date.now().toString().slice(-6)}`;
-        const subtitle = options.subtitle || "نظام مدير مشروعات التشييد برو - تقرير استشاري";
+        const subtitle = options.subtitle || "تقرير استشاري";
         const footerText = options.footerText || "تم إعداد هذا التقرير بواسطة الذكاء الاصطناعي - تحت إشراف المهندس / وحيد سماحة";
         const dateLabel = options.labels?.date || "Date:";
         const refLabel = options.labels?.ref || "Ref:";

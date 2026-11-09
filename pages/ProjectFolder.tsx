@@ -17,6 +17,7 @@ import { FileItem, ItemType, Project, ProjectLog, ProjectPayment, BOQItem, Payme
 import ProjectMasterData from '../components/ProjectMasterData';
 import { DwgController, openDwgInExternalApp } from '../components/DwgController'; 
 import { ReportGenerator } from '../services/reportGenerator'; // IMPORT GENERATOR
+import VideoThumbnail from '../components/VideoThumbnail';
 
 // ... (ArchiveSummaryCard, CategoryCard, FileGridCard, ArchiveFullViewer, SkeletonRow components remain unchanged) ...
 const ArchiveSummaryCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
@@ -32,22 +33,17 @@ const CategoryCard: React.FC<{ item: FileItem, onClick: () => void, onRename: ()
 const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
     const [showMenu, setShowMenu] = useState(false); const menuRef = useRef<HTMLDivElement>(null); const btnRef = useRef<HTMLButtonElement>(null); const isFolder = item.type === ItemType.FOLDER;
     useEffect(() => { const handleClickOutside = (event: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(event.target as Node) && btnRef.current && !btnRef.current.contains(event.target as Node)) { setShowMenu(false); } }; if (showMenu) document.addEventListener('mousedown', handleClickOutside); return () => document.removeEventListener('mousedown', handleClickOutside); }, [showMenu]);
-    const getIcon = () => { if (isFolder) return { icon: 'fa-folder', color: 'text-yellow-500', bg: 'bg-yellow-50 border-yellow-100' }; const mime = (item.mimeType || '').toLowerCase(); const name = item.name.toLowerCase(); if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; } if (mime.startsWith('image/')) return { icon: 'fa-image', color: 'text-purple-500', bg: 'bg-purple-50 border-purple-100' }; if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50 border-red-100' }; if (mime.includes('spreadsheet') || mime.includes('excel') || name.endsWith('.xlsx')) return { icon: 'fa-file-excel', color: 'text-green-500', bg: 'bg-green-50 border-green-100' }; if (mime.includes('word') || name.endsWith('.docx')) return { icon: 'fa-file-word', color: 'text-blue-500', bg: 'bg-blue-50 border-blue-100' }; if (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov')) return { icon: 'fa-video', color: 'text-rose-500', bg: 'bg-rose-50 border-rose-100' }; return { icon: 'fa-file', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-100' }; };
+    const getIcon = () => { if (isFolder) return { icon: 'fa-folder', color: 'text-yellow-500', bg: 'bg-yellow-50 border-yellow-100' }; const mime = (item.mimeType || '').toLowerCase(); const name = item.name.toLowerCase(); if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; } if (mime.startsWith('image/')) return { icon: 'fa-image', color: 'text-purple-500', bg: 'bg-purple-50 border-purple-100' }; if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50 border-red-100' }; if (mime.includes('spreadsheet') || mime.includes('excel') || name.endsWith('.xlsx')) return { icon: 'fa-file-excel', color: 'text-green-500', bg: 'bg-green-50 border-green-100' }; if (mime.includes('word') || name.endsWith('.docx')) return { icon: 'fa-file-word', color: 'text-blue-500', bg: 'bg-blue-50 border-blue-100' }; if (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi')) return { icon: 'fa-video', color: 'text-rose-500', bg: 'bg-rose-50 border-rose-100' }; return { icon: 'fa-file', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-100' }; };
     const style = getIcon();
     const mime = (item.mimeType || '').toLowerCase();
     const name = item.name.toLowerCase();
-    const isVideoItem = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov');
+    const isVideoItem = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi');
 
     return ( 
         <div onClick={onClick} className={`bg-white rounded-3xl p-4 shadow-sm border border-slate-100 flex flex-col items-center gap-3 hover:shadow-lg hover:-translate-y-1 transition-all cursor-pointer group relative overflow-visible h-full ${showMenu ? 'z-[100]' : 'z-0'}`}> 
             <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-inner border ${style.bg} relative overflow-hidden shrink-0`}>
-                {isVideoItem && (item.previewUrl || item.thumbnailLink) ? (
-                    <>
-                        <video src={`${item.previewUrl || item.thumbnailLink}#t=0.5`} className="w-full h-full object-cover" preload="metadata" muted playsInline />
-                        <div className="absolute inset-0 bg-black/30 flex items-center justify-center pointer-events-none">
-                            <i className="fa-solid fa-play text-white text-xs drop-shadow-md"></i>
-                        </div>
-                    </>
+                {isVideoItem ? (
+                    <VideoThumbnail item={item} className="w-full h-full" />
                 ) : item.previewUrl ? (
                     <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
@@ -55,7 +51,7 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
                 )}
             </div> 
             <div className="w-full text-center flex-1 flex flex-col">
-                <h3 className="font-bold text-slate-800 text-xs truncate w-full mb-1" title={item.name}>{item.name}</h3>
+                <h3 className="font-semibold text-slate-800 text-[10px] sm:text-xs truncate w-full mb-1" title={item.name}>{item.name}</h3>
                 <span className="text-[9px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full mx-auto border border-slate-100 mb-2">{new Date(item.createdTime).toLocaleDateString('ar-EG')}</span>
                 {isFolder && (
                     <div className="mt-auto w-full grid grid-cols-2 gap-1.5 pt-2 border-t border-slate-50">
@@ -669,33 +665,26 @@ export default function ProjectFolder() {
         </div> 
       )}
       {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.fileCount !== undefined && i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'grid' && isMediaFolder ? 'grid grid-cols-3 gap-1 md:gap-2' : (viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-2 md:grid-cols-4 gap-3')}> {sortedItems.map(item => {
-          if (viewMode === 'grid' && isMediaFolder && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/'))) {
+          if (viewMode === 'grid' && isMediaFolder && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
+              const mime = (item.mimeType || '').toLowerCase();
+              const name = item.name.toLowerCase();
+              const isVideoItem = mime.startsWith('video/') || name.endsWith('.webm') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');
+
               return (
-                  <div key={item.id} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-lg shadow-sm cursor-pointer bg-slate-100">
-                      {item.mimeType?.startsWith('video/') ? (
-                          <video 
-                              src={`${item.previewUrl || item.thumbnailLink}#t=0.1`} 
-                              className="w-full h-full object-cover transition duration-300 group-hover:scale-110" 
-                              preload="metadata"
-                              muted
-                              playsInline
-                          />
+                  <div key={item.id} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
+                      {isVideoItem ? (
+                          <VideoThumbnail item={item} className="w-full h-full" />
                       ) : (
                           item.previewUrl || item.thumbnailLink ? (
                               <img src={item.previewUrl || item.thumbnailLink} alt={item.name} className="w-full h-full object-cover transition duration-300 group-hover:scale-110" referrerPolicy="no-referrer" />
                           ) : (
                               <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
-                                  <i className={`fa-solid ${item.mimeType?.startsWith('video/') ? 'fa-video' : 'fa-image'} text-2xl`}></i>
+                                  <i className="fa-solid fa-image text-2xl"></i>
                               </div>
                           )
                       )}
-                      {item.mimeType?.startsWith('video/') && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none">
-                              <i className="fa-solid fa-play text-white text-xl drop-shadow-md"></i>
-                          </div>
-                      )}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent p-2 pointer-events-none">
-                          <p className="text-[8px] text-white font-bold truncate">{item.name}</p>
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent pt-3 pb-1 px-1 pointer-events-none z-10 flex items-end justify-center">
+                          <p className="text-[7.5px] sm:text-[8.5px] text-white/95 font-medium truncate text-center leading-none tracking-tight drop-shadow-sm" title={item.name}>{item.name}</p>
                       </div>
                   </div>
               );

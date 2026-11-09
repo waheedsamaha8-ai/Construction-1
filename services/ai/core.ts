@@ -23,11 +23,11 @@ export interface FunctionDeclaration {
     };
 }
 
-// --- MODEL CONFIGURATION (OFFICIAL ACTIVE GEMINI MODELS) ---
-export const MODEL_COMPLEX = 'gemini-3.8-flash'; 
-export const MODEL_SMART = 'gemini-3.8-flash'; 
-export const MODEL_TRANSCRIBE = 'gemini-3.5-transcribe';
-export const MODEL_LIVE = 'gemini-3.8-live';
+// --- MODEL CONFIGURATION (STANDARD ACTIVE GEMINI MODELS) ---
+export const MODEL_COMPLEX = 'gemini-2.5-pro'; 
+export const MODEL_SMART = 'gemini-2.5-flash'; 
+export const MODEL_TRANSCRIBE = 'gemini-2.5-flash';
+export const MODEL_LIVE = 'gemini-2.5-flash';
 
 // --- HELPER: ROBUST NUMBER PARSING ---
 export const cleanNumber = (val: any): number => {
@@ -129,57 +129,106 @@ export const createContextCache = async (model: string, systemInstruction: strin
     return null; // Handled directly on server if needed
 };
 
+let activeCustomKeyIndex = 0;
+
+export const getCustomApiKeys = (): string[] => {
+    if (typeof window === 'undefined') return [];
+    try {
+        const raw = localStorage.getItem('CUSTOM_GEMINI_API_KEYS');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                return parsed.map(k => String(k).trim()).filter(Boolean);
+            }
+        }
+    } catch {}
+    const single = localStorage.getItem('CUSTOM_GEMINI_API_KEY');
+    if (single && single.trim()) {
+        return [single.trim()];
+    }
+    return [];
+};
+
 // --- SERVER-SIDE GENERATION CALL ---
 export const safeGenerateContent = async (primaryModel: string, params: any): Promise<{ text: string, usedModel: string, functionCalls?: any[], response?: any }> => {
     const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest')) ? MODEL_SMART : primaryModel;
+    const userKeys = getCustomApiKeys();
+    const attempts = userKeys.length > 0 ? userKeys.length : 1;
 
-    try {
-        const res = await fetch('/api/gemini/generate', {
-            method: 'POST',
-            headers: {
+    for (let i = 0; i < attempts; i++) {
+        const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
+        const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
+
+        try {
+            const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model,
-                contents: params.contents,
-                config: params.config,
-                cachedContent: params.cachedContent,
-            }),
-        });
+            };
+            if (customUserKey) {
+                headers['X-Gemini-Api-Key'] = customUserKey;
+            }
 
-        if (!res.ok) {
-            const errorData = await res.json().catch(() => ({}));
-            throw new Error(errorData.error || `Server returned error ${res.status}`);
-        }
+            const res = await fetch('/api/gemini/generate', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model,
+                    contents: params.contents,
+                    config: params.config,
+                    cachedContent: params.cachedContent,
+                    apiKey: customUserKey,
+                }),
+            });
 
-        const data = await res.json();
-        return {
-            text: data.text || '',
-            functionCalls: data.functionCalls || undefined,
-            usedModel: data.usedModel || model,
-        };
-    } catch (error: any) {
-        if (!String(error.message || '').includes('405')) {
-            console.warn("Server-side Gemini generate skipped or fallback active:", error.message || error);
+            if (!res.ok) {
+                const errorData = await res.json().catch(() => ({}));
+                const errMsg = errorData.error || `Server returned error ${res.status}`;
+                // If we have more keys to try, rotate and continue
+                if (userKeys.length > 1 && i < attempts - 1) {
+                    console.warn(`Key #${keyIndex + 1} failed, rotating to next key...`);
+                    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+                    continue;
+                }
+                throw new Error(errMsg);
+            }
+
+            const data = await res.json();
+            // Successful request - keep this key as active
+            activeCustomKeyIndex = keyIndex;
+
+            return {
+                text: data.text || '',
+                functionCalls: data.functionCalls || undefined,
+                usedModel: data.usedModel || model,
+            };
+        } catch (error: any) {
+            if (userKeys.length > 1 && i < attempts - 1) {
+                activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+                continue;
+            }
+
+            if (!String(error.message || '').includes('405')) {
+                console.warn("Server-side Gemini generate skipped or fallback active:", error.message || error);
+            }
+            break;
         }
-        
-        // Static emergency fallback to ensure UX continuity
-        const fallbackText = `
-            <div class="warning-box editable-box">
-                <strong><i class="fa-solid fa-brain-circuit"></i> وضع الاستمرارية الهندسية (Engineering Continuity Mode)</strong><br/>
-                عذراً، خوادم الذكاء الاصطناعي تخضع للتحديث حالياً. تم تفعيل الاستجابة التلقائية المعتمدة على الكود المصري.
-            </div>
-            <div class="info-box editable-box">
-                <strong>القواعد الهندسية الأساسية (ECP Standard):</strong><br>
-                1. يجب دائماً مطابقة التنفيذ مع المواصفات الفنية المعتمدة للمشروع.<br>
-                2. أي تأخير في التوريدات يجب معالجته فوراً بتوفير بدائل معتمدة.<br>
-                3. جودة التنفيذ هي الأولوية القصوى لتجنب أوامر الإصلاح (NCRs).<br>
-                4. التنسيق بين المكتب الفني والموقع هو مفتاح النجاح.
-            </div>
-            ${getAiFooter('Emergency-Static-Brain')}
-        `;
-        return { text: fallbackText, usedModel: 'Emergency-Static-Brain' };
     }
+
+    // Static emergency fallback to ensure UX continuity
+    const fallbackText = `
+        <div class="warning-box editable-box">
+            <strong><i class="fa-solid fa-brain-circuit"></i> وضع الاستمرارية الهندسية (Engineering Continuity Mode)</strong><br/>
+            عذراً، خوادم الذكاء الاصطناعي تخضع للتحديث حالياً. تم تفعيل الاستجابة التلقائية المعتمدة على الكود المصري.
+        </div>
+        <div class="info-box editable-box">
+            <strong>القواعد الهندسية الأساسية (ECP Standard):</strong><br>
+            1. يجب دائماً مطابقة التنفيذ مع المواصفات الفنية المعتمدة للمشروع.<br>
+            2. أي تأخير في التوريدات يجب معالجته فوراً بتوفير بدائل معتمدة.<br>
+            3. جودة التنفيذ هي الأولوية القصوى لتجنب أوامر الإصلاح (NCRs).<br>
+            4. التنسيق بين المكتب الفني والموقع هو مفتاح النجاح.
+        </div>
+        ${getAiFooter('Emergency-Static-Brain')}
+    `;
+    return { text: fallbackText, usedModel: 'Emergency-Static-Brain' };
 };
 
 // --- SERVER-SIDE STREAMING CALL (SSE) ---
@@ -189,24 +238,43 @@ export const safeGenerateStream = async (
     onChunk: (text: string) => void
 ): Promise<string> => {
     const model = primaryModel || MODEL_SMART;
-    let fullText = '';
+    const userKeys = getCustomApiKeys();
+    const attempts = userKeys.length > 0 ? userKeys.length : 1;
+    let lastError: any = null;
 
-    try {
-        const res = await fetch('/api/gemini/stream', {
-            method: 'POST',
-            headers: {
+    for (let i = 0; i < attempts; i++) {
+        const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
+        const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
+        let fullText = '';
+
+        try {
+            const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model,
-                contents: params.contents,
-                config: params.config,
-            }),
-        });
+            };
+            if (customUserKey) {
+                headers['X-Gemini-Api-Key'] = customUserKey;
+            }
 
-        if (!res.ok || !res.body) {
-            throw new Error(`Streaming failed with status ${res.status}`);
-        }
+            const res = await fetch('/api/gemini/stream', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model,
+                    contents: params.contents,
+                    config: params.config,
+                    apiKey: customUserKey,
+                }),
+            });
+
+            if (!res.ok || !res.body) {
+                if (userKeys.length > 1 && i < attempts - 1) {
+                    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+                    continue;
+                }
+                throw new Error(`Streaming failed with status ${res.status}`);
+            }
+
+            activeCustomKeyIndex = keyIndex;
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -236,9 +304,16 @@ export const safeGenerateStream = async (
         }
         return fullText;
     } catch (e: any) {
+        if (userKeys.length > 1 && i < attempts - 1) {
+            console.warn(`Streaming key #${keyIndex + 1} failed, rotating to next key...`);
+            activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+            continue;
+        }
         console.error("Streaming error:", e);
         return fullText;
     }
+    }
+    return '';
 };
 
 // --- LIVE API WEBSOCKET CLIENT HELPER ---

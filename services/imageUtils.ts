@@ -422,6 +422,56 @@ export const imageUtils = {
       });
   },
 
+  generateVideoThumbnail: async (file: File): Promise<string> => {
+      return new Promise((resolve) => {
+          try {
+              const video = document.createElement('video');
+              video.preload = 'metadata';
+              video.muted = true;
+              video.playsInline = true;
+              const url = URL.createObjectURL(file);
+              video.src = url;
+              video.currentTime = 0.5;
+
+              const cleanup = () => {
+                  URL.revokeObjectURL(url);
+                  video.onloadeddata = null;
+                  video.onerror = null;
+              };
+
+              video.onloadeddata = () => {
+                  try {
+                      const canvas = document.createElement('canvas');
+                      canvas.width = Math.min(video.videoWidth || 320, 320);
+                      canvas.height = Math.min(video.videoHeight || 240, 240);
+                      const ctx = canvas.getContext('2d');
+                      if (ctx) {
+                          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                          cleanup();
+                          resolve(dataUrl);
+                          return;
+                      }
+                  } catch (e) {}
+                  cleanup();
+                  resolve('');
+              };
+
+              video.onerror = () => {
+                  cleanup();
+                  resolve('');
+              };
+
+              setTimeout(() => {
+                  cleanup();
+                  resolve('');
+              }, 2500);
+          } catch(e) {
+              resolve('');
+          }
+      });
+  },
+
   exportSlidesAsImages: async (containerClass: string, prefix: string) => {
       // @ts-ignore
       if (!window.html2canvas) { alert("Library missing"); return; }

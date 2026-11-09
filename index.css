@@ -137,7 +137,7 @@ body {
 }
 
 /* Base Typography */
-.prose p, .prose li, .prose div, .prose td, .prose span, .prose a {
+.prose p, .prose li, .prose div, .prose span, .prose a {
     font-size: 20px !important; 
     font-weight: 700 !important; 
     color: #000000 !important; /* Pure Black for high contrast like PDF */
@@ -165,21 +165,22 @@ body {
     padding-bottom: 5px;
     margin-top: 25px !important;
     margin-bottom: 15px !important;
-    display: inline-block; /* Subheadings might not need full width underline, but PDF shows full width often. Let's stick to block for consistency or inline-block for specific look. PDF shows "الأطراف الرئيسية..." underlined. Let's use block for H3 too to be safe. */
     display: block;
     width: fit-content; /* Underline only the text */
     padding-right: 0;
 }
 
-/* Boxes - Specific Colors from PDF */
+/* Boxes - Specific Colors from PDF with Horizontal Overflow Support */
 .info-box, .warning-box, .success-box, .cost-box, .editable-box {
-    margin: 20px 0 !important;
+    margin: 12px 0 !important;
     width: 100% !important;
-    border-radius: 12px !important;
-    padding: 20px !important;
+    border-radius: 8px !important;
+    padding: 10px 12px !important;
     box-sizing: border-box !important;
     font-weight: 700 !important;
-    box-shadow: 2px 2px 0px rgba(0,0,0,0.1); /* Slight shadow for depth */
+    box-shadow: 1px 1px 0px rgba(0,0,0,0.06);
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
 }
 
 /* Blue Box (Definition/Info) */
@@ -210,27 +211,68 @@ body {
     border: 2px solid #ea580c !important; /* Dark Orange Border */
 }
 
-/* Tables */
-table, .prose table {
-    border: 3px solid #000 !important;
-    border-radius: 8px;
-    margin: 20px 0 !important;
+/* Responsive Table Wrapper for Reports - Guaranteed Visible Interactive Horizontal Scrollbar */
+.table-responsive-wrapper {
     width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y !important;
+    margin: 14px 0 !important;
+    display: block !important;
+    box-sizing: border-box !important;
+    scrollbar-width: thin !important;
+    scrollbar-color: #2563eb #e2e8f0 !important;
+    padding-bottom: 8px !important;
+}
+
+/* Visible Scrollbar Track and Blue Bar for WebKit Browsers (Chrome, Edge, Safari) */
+.table-responsive-wrapper::-webkit-scrollbar {
+    height: 10px !important;
+    width: 10px !important;
+    display: block !important;
+    background-color: #e2e8f0 !important;
+    border-radius: 6px !important;
+}
+
+.table-responsive-wrapper::-webkit-scrollbar-track {
+    background: #e2e8f0 !important;
+    border-radius: 6px !important;
+    border: 1px solid #cbd5e1 !important;
+    margin: 0 4px !important;
+}
+
+.table-responsive-wrapper::-webkit-scrollbar-thumb {
+    background: #2563eb !important;
+    border-radius: 6px !important;
+    border: 2px solid #e2e8f0 !important;
+}
+
+.table-responsive-wrapper::-webkit-scrollbar-thumb:hover {
+    background: #1d4ed8 !important;
+}
+
+/* Tables - High Quality Technical Layout with Zero Broken Words */
+table, .prose table {
+    border: 2px solid #000 !important;
+    border-radius: 6px;
+    margin: 10px 0 !important;
+    width: 100% !important;
+    min-width: 540px !important;
     table-layout: auto !important;
     border-collapse: collapse !important;
-    word-break: break-word !important;
+    word-break: keep-all !important;
+    overflow-wrap: normal !important;
 }
 
 @media (max-width: 640px) {
+    .info-box, .warning-box, .success-box, .cost-box, .editable-box {
+        padding: 8px 10px !important;
+        margin: 8px 0 !important;
+    }
     table, .prose table {
-        font-size: 14px !important; /* Smaller font for mobile tables */
-    }
-    th, td {
-        padding: 6px 4px !important;
-        font-size: 14px !important;
-    }
-    .report-header h2 {
-        font-size: 20px !important;
+        min-width: 520px !important;
     }
 }
 
@@ -239,21 +281,27 @@ thead tr {
     border-bottom: 3px solid #000 !important;
 }
 
-th {
+th, .prose table th {
     color: #000 !important;
     font-weight: 900 !important;
     text-align: center !important;
     border: 2px solid #000 !important;
-    padding: 12px !important;
-    font-size: 20px !important;
+    padding: 10px 8px !important;
+    font-size: 15px !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }
 
-td {
+td, .prose table td {
     border: 2px solid #000 !important;
     color: #000 !important;
     font-weight: 700 !important;
     text-align: center !important;
-    padding: 10px !important;
+    padding: 8px 10px !important;
+    font-size: 14px !important;
+    line-height: 1.5 !important;
+    white-space: normal !important;
+    word-break: keep-all !important;
 }
 
 .prose img {

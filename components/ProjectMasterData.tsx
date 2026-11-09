@@ -1545,12 +1545,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                       <div className="text-[9px] bg-white px-2 py-0.5 rounded border border-green-100 text-green-800 font-bold shadow-sm"> <span className="text-green-500 font-normal ml-1">منفذ:</span> {batchExecutedTotal.toLocaleString()} </div> 
                                   </div>
                               </div> 
-                              <div className="flex flex-col items-end gap-1 pl-2"> 
-                                  <div className="flex items-center gap-1">
-                                      <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-600 text-[10px] bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 px-2 py-1 rounded transition flex items-center gap-1 font-bold shadow-sm"><i className="fa-solid fa-file-signature"></i></button>
-                                      {!isDefault && !isRenaming && ( <button onClick={(e) => { e.stopPropagation(); setRenamingBatchId(bId); setNewBatchName(groupName); }} className="text-blue-600 text-[10px] bg-blue-50 border border-blue-100 hover:bg-blue-100 px-2 py-1 rounded transition flex items-center gap-1 font-bold"><i className="fa-solid fa-pen"></i></button> )} 
-                                      {!isDefault && ( <button onClick={(e) => { e.stopPropagation(); handleDeleteBatchClick(bId); }} className="text-red-600 text-[10px] bg-red-50 border border-red-100 hover:bg-red-100 px-2 py-1 rounded transition flex items-center gap-1 font-bold"><i className="fa-solid fa-trash"></i></button> )}
-                                  </div>
+                              <div className="flex flex-col items-center justify-center gap-1.5 pl-2"> 
+                                  <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-600 text-[10px] bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 p-1.5 rounded transition flex items-center justify-center font-bold shadow-sm" title="تحرير الخطاب"><i className="fa-solid fa-file-signature"></i></button>
+                                  {!isDefault && !isRenaming && ( <button onClick={(e) => { e.stopPropagation(); setRenamingBatchId(bId); setNewBatchName(groupName); }} className="text-blue-600 text-[10px] bg-blue-50 border border-blue-100 hover:bg-blue-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="تعديل الاسم"><i className="fa-solid fa-pen"></i></button> )} 
+                                  {!isDefault && ( <button onClick={(e) => { e.stopPropagation(); handleDeleteBatchClick(bId); }} className="text-red-600 text-[10px] bg-red-50 border border-red-100 hover:bg-red-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="حذف"><i className="fa-solid fa-trash"></i></button> )}
                               </div> 
                           </div> 
                       </td> 
@@ -1561,19 +1559,26 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                       <tr key={item.id} className="hover:bg-blue-50/50 transition border-b border-slate-200"> 
                           <td colSpan={6} className="p-3"> 
                               <div className="flex flex-col gap-2">
-                                  <div className="w-full bg-blue-50 border border-blue-100 text-blue-800 rounded p-2 font-mono font-bold text-lg cursor-pointer hover:bg-blue-100 transition shadow-sm" onClick={() => setEditingBoqItem(item)}>
-                                      رقم البند: {item.itemCode || '-'}
+                                  <div className="w-full bg-blue-50 border border-blue-100 text-blue-800 rounded-xl p-2.5 font-bold text-lg cursor-pointer hover:bg-blue-100 transition shadow-sm flex justify-between items-center" onClick={() => setEditingBoqItem(item)}>
+                                      <div className="font-mono text-blue-900">
+                                          رقم البند: {item.itemCode || '-'}
+                                      </div>
+                                      {!isNote && (
+                                          <div className="flex items-center gap-1.5 bg-white px-3 py-1 rounded-lg border border-green-200 shadow-sm text-sm">
+                                              <span className="text-green-600 font-bold">المنفذ:</span>
+                                              <span className="font-mono font-bold text-green-700 text-base">{isNaN(Number(item.executedQuantity)) ? 0 : item.executedQuantity}</span>
+                                          </div>
+                                      )}
                                   </div>
                                   <div className="w-full text-lg font-bold text-slate-900 leading-relaxed whitespace-pre-wrap">
                                       {item.description}
                                   </div>
                                   {!isNote && (
-                                      <div className="grid grid-cols-5 gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-2"> 
+                                      <div className="grid grid-cols-4 gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-2"> 
                                           <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الوحدة</span><span className="text-lg font-bold">{item.unit}</span></div> 
                                           <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الكمية</span><span className="text-lg font-bold font-mono">{item.quantity}</span></div> 
                                           <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الفئة</span><span className="text-lg font-bold font-mono">{item.unitPrice}</span></div> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الإجمالي</span><span className="text-lg font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
-                                          <div className="flex flex-col"><span className="text-sm text-green-600 font-bold mb-0.5">المنفذ</span><span className="text-lg font-bold font-mono text-green-700">{isNaN(Number(item.executedQuantity)) ? 0 : item.executedQuantity}</span></div> 
+                                          <div className="flex flex-col"><span className="text-sm text-slate-500 font-bold">الإجمالي</span><span className="text-lg font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
                                       </div> 
                                   )}
                               </div>
