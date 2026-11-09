@@ -6,7 +6,6 @@ import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, s
 import { triggerLoadingStart, triggerLoadingStop, triggerLoadingProgress } from '../components/GlobalLoadingBar';
 import { dbService } from './db'; 
 import { autoSync } from './backgroundSync'; 
-import { marketService } from './ai/market';
 import appletConfig from '../firebase-applet-config.json';
 
 declare const google: any;
@@ -569,113 +568,34 @@ export const api = {
   },
   
   async exportProjectsBackup(): Promise<string> {
-      try {
-          const projects = await dbService.getAllItems<Project>('projects');
-          const files = await dbService.getAllItems<FileItem>('files');
-          const marketPrices = marketService.getStoredMarketPrices();
-          
-          let tasks: Task[] = [];
-          try {
-              const storedTasks = localStorage.getItem('construction_pro_tasks');
-              if (storedTasks) tasks = JSON.parse(storedTasks);
-          } catch (e) {}
-
-          const settings: Record<string, any> = {};
-          const keysToSave = ['letter_editor_settings', 'CUSTOM_GEMINI_API_KEYS', 'gemini_api_keys', 'active_gemini_key_index', 'theme', 'guest_mode'];
-          keysToSave.forEach(k => {
-              const val = localStorage.getItem(k);
-              if (val !== null) settings[k] = val;
-          });
-
-          const backupPackage = {
-              version: 2,
-              exportDate: new Date().toISOString(),
-              appName: 'ConstructionPro',
-              projects: Array.isArray(projects) ? projects : [],
-              marketPrices: Array.isArray(marketPrices) ? marketPrices : [],
-              tasks: Array.isArray(tasks) ? tasks : [],
-              files: Array.isArray(files) ? files : [],
-              settings
-          };
-
-          const dataStr = JSON.stringify(backupPackage, null, 2);
-          const blob = new Blob([dataStr], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `construction_pro_full_backup_${new Date().toISOString().split('T')[0]}.json`;
-          a.click();
-          URL.revokeObjectURL(url);
-          return dataStr;
-      } catch (e) {
-          console.error("Export backup error:", e);
-          throw new Error("حدث خطأ أثناء إعداد النسخة الاحتياطية الشاملة.");
-      }
+      const projects = await dbService.getAllItems<Project>('projects');
+      const dataStr = JSON.stringify(projects, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `construction_projects_backup_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return dataStr;
   },
   
-  async importProjectsBackup(jsonData: string): Promise<{ projectsCount: number; marketCount: number; tasksCount: number; filesCount: number }> {
+  async importProjectsBackup(jsonData: string): Promise<number> {
       try {
           const parsed = JSON.parse(jsonData);
-          let projectsCount = 0;
-          let marketCount = 0;
-          let tasksCount = 0;
-          let filesCount = 0;
-
-          if (Array.isArray(parsed)) {
-              // Legacy array of projects
-              for (const item of parsed) {
-                  if (item && item.name && item.id) {
-                      await dbService.putItem('projects', item);
-                      projectsCount++;
-                  }
-              }
-          } else if (parsed && typeof parsed === 'object') {
-              // Version 2 full backup package or single item
-              if (Array.isArray(parsed.projects)) {
-                  for (const proj of parsed.projects) {
-                      if (proj && proj.id && proj.name) {
-                          await dbService.putItem('projects', proj);
-                          projectsCount++;
-                      }
-                  }
-              } else if (parsed.id && parsed.name) {
-                  await dbService.putItem('projects', parsed);
-                  projectsCount++;
-              }
-
-              if (Array.isArray(parsed.marketPrices) && parsed.marketPrices.length > 0) {
-                  marketService.mergeAndSaveMarketPrices(parsed.marketPrices);
-                  marketCount = parsed.marketPrices.length;
-              }
-
-              if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-                  localStorage.setItem('construction_pro_tasks', JSON.stringify(parsed.tasks));
-                  tasksCount = parsed.tasks.length;
-              }
-
-              if (Array.isArray(parsed.files) && parsed.files.length > 0) {
-                  for (const f of parsed.files) {
-                      if (f && f.id) {
-                          await dbService.putItem('files', f);
-                          filesCount++;
-                      }
-                  }
-              }
-
-              if (parsed.settings && typeof parsed.settings === 'object') {
-                  for (const [key, value] of Object.entries(parsed.settings)) {
-                      if (typeof value === 'string') {
-                          localStorage.setItem(key, value);
-                      }
-                  }
+          const list = Array.isArray(parsed) ? parsed : [parsed];
+          let count = 0;
+          for (const item of list) {
+              if (item && item.name && item.id) {
+                  await dbService.putItem('projects', item);
+                  count++;
               }
           }
-
           const current = await this.getLocalProjects();
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, current);
-          return { projectsCount, marketCount, tasksCount, filesCount };
-      } catch(e: any) {
-          throw new Error(e?.message || "ملف النسخة الاحتياطية غير صالح.");
+          return count;
+      } catch(e) {
+          throw new Error("ملف النسخة الاحتياطية غير صالح.");
       }
   },
   

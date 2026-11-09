@@ -99,17 +99,7 @@ class DatabaseService {
       const db = await this.dbPromise;
       await db.put('sync_queue', item);
   }
-
-  async getAll<T>(store: 'files' | 'projects' | 'sync_queue'): Promise<T[]> {
-    const db = await this.dbPromise;
-    return await db.getAll(store) as T[];
-  }
-
-  async deleteFromQueue(id: string) {
-    const db = await this.dbPromise;
-    await db.delete('sync_queue', id);
-  }
-
+  
   async clearQueue() {
       const db = await this.dbPromise;
       await db.clear('sync_queue');
