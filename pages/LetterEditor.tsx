@@ -82,7 +82,7 @@ const LetterEditor: React.FC = () => {
   const [showTitle, setShowTitle] = useState(savedSettings?.showTitle ?? true);
 
   const rawSavedSub = savedSettings?.headerSubtitle;
-  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("استشاري") || rawSavedSub.includes("مراسلات")) ? "نظام المحفظة الشامل" : rawSavedSub;
+  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل")) ? "تقرير استشاري" : rawSavedSub;
   const [headerSubtitle, setHeaderSubtitle] = useState(initialSubtitle);
   const [showSubtitle, setShowSubtitle] = useState(savedSettings?.showSubtitle ?? true);
 

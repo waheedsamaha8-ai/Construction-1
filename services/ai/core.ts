@@ -149,17 +149,90 @@ export const getCustomApiKeys = (): string[] => {
     return [];
 };
 
-// --- SERVER-SIDE GENERATION CALL ---
+export const isStaticHost = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    const host = window.location.hostname.toLowerCase();
+    return host.endsWith('github.io') || host.endsWith('gitlab.io') || host.endsWith('pages.dev');
+};
+
+const generateDirectWithGoogleApi = async (model: string, apiKey: string, params: any) => {
+    const cleanModel = model.replace('models/', '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
+    
+    let contents = params.contents;
+    if (typeof contents === 'string') {
+        contents = [{ role: 'user', parts: [{ text: contents }] }];
+    } else if (Array.isArray(contents)) {
+        contents = contents.map(c => {
+            if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
+            if (c.parts) return c;
+            return { role: 'user', parts: [{ text: JSON.stringify(c) }] };
+        });
+    }
+
+    const body: any = { contents };
+    if (params.config?.systemInstruction) {
+        const sys = typeof params.config.systemInstruction === 'string' 
+            ? params.config.systemInstruction 
+            : params.config.systemInstruction.parts?.[0]?.text;
+        if (sys) body.systemInstruction = { parts: [{ text: sys }] };
+    }
+    if (params.config?.tools) {
+        body.tools = params.config.tools;
+    }
+
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `Google API status ${res.status}`);
+    }
+
+    const data = await res.json();
+    const candidate = data.candidates?.[0];
+    const text = candidate?.content?.parts?.map((p: any) => p.text).filter(Boolean).join('') || '';
+    return {
+        text,
+        usedModel: cleanModel,
+    };
+};
+
+// --- SERVER-SIDE / DIRECT GENERATION CALL ---
 export const safeGenerateContent = async (primaryModel: string, params: any): Promise<{ text: string, usedModel: string, functionCalls?: any[], response?: any }> => {
     const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest')) ? MODEL_SMART : primaryModel;
     const userKeys = getCustomApiKeys();
     const attempts = userKeys.length > 0 ? userKeys.length : 1;
+    const isStatic = isStaticHost();
+
+    // If running on static hosting without custom keys, avoid firing doomed /api calls that log 405
+    if (isStatic && userKeys.length === 0) {
+        // Return static emergency fallback without making a failing network call
+        const fallbackText = `
+            <div class="warning-box editable-box">
+                <strong><i class="fa-solid fa-brain-circuit"></i> وضع الاستمرارية الهندسية (Offline Mode)</strong><br/>
+                أنت تستخدم النسخة الثابتة (Static). يمكنك إضافة مفتاح Gemini الخاص بك من شريط الأدوات لتفعيل الذكاء الاصطناعي الحي.
+            </div>
+            ${getAiFooter('Static-Offline')}
+        `;
+        return { text: fallbackText, usedModel: 'Static-Offline' };
+    }
 
     for (let i = 0; i < attempts; i++) {
         const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
         const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
 
         try {
+            // On static hosting (like GitHub Pages) or if we have a direct key and backend is known static
+            if (isStatic && customUserKey) {
+                const directRes = await generateDirectWithGoogleApi(model, customUserKey, params);
+                activeCustomKeyIndex = keyIndex;
+                return directRes;
+            }
+
             const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
             };
@@ -180,6 +253,13 @@ export const safeGenerateContent = async (primaryModel: string, params: any): Pr
             });
 
             if (!res.ok) {
+                // If 405 (Method Not Allowed) and we have a custom key, fallback to direct Google API call!
+                if (res.status === 405 && customUserKey) {
+                    const directRes = await generateDirectWithGoogleApi(model, customUserKey, params);
+                    activeCustomKeyIndex = keyIndex;
+                    return directRes;
+                }
+
                 const errorData = await res.json().catch(() => ({}));
                 const errMsg = errorData.error || `Server returned error ${res.status}`;
                 // If we have more keys to try, rotate and continue
@@ -201,13 +281,24 @@ export const safeGenerateContent = async (primaryModel: string, params: any): Pr
                 usedModel: data.usedModel || model,
             };
         } catch (error: any) {
+            // Direct fallback retry on error if custom key exists
+            if (customUserKey && !String(error.message || '').includes('Google API status')) {
+                try {
+                    const directRes = await generateDirectWithGoogleApi(model, customUserKey, params);
+                    activeCustomKeyIndex = keyIndex;
+                    return directRes;
+                } catch (directErr) {
+                    console.warn("Direct Google API attempt failed:", directErr);
+                }
+            }
+
             if (userKeys.length > 1 && i < attempts - 1) {
                 activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
                 continue;
             }
 
             if (!String(error.message || '').includes('405')) {
-                console.warn("Server-side Gemini generate skipped or fallback active:", error.message || error);
+                console.warn("Gemini generate skipped or fallback active:", error.message || error);
             }
             break;
         }
@@ -242,12 +333,26 @@ export const safeGenerateStream = async (
     const attempts = userKeys.length > 0 ? userKeys.length : 1;
     let lastError: any = null;
 
+    const isStatic = isStaticHost();
+    if (isStatic && userKeys.length === 0) {
+        const fallback = "وضع الاستمرارية (Offline): يرجى إضافة مفتاح Gemini من شريط الأدوات لتفعيل الذكاء الاصطناعي الحي.";
+        onChunk(fallback);
+        return fallback;
+    }
+
     for (let i = 0; i < attempts; i++) {
         const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
         const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
         let fullText = '';
 
         try {
+            if (isStatic && customUserKey) {
+                const directRes = await generateDirectWithGoogleApi(model, customUserKey, params);
+                activeCustomKeyIndex = keyIndex;
+                onChunk(directRes.text);
+                return directRes.text;
+            }
+
             const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
             };
@@ -267,6 +372,12 @@ export const safeGenerateStream = async (
             });
 
             if (!res.ok || !res.body) {
+                if (res.status === 405 && customUserKey) {
+                    const directRes = await generateDirectWithGoogleApi(model, customUserKey, params);
+                    activeCustomKeyIndex = keyIndex;
+                    onChunk(directRes.text);
+                    return directRes.text;
+                }
                 if (userKeys.length > 1 && i < attempts - 1) {
                     activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
                     continue;

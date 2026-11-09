@@ -6,6 +6,7 @@ import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, s
 import { triggerLoadingStart, triggerLoadingStop, triggerLoadingProgress } from '../components/GlobalLoadingBar';
 import { dbService } from './db'; 
 import { autoSync } from './backgroundSync'; 
+import { marketService } from './ai/market';
 import appletConfig from '../firebase-applet-config.json';
 
 declare const google: any;
@@ -278,6 +279,7 @@ const sanitizeForFirestore = (obj: any): any => {
 };
 
 // --- SYNC SERVICE ---
+let isSyncProcessing = false;
 const syncService = {
     addToQueue: async (action: SyncActionType, payload: any) => {
         const item: SyncQueueItem = {
@@ -289,6 +291,10 @@ const syncService = {
             status: 'pending'
         };
         await dbService.addToQueue(item);
+        // Instant sync trigger if online
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+            setTimeout(() => { syncService.processQueue(); }, 50);
+        }
     },
     getPendingCount: async () => {
         return await dbService.count('sync_queue');
@@ -297,9 +303,47 @@ const syncService = {
         await dbService.clearQueue();
     },
     processQueue: async () => {
-        return;
+        if (isSyncProcessing || typeof navigator === 'undefined' || !navigator.onLine) return;
+        isSyncProcessing = true;
+        try {
+            const items = await dbService.getAll<SyncQueueItem>('sync_queue');
+            if (!items || items.length === 0) {
+                isSyncProcessing = false;
+                return;
+            }
+
+            for (const item of items) {
+                try {
+                    if (item.action === SyncActionType.CREATE_PROJECT) {
+                        await api.createProject(item.payload, true);
+                        await dbService.deleteFromQueue(item.id);
+                    } else if (item.action === SyncActionType.UPDATE_PROJECT) {
+                        await api.updateProject(item.payload.id, item.payload.updates, true);
+                        await dbService.deleteFromQueue(item.id);
+                    } else if (item.action === SyncActionType.UPLOAD_FILE) {
+                        await dbService.deleteFromQueue(item.id);
+                    } else {
+                        await dbService.deleteFromQueue(item.id);
+                    }
+                } catch (err: any) {
+                    if (err?.code === 'permission-denied' || (item.retryCount && item.retryCount > 2)) {
+                        await dbService.deleteFromQueue(item.id);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("Queue sync error:", e);
+        } finally {
+            isSyncProcessing = false;
+        }
     }
 };
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+        syncService.processQueue();
+    });
+}
 
 const enrichProjectWithAI = (project: Project): Project => {
     // UPDATED: Calculate progress based on the LATEST CUMULATIVE PAYMENT
@@ -525,34 +569,113 @@ export const api = {
   },
   
   async exportProjectsBackup(): Promise<string> {
-      const projects = await dbService.getAllItems<Project>('projects');
-      const dataStr = JSON.stringify(projects, null, 2);
-      const blob = new Blob([dataStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `construction_projects_backup_${new Date().toISOString().split('T')[0]}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      return dataStr;
+      try {
+          const projects = await dbService.getAllItems<Project>('projects');
+          const files = await dbService.getAllItems<FileItem>('files');
+          const marketPrices = marketService.getStoredMarketPrices();
+          
+          let tasks: Task[] = [];
+          try {
+              const storedTasks = localStorage.getItem('construction_pro_tasks');
+              if (storedTasks) tasks = JSON.parse(storedTasks);
+          } catch (e) {}
+
+          const settings: Record<string, any> = {};
+          const keysToSave = ['letter_editor_settings', 'CUSTOM_GEMINI_API_KEYS', 'gemini_api_keys', 'active_gemini_key_index', 'theme', 'guest_mode'];
+          keysToSave.forEach(k => {
+              const val = localStorage.getItem(k);
+              if (val !== null) settings[k] = val;
+          });
+
+          const backupPackage = {
+              version: 2,
+              exportDate: new Date().toISOString(),
+              appName: 'ConstructionPro',
+              projects: Array.isArray(projects) ? projects : [],
+              marketPrices: Array.isArray(marketPrices) ? marketPrices : [],
+              tasks: Array.isArray(tasks) ? tasks : [],
+              files: Array.isArray(files) ? files : [],
+              settings
+          };
+
+          const dataStr = JSON.stringify(backupPackage, null, 2);
+          const blob = new Blob([dataStr], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `construction_pro_full_backup_${new Date().toISOString().split('T')[0]}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+          return dataStr;
+      } catch (e) {
+          console.error("Export backup error:", e);
+          throw new Error("حدث خطأ أثناء إعداد النسخة الاحتياطية الشاملة.");
+      }
   },
   
-  async importProjectsBackup(jsonData: string): Promise<number> {
+  async importProjectsBackup(jsonData: string): Promise<{ projectsCount: number; marketCount: number; tasksCount: number; filesCount: number }> {
       try {
           const parsed = JSON.parse(jsonData);
-          const list = Array.isArray(parsed) ? parsed : [parsed];
-          let count = 0;
-          for (const item of list) {
-              if (item && item.name && item.id) {
-                  await dbService.putItem('projects', item);
-                  count++;
+          let projectsCount = 0;
+          let marketCount = 0;
+          let tasksCount = 0;
+          let filesCount = 0;
+
+          if (Array.isArray(parsed)) {
+              // Legacy array of projects
+              for (const item of parsed) {
+                  if (item && item.name && item.id) {
+                      await dbService.putItem('projects', item);
+                      projectsCount++;
+                  }
+              }
+          } else if (parsed && typeof parsed === 'object') {
+              // Version 2 full backup package or single item
+              if (Array.isArray(parsed.projects)) {
+                  for (const proj of parsed.projects) {
+                      if (proj && proj.id && proj.name) {
+                          await dbService.putItem('projects', proj);
+                          projectsCount++;
+                      }
+                  }
+              } else if (parsed.id && parsed.name) {
+                  await dbService.putItem('projects', parsed);
+                  projectsCount++;
+              }
+
+              if (Array.isArray(parsed.marketPrices) && parsed.marketPrices.length > 0) {
+                  marketService.mergeAndSaveMarketPrices(parsed.marketPrices);
+                  marketCount = parsed.marketPrices.length;
+              }
+
+              if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
+                  localStorage.setItem('construction_pro_tasks', JSON.stringify(parsed.tasks));
+                  tasksCount = parsed.tasks.length;
+              }
+
+              if (Array.isArray(parsed.files) && parsed.files.length > 0) {
+                  for (const f of parsed.files) {
+                      if (f && f.id) {
+                          await dbService.putItem('files', f);
+                          filesCount++;
+                      }
+                  }
+              }
+
+              if (parsed.settings && typeof parsed.settings === 'object') {
+                  for (const [key, value] of Object.entries(parsed.settings)) {
+                      if (typeof value === 'string') {
+                          localStorage.setItem(key, value);
+                      }
+                  }
               }
           }
+
           const current = await this.getLocalProjects();
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, current);
-          return count;
-      } catch(e) {
-          throw new Error("ملف النسخة الاحتياطية غير صالح.");
+          return { projectsCount, marketCount, tasksCount, filesCount };
+      } catch(e: any) {
+          throw new Error(e?.message || "ملف النسخة الاحتياطية غير صالح.");
       }
   },
   
@@ -1155,11 +1278,16 @@ export const api = {
           const unsubscribe = onSnapshot(docRef, (docSnap) => {
               if (docSnap.exists()) {
                   const data = docSnap.data();
-                  if (data.items && Array.isArray(data.items)) {
+                  if (data.items && Array.isArray(data.items) && data.items.length > 0) {
                       localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items));
                       onUpdate(data.items as MarketItem[]);
+                      return;
                   }
               }
+              // Auto-seed baseline items into Firebase if empty
+              const seed = marketService.getOfflineMarketPrices();
+              this.saveMarketPrices(seed).catch(() => {});
+              onUpdate(seed);
           }, (error) => {
               console.info("Market real-time sync offline or fallback active:", error);
           });
@@ -1168,18 +1296,87 @@ export const api = {
           return () => {};
       }
   },
-  async getMarketPrices(defaultPrices: MarketItem[]): Promise<MarketItem[]> { if (!navigator.onLine) { const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } try { const docRef = doc(db, "market_data", "current_prices"); const docSnap = await getDoc(docRef); if (docSnap.exists()) { const data = docSnap.data(); if (data.items && Array.isArray(data.items)) { localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items)); return data.items as MarketItem[]; } } const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } catch (e: any) { if (e.code === 'permission-denied') console.warn("Market Sync Permission Denied"); const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); return saved ? JSON.parse(saved) : defaultPrices; } },
+  async getMarketPrices(defaultPrices: MarketItem[]): Promise<MarketItem[]> { 
+      const getSeedData = () => {
+          if (defaultPrices && defaultPrices.length > 0) return defaultPrices;
+          return marketService.getOfflineMarketPrices();
+      };
+
+      if (!navigator.onLine) { 
+          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); 
+          if (saved) {
+              try {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+              } catch (e) {}
+          }
+          return getSeedData(); 
+      } 
+      try { 
+          const docRef = doc(db, "market_data", "current_prices"); 
+          const docSnap = await getDoc(docRef); 
+          if (docSnap.exists()) { 
+              const data = docSnap.data(); 
+              if (data.items && Array.isArray(data.items) && data.items.length > 0) { 
+                  localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items)); 
+                  return data.items as MarketItem[]; 
+              } 
+          } 
+          // Seed baseline items to Firestore if doc doesn't exist
+          const seed = getSeedData();
+          if (seed.length > 0) {
+              await this.saveMarketPrices(seed).catch(e => console.warn("Auto-seed save failed", e));
+          }
+          return seed;
+      } catch (e: any) { 
+          if (e.code === 'permission-denied') console.warn("Market Sync Permission Denied"); 
+          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); 
+          if (saved) {
+              try {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+              } catch (e) {}
+          }
+          return getSeedData(); 
+      } 
+  },
   async saveMarketPrices(prices: MarketItem[]): Promise<void> { 
       localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(prices)); 
       if (!navigator.onLine) return; 
       try { 
           await setDoc(doc(db, "market_data", "current_prices"), { items: prices, lastUpdated: new Date().toISOString(), updatedBy: "user_action" }); 
       } catch (e) {
-          console.error("Failed to save market prices", e);
-          throw e;
+          console.error("Failed to save market prices to Firebase", e);
       } 
   },
-  async mergeAndSaveMarketPrices(newItems: MarketItem[], existingPrices: MarketItem[]): Promise<void> { const mergedMap = new Map<string, MarketItem>(); existingPrices.forEach(p => mergedMap.set(p.name.trim().toLowerCase(), p)); newItems.forEach(p => { const key = p.name.trim().toLowerCase(); const existing = mergedMap.get(key); if (existing) { mergedMap.set(key, { ...existing, price: p.price, lastUpdated: new Date().toISOString(), details: p.details || existing.details, trend: p.price > existing.price ? 'up' : (p.price < existing.price ? 'down' : 'stable') }); } else { mergedMap.set(key, { ...p, lastUpdated: new Date().toISOString(), trend: 'stable' }); } }); const finalPrices = Array.from(mergedMap.values()); await this.saveMarketPrices(finalPrices); },
+  async mergeAndSaveMarketPrices(newItems: MarketItem[], existingPrices: MarketItem[] = []): Promise<void> { 
+      let basePrices = existingPrices;
+      if (!basePrices || basePrices.length === 0) {
+          basePrices = await this.getMarketPrices([]);
+      }
+      const mergedMap = new Map<string, MarketItem>(); 
+      basePrices.forEach(p => mergedMap.set(p.name.trim().toLowerCase(), p)); 
+      newItems.forEach(p => { 
+          const key = p.name.trim().toLowerCase(); 
+          const existing = mergedMap.get(key); 
+          if (existing) { 
+              mergedMap.set(key, { 
+                  ...existing, 
+                  price: p.price > 0 ? p.price : existing.price, 
+                  unit: p.unit || existing.unit,
+                  category: p.category && p.category !== 'other' ? p.category : existing.category,
+                  lastUpdated: new Date().toISOString(), 
+                  details: p.details || existing.details, 
+                  source: p.source || existing.source,
+                  trend: p.price > existing.price ? 'up' : (p.price < existing.price ? 'down' : 'stable') 
+              }); 
+          } else { 
+              mergedMap.set(key, { ...p, lastUpdated: new Date().toISOString(), trend: 'stable' }); 
+          } 
+      }); 
+      const finalPrices = Array.from(mergedMap.values()); 
+      await this.saveMarketPrices(finalPrices); 
+  },
   async migrateGuestData(): Promise<void> { return; } 
 };
 const DEFAULT_SUBFOLDERS = ['المستندات الرئيسية', 'الاجراءات', 'حصر و مستخلصات', 'صور الموقع', 'الرسومات', 'تسجيلات صوتية'];

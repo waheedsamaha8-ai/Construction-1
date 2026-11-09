@@ -403,10 +403,20 @@ const Dashboard: React.FC = () => {
           reader.onload = async (evt) => {
               try {
                   const content = evt.target?.result as string;
-                  const count = await api.importProjectsBackup(content);
+                  const res = await api.importProjectsBackup(content);
                   const updated = await api.getLocalProjects();
                   setProjects(updated);
-                  alert(`تم استيراد ${count} مشروع بنجاح!`);
+                  
+                  let summary = 'تم استيراد النسخة الاحتياطية الشاملة بنجاح!\n\n';
+                  if (typeof res === 'object' && res !== null) {
+                      summary += `• عدد المشروعات: ${res.projectsCount || 0}\n`;
+                      summary += `• مواد وخامات البورصة: ${res.marketCount || 0}\n`;
+                      summary += `• المهام والتنبيهات: ${res.tasksCount || 0}\n`;
+                      summary += `• المستندات والملفات: ${res.filesCount || 0}`;
+                  } else {
+                      summary += `• عدد المشروعات: ${res}`;
+                  }
+                  alert(summary);
               } catch(err: any) {
                   alert("خطأ أثناء استيراد الملف: " + (err.message || 'تعذر القراءة'));
               }

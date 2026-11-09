@@ -110,6 +110,7 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
     const [loadingCategory, setLoadingCategory] = useState(false); 
     const [loadingMore, setLoadingMore] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+    const [isAiSearching, setIsAiSearching] = useState(false);
 
     // --- Editing State ---
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -123,6 +124,27 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
     // --- ADD ITEM MANUALLY STATE (NEW) ---
     const [showAddModal, setShowAddModal] = useState(false);
     const [addForm, setAddForm] = useState<{ name: string, price: string, unit: string, category?: MarketCategory, bulletinId: string }>({ name: '', price: '', unit: '', bulletinId: '' });
+
+    const handleAiSearchItem = async () => {
+        const query = searchQuery.trim();
+        if (!query) return;
+        setIsAiSearching(true);
+        try {
+            const foundItem = await aiHelper.findMaterialPrice(query);
+            if (foundItem && foundItem.name) {
+                await api.mergeAndSaveMarketPrices([foundItem], prices);
+                const updated = await api.getMarketPrices([]);
+                setPrices(updated);
+            } else {
+                alert("لم يتم العثور على نتائج إضافية لهذه الخامة.");
+            }
+        } catch (e) {
+            console.error("AI material search failed", e);
+            alert("حدث خطأ أثناء البحث، يرجى المحاولة مرة أخرى.");
+        } finally {
+            setIsAiSearching(false);
+        }
+    };
 
     useEffect(() => {
         // 1. Initial local load
@@ -488,9 +510,34 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                 </div>
 
                 {viewMode !== 'detail' && (
-                    <div className="relative">
-                        <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="بحث عن خامة..." className="w-full bg-slate-100 border-none rounded-xl py-3 pr-10 pl-4 outline-none focus:ring-2 focus:ring-indigo-500 transition text-slate-700 font-bold placeholder:font-normal text-sm" />
-                        <div className="absolute right-3 top-1/2 -translate-x-1/2 -translate-y-1/2 text-slate-400"><i className="fa-solid fa-search"></i></div>
+                    <div className="flex gap-2 items-center">
+                        <div className="relative flex-1">
+                            <input 
+                                type="text" 
+                                value={searchQuery} 
+                                onChange={(e) => setSearchQuery(e.target.value)} 
+                                placeholder="بحث عن خامة في البورصة أو بالذكاء الاصطناعي..." 
+                                className="w-full bg-slate-100 border-none rounded-xl py-3 pr-10 pl-4 outline-none focus:ring-2 focus:ring-indigo-500 transition text-slate-700 font-bold placeholder:font-normal text-sm" 
+                            />
+                            <div className="absolute right-3 top-1/2 -translate-x-1/2 -translate-y-1/2 text-slate-400">
+                                <i className="fa-solid fa-search"></i>
+                            </div>
+                        </div>
+                        {searchQuery.trim().length > 0 && (
+                            <button
+                                onClick={handleAiSearchItem}
+                                disabled={isAiSearching}
+                                className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-3.5 py-3 rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md shrink-0 transition disabled:opacity-70"
+                                title="البحث أونلاين عن هذه الخامة وحفظها بالفيربيز"
+                            >
+                                {isAiSearching ? (
+                                    <i className="fa-solid fa-circle-notch fa-spin"></i>
+                                ) : (
+                                    <i className="fa-solid fa-wand-magic-sparkles"></i>
+                                )}
+                                <span className="hidden sm:inline">بحث AI + حفظ بالفيربيز</span>
+                            </button>
+                        )}
                     </div>
                 )}
             </div>
@@ -764,10 +811,24 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                                         {filteredItems.length === 0 && !loadingCategory && (
                                             <div className="text-center py-12 flex flex-col items-center">
                                                 <i className="fa-solid fa-file-circle-question text-4xl text-slate-300 mb-4"></i>
-                                                <h3 className="text-sm font-bold text-slate-600">القائمة فارغة</h3>
+                                                <h3 className="text-sm font-bold text-slate-600">
+                                                    {isSearching ? `لا توجد نتائج مسجلة لـ "${searchQuery}"` : "القائمة فارغة"}
+                                                </h3>
                                                 <p className="text-xs text-slate-400 mt-2 max-w-xs">
-                                                    اضغط "تحديث" للبحث عن الأسعار الحالية.
+                                                    {isSearching 
+                                                        ? "يمكنك البحث بالذكاء الاصطناعي لجلب الأسعار والمواصفات الحالية من الويب ومزامنتها بالفيربيز."
+                                                        : "اضغط \"تحديث الأسعار\" أو \"المزيد\" لجلب بنود جديدة."}
                                                 </p>
+                                                {isSearching && (
+                                                    <button
+                                                        onClick={handleAiSearchItem}
+                                                        disabled={isAiSearching}
+                                                        className="mt-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:from-indigo-700 hover:to-purple-700 transition shadow-lg flex items-center gap-2 disabled:opacity-70"
+                                                    >
+                                                        {isAiSearching ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-wand-magic-sparkles"></i>}
+                                                        البحث عن "{searchQuery}" بالذكاء الاصطناعي والحفظ بالفيربيز
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
                                     </>

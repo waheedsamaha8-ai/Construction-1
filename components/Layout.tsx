@@ -55,8 +55,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       window.addEventListener('online', handleStatus);
       window.addEventListener('offline', handleStatus);
       
-      // Check Pending Syncs
+      // Check Pending Syncs and trigger instant processing
       const checkQueue = async () => {
+          if (navigator.onLine) {
+              await api.sync.processQueue();
+          }
           const count = await api.sync.getPendingCount();
           setPendingSyncs(count);
       };
