@@ -6,6 +6,7 @@ import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, s
 import { triggerLoadingStart, triggerLoadingStop, triggerLoadingProgress } from '../components/GlobalLoadingBar';
 import { dbService } from './db'; 
 import { autoSync } from './backgroundSync'; 
+import { marketService } from './ai/market';
 import appletConfig from '../firebase-applet-config.json';
 
 declare const google: any;
@@ -602,22 +603,38 @@ export const api = {
   async getProjectById(id: string, forceRefresh = false): Promise<Project | undefined> { 
       const cachedList = this.getCachedProjects(); 
       const cached = cachedList?.find(p => p.id === id); 
-      let subCollectionLogs: ProjectLog[] = [];
       
-      // Always fetch fresh logs if online
+      if (!forceRefresh && cached) {
+          // Refresh logs in background without blocking immediate return
+          if (navigator.onLine && authService.isAuthenticated()) {
+              (async () => {
+                  try {
+                      const logsRef = collection(db, "projects", id, "logs");
+                      const logsSnap = await getDocs(query(logsRef, orderBy("date", "desc")));
+                      const freshLogs = logsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProjectLog));
+                      if (freshLogs.length > 0) {
+                          const mergedLogs = [...(cached.executionLogs || []), ...freshLogs];
+                          const uniqueLogs = Array.from(new Map(mergedLogs.map(item => [item.id, item])).values());
+                          uniqueLogs.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                          const updated = { ...cached, executionLogs: uniqueLogs };
+                          if (cachedList) {
+                              updateCache('projects_list', cachedList.map(p => p.id === id ? updated : p));
+                          }
+                          await dbService.putItem('projects', updated);
+                      }
+                  } catch(e) {}
+              })();
+          }
+          return cached;
+      }
+
+      let subCollectionLogs: ProjectLog[] = [];
       if (navigator.onLine && authService.isAuthenticated()) {
           try {
               const logsRef = collection(db, "projects", id, "logs");
               const logsSnap = await getDocs(query(logsRef, orderBy("date", "desc")));
               subCollectionLogs = logsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProjectLog));
           } catch(e) {}
-      }
-
-      if (!forceRefresh && cached) {
-          const mergedLogs = [...(cached.executionLogs || []), ...subCollectionLogs];
-          const uniqueLogs = Array.from(new Map(mergedLogs.map(item => [item.id, item])).values());
-          uniqueLogs.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-          return { ...cached, executionLogs: uniqueLogs };
       }
 
       const local = await dbService.getItem<Project>('projects', id); 

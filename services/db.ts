@@ -70,6 +70,11 @@ class DatabaseService {
     await db.put(store, item);
   }
 
+  async getAll<T>(store: 'files' | 'projects' | 'sync_queue'): Promise<T[]> {
+    const db = await this.dbPromise;
+    return await db.getAll(store) as T[];
+  }
+
   async getAllItems<T>(store: 'files' | 'projects'): Promise<T[]> {
     const db = await this.dbPromise;
     return await db.getAll(store) as T[];
@@ -98,6 +103,16 @@ class DatabaseService {
   async addToQueue(item: any) {
       const db = await this.dbPromise;
       await db.put('sync_queue', item);
+  }
+
+  async getQueue(): Promise<any[]> {
+      const db = await this.dbPromise;
+      return await db.getAll('sync_queue');
+  }
+
+  async deleteFromQueue(id: string) {
+      const db = await this.dbPromise;
+      await db.delete('sync_queue', id);
   }
   
   async clearQueue() {

@@ -295,9 +295,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     useEffect(() => {
         if (isOpen && projectId) {
             const load = async () => {
-                // Trigger refresh state to show small indicator if data exists
-                if (masterData.logs.length > 0) setIsRefreshing(true);
-                else setLoading(true);
+                // Fast non-blocking load: If we have any data (logs, boq, description or initialProjectData), show UI instantly
+                const hasExistingData = Boolean(initialProjectData || masterData.logs.length > 0 || masterData.boqItems.length > 0 || masterData.fullDescription);
+                if (hasExistingData) {
+                    setIsRefreshing(true);
+                    setLoading(false);
+                } else {
+                    setLoading(true);
+                }
 
                 try {
                     const currentProject = await api.getProjectById(projectId);

@@ -313,9 +313,9 @@ td, .prose table td {
     box-shadow: none !important;
 }
 
-.archive-card-content { direction: rtl; color: #1e293b; font-size: 1.25rem; line-height: 1.8; font-weight: 700; }
-.archive-card-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; background-color: #fff; border: 2px solid #000 !important; }
-.archive-card-content th, .archive-card-content td { padding: 0.75rem; border-bottom: 1px solid #000; }
+.archive-card-content { direction: rtl; color: #1e293b; font-size: 1.25rem; line-height: 1.8; font-weight: 700; width: 100%; max-width: 100%; }
+.archive-card-content table { width: 100% !important; min-width: 520px !important; border-collapse: collapse !important; margin: 1rem 0 !important; background-color: #fff !important; border: 2px solid #000 !important; }
+.archive-card-content th, .archive-card-content td { padding: 0.75rem !important; border: 1.5px solid #000 !important; white-space: normal !important; word-break: keep-all !important; }
 
 .prose-invert { color: #e2e8f0; }
 .prose-invert h1, .prose-invert h2, .prose-invert h3 { color: #ffffff; }

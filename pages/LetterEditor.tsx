@@ -170,13 +170,16 @@ const LetterEditor: React.FC = () => {
             setVisualHeight(0);
         } else {
             // Exact Print Preview Scale (A4)
-            // Even on mobile, paper should span the full width of the mobile screen
-            const gutter = containerW < 500 ? 6 : 24;
-            const targetWidth = Math.max(containerW - gutter, 280);
+            // On mobile, paper should span nicely across the screen width (~95% width)
+            const gutter = containerW < 500 ? 8 : 32;
+            let targetWidth = Math.max(containerW - gutter, 280);
+            if (containerW >= 850) {
+                targetWidth = A4_WIDTH_PX;
+            }
             let newScale = targetWidth / A4_WIDTH_PX;
             
             // Limit scale on desktop monitors
-            if (newScale > 1.25) newScale = 1.25; 
+            if (newScale > 1.2) newScale = 1.2; 
             
             setScale(newScale);
             setVisualWidth(targetWidth);
@@ -945,6 +948,7 @@ const LetterEditor: React.FC = () => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'flex-start',
+        overflow: 'visible',
         transition: 'width 0.2s, height 0.2s' 
       };
 
@@ -956,10 +960,9 @@ const LetterEditor: React.FC = () => {
         minHeight: '1123px', 
         backgroundColor: 'white', 
         boxShadow: '0 10px 40px -5px rgba(0, 0, 0, 0.15)', 
-        position: 'absolute', 
-        top: 0, 
-        left: '50%', 
-        transform: `translateX(-50%) scale(${scale})`, 
+        position: 'relative', 
+        margin: '0 auto', 
+        transform: `scale(${scale})`, 
         transformOrigin: 'top center', 
         outline: 'none', 
         direction: 'rtl', 
@@ -1426,7 +1429,7 @@ const LetterEditor: React.FC = () => {
 
 
         <div 
-            className={`flex-1 bg-slate-50 ${isMobileZoom ? 'pt-0' : 'pt-2'} pb-6 relative w-full ${isMobileZoom ? '' : 'flex justify-center items-start'}`} 
+            className={`flex-1 bg-slate-50 ${isMobileZoom ? 'pt-0' : 'pt-2'} pb-6 relative w-full overflow-x-hidden ${isMobileZoom ? '' : 'flex justify-center items-start'}`} 
             style={{ overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}
             ref={containerRef} 
             onClick={() => {setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowSpacingTools(false); setShowQuoteTools(false); setShowMarginTools(false);}}
@@ -1451,7 +1454,7 @@ const LetterEditor: React.FC = () => {
                      <div className={`report-header ${!showHeader ? 'hidden-element' : (!showTitle && !showSubtitle && !showDate && !showRef ? 'hidden-element' : '')}`}>
                         <div className="report-header-title">
                             {showTitle && <h1 contentEditable suppressContentEditableWarning onInput={(e) => setReportTitle(e.currentTarget.innerText)} dir="auto">{reportTitle}</h1>}
-                            {showSubtitle && <p className="report-header-subtitle" contentEditable suppressContentEditableWarning onInput={(e) => setHeaderSubtitle(e.currentTarget.innerText)} dir="auto">{headerSubtitle}</p>}
+                            {showSubtitle && <p className="report-header-subtitle" contentEditable suppressContentEditableWarning onInput={(e) => setHeaderSubtitle(e.currentTarget.innerText)} dir="auto">{headerSubtitle?.includes("المحفظة") ? "تقرير استشاري" : headerSubtitle}</p>}
                         </div>
                         <div className="report-header-meta">
                             {(showDate || showRef) && (

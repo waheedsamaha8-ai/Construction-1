@@ -74,11 +74,32 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
         </div> 
     );
 };
+const wrapTablesInHtml = (html: string) => {
+    if (!html) return '';
+    try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const tables = doc.querySelectorAll('table');
+        tables.forEach((table) => {
+            const parent = table.parentElement;
+            if (parent && !parent.classList.contains('table-responsive-wrapper')) {
+                const wrapper = doc.createElement('div');
+                wrapper.className = 'table-responsive-wrapper';
+                parent.insertBefore(wrapper, table);
+                wrapper.appendChild(table);
+            }
+        });
+        return doc.body.innerHTML;
+    } catch (e) {
+        return html.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
+    }
+};
+
 const ArchiveFullViewer: React.FC<{ item: FileItem, onClose: () => void, onEdit: (content: string) => void }> = ({ item, onClose, onEdit }) => {
     const [content, setContent] = useState<string>(''); const [loading, setLoading] = useState(true);
     useEffect(() => { let active = true; const fetchContent = async () => { try { if (item.content) { if(active) { setContent(item.content); setLoading(false); } return; } const text = await api.getFileContent(item.id); if(active) { setContent(text); } } catch (e) { if(active) setContent('<div class="p-10 text-center text-red-500 font-bold">فشل تحميل المحتوى</div>'); } finally { if(active) setLoading(false); } }; fetchContent(); return () => { active = false; }; }, [item.id, item.content]);
     const handlePrint = () => { const bodyContent = content.replace(/<!DOCTYPE html>[\s\S]*<body>/, '').replace(/<\/body>[\s\S]*<\/html>/, ''); printService.printReport(bodyContent, item.name.replace('.html', '')); };
-    return ( <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in"><div className="bg-slate-900 text-white px-4 py-3 flex justify-between items-center shadow-md z-10 shrink-0"><div className="flex items-center gap-3"><button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button><h3 className="font-bold text-sm truncate max-w-[200px] sm:max-w-md">{item.name.replace('.html', '')}</h3></div><div className="flex gap-2"><button onClick={() => onEdit(content)} disabled={loading} className="bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm border border-white/10 disabled:opacity-50"><i className="fa-solid fa-pen-to-square"></i> <span className="hidden sm:inline">تعديل</span></button><button onClick={handlePrint} disabled={loading} className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm disabled:opacity-50"><i className="fa-solid fa-print"></i> <span className="hidden sm:inline">طباعة</span></button></div></div><div className="flex-1 overflow-y-auto bg-white w-full">{loading ? (<div className="h-full flex items-center justify-center"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-slate-400 font-bold">جاري تحميل المستند...</p></div></div>) : (<div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-4xl mx-auto" dangerouslySetInnerHTML={{ __html: content }} />)}</div></div> );
+    return ( <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in"><div className="bg-slate-900 text-white px-4 py-3 flex justify-between items-center shadow-md z-10 shrink-0"><div className="flex items-center gap-3"><button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button><h3 className="font-bold text-sm truncate max-w-[200px] sm:max-w-md">{item.name.replace('.html', '')}</h3></div><div className="flex gap-2"><button onClick={() => onEdit(content)} disabled={loading} className="bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm border border-white/10 disabled:opacity-50"><i className="fa-solid fa-pen-to-square"></i> <span className="hidden sm:inline">تعديل</span></button><button onClick={handlePrint} disabled={loading} className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm disabled:opacity-50"><i className="fa-solid fa-print"></i> <span className="hidden sm:inline">طباعة</span></button></div></div><div className="flex-1 overflow-y-auto bg-white w-full">{loading ? (<div className="h-full flex items-center justify-center"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-slate-400 font-bold">جاري تحميل المستند...</p></div></div>) : (<div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-4xl mx-auto" dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(content) }} />)}</div></div> );
 };
 const SkeletonRow = () => (<div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 animate-pulse mb-2 h-[74px]"><div className="w-12 h-12 rounded-xl bg-slate-200 shrink-0"></div><div className="flex-1 space-y-2"><div className="h-4 w-1/2 bg-slate-200 rounded"></div><div className="h-3 w-1/4 bg-slate-200 rounded"></div></div></div>);
 

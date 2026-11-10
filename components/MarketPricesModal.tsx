@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
+import { marketService } from '../services/ai/market';
 import { MarketItem, MarketCategory, MaterialDetailData } from '../types';
 
 interface MarketPricesModalProps {
@@ -241,22 +242,19 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
         setViewMode('items'); 
         setSearchQuery('');
         
-        // Auto-fetch logic (Skipped for bulletin)
+        // Never auto-fetch live AI on category card click to save Gemini quota and avoid 405 errors
+        // If category has no items yet, seed from offline pre-configured database immediately
         if (cat === 'ministry_bulletin') return;
 
         const hasItems = prices.some(p => p.category === cat);
         if (!hasItems) {
-            (async () => {
-                setLoadingCategory(true);
-                try {
-                    const label = CATEGORY_CONFIG[cat].label;
-                    const newItems = await aiHelper.fetchCategoryPrices(label, cat);
-                    if(newItems.length > 0) {
-                        await api.mergeAndSaveMarketPrices(newItems, prices);
-                        setPrices(await api.getMarketPrices([]));
-                    }
-                } finally { setLoadingCategory(false); }
-            })();
+            const seedItems = marketService.getOfflineMarketPrices().filter(i => i.category === cat);
+            if (seedItems.length > 0) {
+                api.mergeAndSaveMarketPrices(seedItems, prices).then(async () => {
+                    const fresh = await api.getMarketPrices([]);
+                    setPrices(fresh);
+                }).catch(() => {});
+            }
         }
     };
 
