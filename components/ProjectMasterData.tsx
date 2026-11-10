@@ -271,31 +271,97 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // --- Effects ---
     useEffect(() => {
-        // If initial data changes (e.g. parent updates), reflect it
+        // If initial data changes, reflect it without overwriting non-empty existing data with empty arrays
         if (initialProjectData) {
              setMasterData(prev => ({
                 ...prev,
-                fullDescription: initialProjectData.fullDescription || '',
-                logs: sortLogs(initialProjectData.executionLogs || []), // Always sort descending
-                payments: initialProjectData.payments || [],
-                boqItems: initialProjectData.boqItems || [],
-                engineeringReports: initialProjectData.engineeringReports || [],
-                soilReport: initialProjectData.soilReportAnalysis || '',
-                rfis: initialProjectData.rfis || [],
-                submittals: initialProjectData.submittals || [],
-                correspondence: initialProjectData.correspondence || [],
-                checklists: initialProjectData.checklists || [],
-                ncrs: initialProjectData.ncrs || []
+                fullDescription: initialProjectData.fullDescription || prev.fullDescription || '',
+                logs: (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0) 
+                    ? sortLogs(initialProjectData.executionLogs) 
+                    : prev.logs,
+                payments: (initialProjectData.payments && initialProjectData.payments.length > 0) 
+                    ? initialProjectData.payments 
+                    : prev.payments,
+                boqItems: (initialProjectData.boqItems && initialProjectData.boqItems.length > 0) 
+                    ? initialProjectData.boqItems 
+                    : prev.boqItems,
+                engineeringReports: (initialProjectData.engineeringReports && initialProjectData.engineeringReports.length > 0) 
+                    ? initialProjectData.engineeringReports 
+                    : prev.engineeringReports,
+                soilReport: initialProjectData.soilReportAnalysis || prev.soilReport || '',
+                rfis: (initialProjectData.rfis && initialProjectData.rfis.length > 0) ? initialProjectData.rfis : prev.rfis,
+                submittals: (initialProjectData.submittals && initialProjectData.submittals.length > 0) ? initialProjectData.submittals : prev.submittals,
+                correspondence: (initialProjectData.correspondence && initialProjectData.correspondence.length > 0) ? initialProjectData.correspondence : prev.correspondence,
+                checklists: (initialProjectData.checklists && initialProjectData.checklists.length > 0) ? initialProjectData.checklists : prev.checklists,
+                ncrs: (initialProjectData.ncrs && initialProjectData.ncrs.length > 0) ? initialProjectData.ncrs : prev.ncrs
             }));
-            // If we got new data, stop loading spinner
             setLoading(false);
         }
     }, [initialProjectData]);
+
+    const applyProjectDataToState = (proj: Project) => {
+        setMasterData(prev => {
+            const remoteLogs = proj.executionLogs || [];
+            const logMap = new Map<string, ProjectLog>();
+            (prev.logs || []).forEach(l => { if (l && l.id) logMap.set(l.id, l); });
+            remoteLogs.forEach(l => { if (l && l.id) logMap.set(l.id, l); });
+            const mergedLogs = sortLogs(Array.from(logMap.values()));
+
+            const remotePayments = proj.payments || [];
+            const paymentMap = new Map<string, ProjectPayment>();
+            (prev.payments || []).forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+            remotePayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            const remoteBoq = proj.boqItems || [];
+            const boqMap = new Map<string, BOQItem>();
+            (prev.boqItems || []).forEach(b => { if (b && (b.id || b.itemNumber)) boqMap.set(b.id || b.itemNumber, b); });
+            remoteBoq.forEach(b => { if (b && (b.id || b.itemNumber)) boqMap.set(b.id || b.itemNumber, b); });
+            const mergedBoq = Array.from(boqMap.values());
+
+            const remoteReports = proj.engineeringReports || [];
+            const reportMap = new Map<string, EngineeringReportItem>();
+            (prev.engineeringReports || []).forEach(r => { if (r && r.id) reportMap.set(r.id, r); });
+            remoteReports.forEach(r => { if (r && r.id) reportMap.set(r.id, r); });
+            const mergedReports = Array.from(reportMap.values());
+
+            const mergeArr = <T extends { id: string }>(prevArr: T[] = [], remoteArr: T[] = []): T[] => {
+                const map = new Map<string, T>();
+                prevArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+                remoteArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+                return Array.from(map.values());
+            };
+
+            return {
+                ...prev,
+                fullDescription: proj.fullDescription || prev.fullDescription || '',
+                logs: mergedLogs,
+                payments: mergedPayments,
+                boqItems: mergedBoq.length > 0 ? mergedBoq : (prev.boqItems || []),
+                engineeringReports: mergedReports.length > 0 ? mergedReports : (prev.engineeringReports || []),
+                soilReport: proj.soilReportAnalysis || prev.soilReport || '',
+                rfis: mergeArr(prev.rfis, proj.rfis),
+                submittals: mergeArr(prev.submittals, proj.submittals),
+                correspondence: mergeArr(prev.correspondence, proj.correspondence),
+                checklists: mergeArr(prev.checklists, proj.checklists),
+                ncrs: mergeArr(prev.ncrs, proj.ncrs)
+            };
+        });
+    };
 
     useEffect(() => {
         if (isOpen && projectId) {
             let isCancelled = false;
             const load = async () => {
+                // 1. Instant local load (0ms response)
+                try {
+                    const localProj = await api.getProjectById(projectId, false);
+                    if (localProj && !isCancelled) {
+                        applyProjectDataToState(localProj);
+                        setLoading(false);
+                    }
+                } catch(e) {}
+
                 const hasExistingData = Boolean(initialProjectData || masterData.logs.length > 0 || masterData.boqItems.length > 0 || masterData.fullDescription);
                 if (hasExistingData) {
                     setIsRefreshing(true);
@@ -313,31 +379,9 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 }, 1200);
 
                 try {
-                    const currentProject = await api.getProjectById(projectId);
+                    const currentProject = await api.getProjectById(projectId, true);
                     if (currentProject && !isCancelled) {
-                        setMasterData(prev => {
-                            // Merge payments to preserve newly created items
-                            const remotePayments = currentProject.payments || [];
-                            const paymentMap = new Map<string, ProjectPayment>();
-                            remotePayments.forEach(p => paymentMap.set(p.id, p));
-                            (prev.payments || []).forEach(p => { if (!paymentMap.has(p.id)) paymentMap.set(p.id, p); });
-                            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-                            return {
-                                ...prev,
-                                fullDescription: currentProject.fullDescription || prev.fullDescription,
-                                logs: sortLogs(currentProject.executionLogs || prev.logs),
-                                payments: mergedPayments,
-                                boqItems: (currentProject.boqItems && currentProject.boqItems.length > 0) ? currentProject.boqItems : prev.boqItems,
-                                engineeringReports: currentProject.engineeringReports || prev.engineeringReports || [],
-                                soilReport: currentProject.soilReportAnalysis || prev.soilReport,
-                                rfis: currentProject.rfis || prev.rfis || [],
-                                submittals: currentProject.submittals || prev.submittals || [],
-                                correspondence: currentProject.correspondence || prev.correspondence || [],
-                                checklists: currentProject.checklists || prev.checklists || [],
-                                ncrs: currentProject.ncrs || prev.ncrs || []
-                            };
-                        });
+                        applyProjectDataToState(currentProject);
                     }
                 } finally {
                     clearTimeout(refreshSafety);
@@ -354,29 +398,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     if (isSavingRef.current) {
                         return;
                     }
-
                     if (updatedProject) {
-                        setMasterData(prev => {
-                            const remotePayments = updatedProject.payments || [];
-                            const paymentMap = new Map<string, ProjectPayment>();
-                            remotePayments.forEach(p => paymentMap.set(p.id, p));
-                            (prev.payments || []).forEach(p => { if (!paymentMap.has(p.id)) paymentMap.set(p.id, p); });
-                            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-                            return {
-                                ...prev,
-                                fullDescription: updatedProject.fullDescription || prev.fullDescription,
-                                payments: mergedPayments,
-                                boqItems: (updatedProject.boqItems && updatedProject.boqItems.length > 0) ? updatedProject.boqItems : prev.boqItems,
-                                engineeringReports: updatedProject.engineeringReports || prev.engineeringReports || [],
-                                soilReport: updatedProject.soilReportAnalysis || prev.soilReport,
-                                rfis: updatedProject.rfis || prev.rfis || [],
-                                submittals: updatedProject.submittals || prev.submittals || [],
-                                correspondence: updatedProject.correspondence || prev.correspondence || [],
-                                checklists: updatedProject.checklists || prev.checklists || [],
-                                ncrs: updatedProject.ncrs || prev.ncrs || []
-                            };
-                        });
+                        applyProjectDataToState(updatedProject);
                     }
                 });
                 return () => {
@@ -395,16 +418,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         
         try {
             await api.updateProjectMasterData(projectId, { 
-                fullDescription: newData.fullDescription || '', 
-                payments: newData.payments || [], 
-                boqItems: newData.boqItems || [], 
-                engineeringReports: newData.engineeringReports || [], 
-                soilReportAnalysis: newData.soilReport || '', 
-                rfis: newData.rfis || [],
-                submittals: newData.submittals || [],
-                correspondence: newData.correspondence || [],
-                checklists: newData.checklists || [],
-                ncrs: newData.ncrs || []
+                fullDescription: newData.fullDescription !== undefined ? newData.fullDescription : (masterData.fullDescription || ''), 
+                executionLogs: newData.logs || masterData.logs || [],
+                logs: newData.logs || masterData.logs || [],
+                payments: newData.payments || masterData.payments || [], 
+                boqItems: newData.boqItems || masterData.boqItems || [], 
+                engineeringReports: newData.engineeringReports || masterData.engineeringReports || [], 
+                soilReportAnalysis: newData.soilReport !== undefined ? newData.soilReport : (masterData.soilReport || ''), 
+                rfis: newData.rfis || masterData.rfis || [],
+                submittals: newData.submittals || masterData.submittals || [],
+                correspondence: newData.correspondence || masterData.correspondence || [],
+                checklists: newData.checklists || masterData.checklists || [],
+                ncrs: newData.ncrs || masterData.ncrs || []
             });
             setAutoSaveStatus('saved');
             setTimeout(() => setAutoSaveStatus('idle'), 1200);
@@ -544,7 +569,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         // 1. Update State First (Instant Feedback)
         // Sort descending so the new log appears at the top if date is today
         const updatedLogs = sortLogs([newLogItem, ...masterData.logs]);
-        setMasterData(prev => ({ ...prev, logs: updatedLogs, newLog: '' }));
+        const newData = { ...masterData, logs: updatedLogs, newLog: '' };
+        setMasterData(newData);
         setLogImages([]); 
         
         // 2. Indicate Saving Background
@@ -553,12 +579,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         try {
             // 3. Send to Server in Background
             await api.addProjectLog(projectId, newLogItem);
+            triggerAutoSave(newData);
             setAutoSaveStatus('saved');
         } catch (e) {
             console.error("Failed to add log", e);
             setAutoSaveStatus('idle');
-            // Theoretically we should revert here, but for now we keep it optimistic 
-            // as syncing logic usually retries.
         }
         
         setTimeout(() => setAutoSaveStatus('idle'), 2000);

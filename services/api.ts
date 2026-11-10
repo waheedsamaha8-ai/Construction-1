@@ -458,6 +458,126 @@ const ensureStarterProjectIfNeeded = async (projects: Project[]): Promise<Projec
 
 const createCardHtml = (title: string, content: string) => `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>${title}</title><style>@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap'); body { font-family: 'Tajawal', sans-serif; padding: 20px; line-height: 1.6; color: #1e293b; direction: rtl; background-color: white; } .archive-content { font-size: 1.1em; } table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; } th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: right; } th { background: #f8fafc; color: #334155; } h1, h2, h3 { color: #1e3a8a; margin-top: 0; } strong { color: #0f172a; } .highlight-box, blockquote { background-color: #f0fdfa; border-right: 4px solid #0d9488; padding: 12px; margin: 15px 0; border-radius: 4px; color: #115e59; } .warning-box { background-color: #fef2f2; border-right: 4px solid #ef4444; padding: 12px; margin: 15px 0; color: #991b1b; }</style></head><body><div class="archive-content">${content}</div></body></html>`;
 
+function mergeProjectData(localP: Project | undefined, remoteP: Project): Project {
+    if (!localP) return remoteP;
+
+    // Merge executionLogs (deduplicate by id or date+content)
+    const localLogs = localP.executionLogs || [];
+    const remoteLogs = remoteP.executionLogs || [];
+    const logMap = new Map<string, ProjectLog>();
+    localLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
+    remoteLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
+    const mergedLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Merge payments (deduplicate by id or number)
+    const localPayments = localP.payments || [];
+    const remotePayments = remoteP.payments || [];
+    const paymentMap = new Map<string, ProjectPayment>();
+    localPayments.forEach(p => { if (p && (p.id || p.number)) paymentMap.set(p.id || `pay_${p.number}`, p); });
+    remotePayments.forEach(p => { if (p && (p.id || p.number)) paymentMap.set(p.id || `pay_${p.number}`, p); });
+    const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Merge boqItems (deduplicate by id, itemNumber, or description)
+    const localBoq = localP.boqItems || [];
+    const remoteBoq = remoteP.boqItems || [];
+    const boqMap = new Map<string, BOQItem>();
+    localBoq.forEach(b => { if (b && (b.id || b.itemNumber || b.description)) boqMap.set(b.id || `${b.itemNumber}_${b.description}`, b); });
+    remoteBoq.forEach(b => { if (b && (b.id || b.itemNumber || b.description)) boqMap.set(b.id || `${b.itemNumber}_${b.description}`, b); });
+    const mergedBoq = Array.from(boqMap.values());
+
+    // Merge engineeringReports (deduplicate by id or name/title)
+    const localReports = localP.engineeringReports || [];
+    const remoteReports = remoteP.engineeringReports || [];
+    const reportMap = new Map<string, EngineeringReportItem>();
+    localReports.forEach(r => { if (r && (r.id || r.name || r.title)) reportMap.set(r.id || r.name || (r as any).title, r); });
+    remoteReports.forEach(r => { if (r && (r.id || r.name || r.title)) reportMap.set(r.id || r.name || (r as any).title, r); });
+    const mergedReports = Array.from(reportMap.values());
+
+    // Helper for generic items with id
+    const mergeById = <T extends { id: string }>(localArr: T[] = [], remoteArr: T[] = []): T[] => {
+        const map = new Map<string, T>();
+        localArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+        remoteArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+        return Array.from(map.values());
+    };
+
+    const mergedRfis = mergeById(localP.rfis, remoteP.rfis);
+    const mergedSubmittals = mergeById(localP.submittals, remoteP.submittals);
+    const mergedCorr = mergeById(localP.correspondence, remoteP.correspondence);
+    const mergedChecklists = mergeById(localP.checklists, remoteP.checklists);
+    const mergedNcrs = mergeById(localP.ncrs, remoteP.ncrs);
+
+    return {
+        ...localP,
+        ...remoteP,
+        fullDescription: remoteP.fullDescription || localP.fullDescription || '',
+        soilReportAnalysis: remoteP.soilReportAnalysis || localP.soilReportAnalysis || '',
+        executionLogs: mergedLogs,
+        payments: mergedPayments,
+        boqItems: mergedBoq.length > 0 ? mergedBoq : (localP.boqItems || []),
+        engineeringReports: mergedReports.length > 0 ? mergedReports : (localP.engineeringReports || []),
+        rfis: mergedRfis,
+        submittals: mergedSubmittals,
+        correspondence: mergedCorr,
+        checklists: mergedChecklists,
+        ncrs: mergedNcrs
+    };
+}
+
+function deduplicateProjects(projects: Project[]): Project[] {
+    if (!projects || projects.length === 0) return [];
+    
+    const uniqueMap = new Map<string, Project>();
+    const hasRealProjects = projects.some(p => p && p.id && p.id !== 'starter_demo_project' && p.name !== ARCHIVE_FOLDER_NAME);
+
+    for (const p of projects) {
+        if (!p || !p.id || p.name === ARCHIVE_FOLDER_NAME) continue;
+        if (p.id === 'starter_demo_project' && hasRealProjects) {
+            dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
+            continue;
+        }
+
+        const normalizedName = (p.name || '').trim();
+        if (!normalizedName) continue;
+
+        // Check if we already have a project with the same name or matching driveFolderId
+        const existingKey = Array.from(uniqueMap.keys()).find(k => {
+            const existingProj = uniqueMap.get(k)!;
+            return existingProj.id === p.id ||
+                   (existingProj.driveFolderId && p.driveFolderId && existingProj.driveFolderId === p.driveFolderId) ||
+                   (existingProj.name && p.name && existingProj.name.trim() === normalizedName);
+        });
+
+        if (existingKey) {
+            const existingProj = uniqueMap.get(existingKey)!;
+            const merged = mergeProjectData(existingProj, p);
+
+            // Prefer Google Drive / Firestore real ID over temporary 'proj_' ID
+            const preferNewId = p.id && !p.id.startsWith('proj_') && existingProj.id.startsWith('proj_');
+            const preferOldId = existingProj.id && !existingProj.id.startsWith('proj_') && p.id.startsWith('proj_');
+
+            if (preferNewId) {
+                dbService.deleteItem('projects', existingProj.id).catch(() => {});
+                merged.id = p.id;
+                merged.driveFolderId = p.driveFolderId || p.id;
+                uniqueMap.delete(existingKey);
+                uniqueMap.set(p.id, merged);
+            } else if (preferOldId) {
+                dbService.deleteItem('projects', p.id).catch(() => {});
+                merged.id = existingProj.id;
+                merged.driveFolderId = existingProj.driveFolderId || existingProj.id;
+                uniqueMap.set(existingKey, merged);
+            } else {
+                uniqueMap.set(existingKey, merged);
+            }
+        } else {
+            uniqueMap.set(p.id, p);
+        }
+    }
+
+    return Array.from(uniqueMap.values());
+}
+
 export const api = {
   initAuth: authService.init,
   isAuthenticated: authService.isAuthenticated,
@@ -466,7 +586,7 @@ export const api = {
   signInGuest: authService.signInGuest,
   signOut: authService.signOut,
   sync: syncService, 
-  getSyncProjects(): Project[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY); if (stored) return JSON.parse(stored); } catch(e) {} return []; },
+  getSyncProjects(): Project[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY); if (stored) return deduplicateProjects(JSON.parse(stored)); } catch(e) {} return []; },
   getSyncRecentFiles(): FileItem[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY); if (stored) return JSON.parse(stored); } catch(e) {} return []; },
   getSyncTasks(): Task[] { return [...localTasks]; },
   
@@ -563,6 +683,7 @@ export const api = {
   async getLocalProjects(): Promise<Project[]> { 
       const localProjects = await dbService.getAllItems<Project>('projects'); 
       let processed = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); 
+      processed = deduplicateProjects(processed);
       processed = await ensureStarterProjectIfNeeded(processed);
       saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processed); 
       return processed; 
@@ -645,12 +766,8 @@ export const api = {
               const docSnap = await getDoc(docRef);
               if (docSnap.exists()) {
                   const data = docSnap.data() as any;
-                  const legacyLogs = (data.executionLogs || []) as ProjectLog[];
-                  const allLogs = [...legacyLogs, ...subCollectionLogs];
-                  const uniqueLogs = Array.from(new Map(allLogs.map(item => [item.id, item])).values());
-                  uniqueLogs.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                  
-                  const finalProject = enrichProjectWithAI({ id: docSnap.id, ...data, executionLogs: uniqueLogs });
+                  const remoteProj = enrichProjectWithAI({ id: docSnap.id, ...data, executionLogs: subCollectionLogs });
+                  const finalProject = enrichProjectWithAI(mergeProjectData(local, remoteProj));
                   
                   // Update cache
                   await dbService.putItem('projects', finalProject);
@@ -664,6 +781,15 @@ export const api = {
           } catch(e) {}
       }
       
+      if (!local) {
+          const syncProjects = this.getSyncProjects();
+          const syncMatch = syncProjects.find(p => p.id === id || (p.driveFolderId && p.driveFolderId === id));
+          if (syncMatch) return enrichProjectWithAI(syncMatch);
+
+          const allLocal = await dbService.getAllItems<Project>('projects').catch(() => []);
+          const match = allLocal.find(p => p.id === id || (p.driveFolderId && p.driveFolderId === id));
+          if (match) return enrichProjectWithAI(match);
+      }
       return local ? enrichProjectWithAI(local) : undefined; 
   },
   
@@ -697,7 +823,8 @@ export const api = {
           if (querySnapshot && !querySnapshot.empty) { 
               firestoreProjects = querySnapshot.docs.map(doc => { 
                   const data = doc.data() as any; 
-                  return enrichProjectWithAI({ id: doc.id, ...data }); 
+                  const localMatch = processedLocal.find(p => p.id === doc.id) || syncLocal.find(p => p.id === doc.id);
+                  return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data })); 
               }); 
           }
           const projectMap = new Map<string, Project>();
@@ -713,8 +840,12 @@ export const api = {
                       if (driveRes.files && driveRes.files.length > 0) {
                           for (const folder of driveRes.files) {
                               if (folder.name === ARCHIVE_FOLDER_NAME) continue;
-                              if (!projectMap.has(folder.id)) {
-                                  const discovered: Project = {
+                              const existing = Array.from(projectMap.values()).find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
+                              if (existing) {
+                                  if (!existing.driveFolderId) existing.driveFolderId = folder.id;
+                              } else {
+                                  const localMatch = processedLocal.find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
+                                  const discovered: Project = localMatch || {
                                       id: folder.id,
                                       name: folder.name,
                                       driveFolderId: folder.id,
@@ -729,8 +860,8 @@ export const api = {
                                       payments: [],
                                       boqItems: []
                                   };
-                                  projectMap.set(folder.id, discovered);
-                                  setDoc(doc(db, "projects", folder.id), sanitizeForFirestore(discovered)).catch(() => {});
+                                  projectMap.set(discovered.id, discovered);
+                                  setDoc(doc(db, "projects", discovered.id), sanitizeForFirestore(discovered), { merge: true }).catch(() => {});
                               }
                           }
                       }
@@ -765,9 +896,12 @@ export const api = {
           const querySnapshot = await getDocs(collection(db, "projects"));
           let firestoreProjects: Project[] = [];
           if (!querySnapshot.empty) {
+              const localProjects = await this.getLocalProjects();
+              const syncProjects = this.getSyncProjects();
               firestoreProjects = querySnapshot.docs.map(doc => {
                   const data = doc.data() as any;
-                  return enrichProjectWithAI({ id: doc.id, ...data });
+                  const localMatch = localProjects.find(p => p.id === doc.id) || syncProjects.find(p => p.id === doc.id);
+                  return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data }));
               });
           }
           const projectMap = new Map<string, Project>();
@@ -780,10 +914,15 @@ export const api = {
                       const driveQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
                       const driveRes = await fetchDrive(`files?q=${encodeURIComponent(driveQuery)}&fields=files(id,name,createdTime)`);
                       if (driveRes.files && driveRes.files.length > 0) {
+                          const localProjects = await this.getLocalProjects();
                           for (const folder of driveRes.files) {
                               if (folder.name === ARCHIVE_FOLDER_NAME) continue;
-                              if (!projectMap.has(folder.id)) {
-                                  const discovered: Project = {
+                              const existing = Array.from(projectMap.values()).find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
+                              if (existing) {
+                                  if (!existing.driveFolderId) existing.driveFolderId = folder.id;
+                              } else {
+                                  const localMatch = localProjects.find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
+                                  const discovered: Project = localMatch || {
                                       id: folder.id,
                                       name: folder.name,
                                       driveFolderId: folder.id,
@@ -798,8 +937,8 @@ export const api = {
                                       payments: [],
                                       boqItems: []
                                   };
-                                  projectMap.set(folder.id, discovered);
-                                  setDoc(doc(db, "projects", folder.id), sanitizeForFirestore(discovered)).catch(() => {});
+                                  projectMap.set(discovered.id, discovered);
+                                  setDoc(doc(db, "projects", discovered.id), sanitizeForFirestore(discovered), { merge: true }).catch(() => {});
                               }
                           }
                       }
@@ -840,11 +979,14 @@ export const api = {
       if (!navigator.onLine || authService.isGuest()) return () => {};
 
       try {
-          const unsub = onSnapshot(collection(db, "projects"), (snapshot) => {
+          const unsub = onSnapshot(collection(db, "projects"), async (snapshot) => {
               if (!snapshot.empty) {
+                  const localProjects = await this.getLocalProjects().catch(() => []);
+                  const syncProjects = this.getSyncProjects();
                   const list = snapshot.docs.map(doc => {
                       const data = doc.data() as any;
-                      return enrichProjectWithAI({ id: doc.id, ...data });
+                      const localMatch = localProjects.find(p => p.id === doc.id) || syncProjects.find(p => p.id === doc.id);
+                      return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data }));
                   });
                   updateCache('projects_list', list);
                   saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
@@ -871,17 +1013,22 @@ export const api = {
       let docData: Project | null = null;
       let logsData: ProjectLog[] = [];
 
-      const mergeAndEmit = () => {
+      const mergeAndEmit = async () => {
           if (!docData) return;
-          const legacyLogs = docData.executionLogs || [];
-          const allLogs = [...legacyLogs, ...logsData];
-          const uniqueLogs = Array.from(new Map(allLogs.map(item => [item.id, item])).values());
-          uniqueLogs.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          const local = await dbService.getItem<Project>('projects', projectId).catch(() => null);
+          const remoteDoc = { ...docData };
+          if (logsData && logsData.length > 0) {
+              remoteDoc.executionLogs = logsData;
+          }
+          const finalProject = enrichProjectWithAI(mergeProjectData(local || undefined, remoteDoc));
           
-          const finalProject = { ...docData, executionLogs: uniqueLogs };
-          
-          dbService.putItem('projects', finalProject);
-          saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, [finalProject]);
+          await dbService.putItem('projects', finalProject).catch(() => {});
+          const cachedList = this.getSyncProjects();
+          const updatedList = cachedList.some(p => p.id === finalProject.id) 
+              ? cachedList.map(p => p.id === finalProject.id ? finalProject : p)
+              : [...cachedList, finalProject];
+          saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, updatedList);
+          updateCache('projects_list', updatedList);
           
           onUpdate(finalProject);
       };
@@ -961,8 +1108,34 @@ export const api = {
           await setDoc(doc(db, "projects", driveFolderId), firestoreData); 
           
           if (driveFolderId !== projectId) { 
-              await dbService.deleteItem('projects', projectId); 
-              await dbService.putItem('projects', firestoreData); 
+              await dbService.deleteItem('projects', projectId).catch(() => {}); 
+              await dbService.putItem('projects', firestoreData).catch(() => {}); 
+
+              // Re-key local subfolders to driveFolderId
+              for (let idx = 0; idx < DEFAULT_SUBFOLDERS.length; idx++) {
+                  const oldSubId = `${projectId}_sub_${idx}`;
+                  const newSubId = `${driveFolderId}_sub_${idx}`;
+                  const folderItem = { 
+                      id: newSubId, 
+                      parentId: driveFolderId, 
+                      name: DEFAULT_SUBFOLDERS[idx], 
+                      type: ItemType.FOLDER, 
+                      createdTime: new Date().toISOString(),
+                      mimeType: 'application/vnd.google-apps.folder',
+                      fileCount: 0,
+                      folderCount: 0
+                  }; 
+                  await dbService.deleteItem('files', oldSubId).catch(() => {});
+                  await dbService.putItem('files', folderItem).catch(() => {});
+              }
+
+              // Update sync cache & localStorage
+              const currentSync = this.getSyncProjects();
+              const updatedSync = deduplicateProjects(
+                  currentSync.filter(p => p.id !== projectId).concat(enrichProjectWithAI(firestoreData))
+              );
+              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, updatedSync);
+              updateCache('projects_list', updatedSync);
           } 
           
           if (!isSyncProcess) triggerLoadingStop(); 
@@ -987,8 +1160,7 @@ export const api = {
       let project: Project | null = null;
       try { project = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
       
-      const { executionLogs, ...mainUpdates } = updates;
-      const updatedProject: Project = project ? { ...project, ...mainUpdates } : ({ id, ...mainUpdates } as Project);
+      const updatedProject: Project = project ? { ...project, ...updates } : ({ id, ...updates } as Project);
 
       // 1. Instant local persistence (0ms)
       try {
@@ -1003,8 +1175,8 @@ export const api = {
       if (navigator.onLine && !authService.isGuest()) {
           try {
               const projectRef = doc(db, "projects", id);
-              if (Object.keys(mainUpdates).length > 0) {
-                  const safeUpdates = sanitizeForFirestore(mainUpdates);
+              if (Object.keys(updates).length > 0) {
+                  const safeUpdates = sanitizeForFirestore(updates);
                   await setDoc(projectRef, safeUpdates, { merge: true });
               }
               if (!isSyncProcess) triggerLoadingStop();
@@ -1087,8 +1259,12 @@ export const api = {
       }
   },
   async updateProjectMasterData(id: string, data: any): Promise<any> { 
-      const { executionLogs, ...otherData } = data;
-      return this.updateProject(id, otherData); 
+      const executionLogs = data.executionLogs || data.logs;
+      const updates = { ...data };
+      if (executionLogs && Array.isArray(executionLogs)) {
+          updates.executionLogs = executionLogs;
+      }
+      return this.updateProject(id, updates); 
   },
   async deleteProject(id: string): Promise<void> { 
       if (!authService.isAuthenticated()) return; 

@@ -426,35 +426,94 @@ export const imageUtils = {
       return new Promise((resolve) => {
           try {
               const video = document.createElement('video');
-              video.preload = 'metadata';
+              video.preload = 'auto';
               video.muted = true;
               video.playsInline = true;
+              video.crossOrigin = 'anonymous';
+
               const url = URL.createObjectURL(file);
               video.src = url;
-              video.currentTime = 0.5;
+
+              let attempts = 0;
+              let isCleanedUp = false;
 
               const cleanup = () => {
+                  if (isCleanedUp) return;
+                  isCleanedUp = true;
                   URL.revokeObjectURL(url);
                   video.onloadeddata = null;
+                  video.onloadedmetadata = null;
+                  video.onseeked = null;
+                  video.ontimeupdate = null;
                   video.onerror = null;
+                  try { video.pause(); } catch(e) {}
               };
 
-              video.onloadeddata = () => {
+              const tryCaptureFrame = () => {
+                  if (isCleanedUp) return;
                   try {
+                      if (!video.videoWidth || !video.videoHeight) return;
                       const canvas = document.createElement('canvas');
-                      canvas.width = Math.min(video.videoWidth || 320, 320);
-                      canvas.height = Math.min(video.videoHeight || 240, 240);
+                      const maxDim = 400;
+                      let w = video.videoWidth;
+                      let h = video.videoHeight;
+                      if (w > maxDim || h > maxDim) {
+                          if (w > h) {
+                              h = Math.round((h * maxDim) / w);
+                              w = maxDim;
+                          } else {
+                              w = Math.round((w * maxDim) / h);
+                              h = maxDim;
+                          }
+                      }
+                      canvas.width = Math.max(w, 160);
+                      canvas.height = Math.max(h, 120);
+
                       const ctx = canvas.getContext('2d');
                       if (ctx) {
                           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-                          cleanup();
-                          resolve(dataUrl);
-                          return;
+                          
+                          // Check luminance to ensure the frame is not pitch black
+                          const sampleSize = Math.min(canvas.width, canvas.height, 25);
+                          const imgData = ctx.getImageData(0, 0, sampleSize, sampleSize).data;
+                          let totalLuminance = 0;
+                          for (let i = 0; i < imgData.length; i += 4) {
+                              totalLuminance += imgData[i] + imgData[i+1] + imgData[i+2];
+                          }
+                          const avgLum = totalLuminance / (sampleSize * sampleSize * 3);
+
+                          // If average luminance is > 8, or we tried 3 times, accept this frame
+                          if (avgLum > 8 || attempts >= 3 || video.currentTime >= 1.5) {
+                              const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                              cleanup();
+                              resolve(dataUrl);
+                              return;
+                          } else {
+                              // Frame is solid black, seek forward
+                              attempts++;
+                              video.currentTime = Math.min((video.duration || 3) * 0.25, 0.4 + attempts * 0.5);
+                          }
                       }
                   } catch (e) {}
-                  cleanup();
-                  resolve('');
+              };
+
+              video.onloadedmetadata = () => {
+                  const targetTime = (video.duration && video.duration > 1) 
+                      ? Math.min(1.0, video.duration / 3) 
+                      : 0.3;
+                  try { video.currentTime = targetTime; } catch(e) {}
+              };
+
+              video.onseeked = () => {
+                  tryCaptureFrame();
+              };
+
+              video.onloadeddata = () => {
+                  if (video.currentTime === 0) {
+                      try { video.currentTime = 0.5; } catch(e) {}
+                  } else {
+                      tryCaptureFrame();
+                  }
               };
 
               video.onerror = () => {
@@ -462,10 +521,14 @@ export const imageUtils = {
                   resolve('');
               };
 
+              // Safety timeout: 3000ms
               setTimeout(() => {
-                  cleanup();
-                  resolve('');
-              }, 2500);
+                  if (!isCleanedUp) {
+                      tryCaptureFrame();
+                      cleanup();
+                      resolve('');
+                  }
+              }, 3000);
           } catch(e) {
               resolve('');
           }
