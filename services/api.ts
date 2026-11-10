@@ -178,6 +178,18 @@ const fetchDrive = async (endpoint: string, options: any = {}) => {
 
 const getMimeType = (file: File) => file.type || 'application/octet-stream';
 
+export const isSyntheticDriveId = (id: string | null | undefined): boolean => {
+    if (!id) return true;
+    return id.startsWith('proj_') || 
+           id.startsWith('folder_') || 
+           id.startsWith('file_') || 
+           id.startsWith('pay_') || 
+           id.startsWith('log_') || 
+           id.startsWith('starter_demo') || 
+           id.startsWith('guest_') || 
+           id === 'Connecting...';
+};
+
 const uploadFileDirect = async (parentId: string, file: File, onProgress?: (p:number)=>void): Promise<any> => {
     const metadata = {
         name: file.name,
@@ -652,6 +664,7 @@ export const api = {
   async ensureRootFolder(): Promise<string> { if (detectedRootFolderId) return detectedRootFolderId; try { const query = `name = '${APP_ROOT_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`; const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=files(id)`); let rootId = ''; if (result.files && result.files.length > 0) rootId = result.files[0].id; else { const createRes = await fetchDrive('files', { method: 'POST', body: JSON.stringify({ name: APP_ROOT_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }) }); rootId = createRes.id; } detectedRootFolderId = rootId; GOOGLE_DRIVE_TARGET_ID = detectedRootFolderId; localStorage.setItem('google_drive_root_id', detectedRootFolderId); await this.ensureArchiveFolder(rootId); return rootId; } catch (e) { return ''; } },
   async ensureArchiveFolder(rootId: string): Promise<string> { let archiveId = ''; try { const query = `name = '${ARCHIVE_FOLDER_NAME}' and '${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`; const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=files(id)`); if (result.files && result.files.length > 0) archiveId = result.files[0].id; else { const createRes = await fetchDrive('files', { method: 'POST', body: JSON.stringify({ name: ARCHIVE_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder', parents: [rootId] }) }); archiveId = createRes.id; } } catch(e) { return ''; } if (archiveId) { const contents = await this.getContents(archiveId, true); const existingNames = new Set(contents.filter(i => i.type === ItemType.FOLDER).map(i => i.name)); for (const section of ARCHIVE_SECTIONS) { if (!existingNames.has(section.name)) { await this.createFolder(archiveId, section.name); } } } return archiveId; },
   async ensureHiddenFolder(parentId: string, folderName: string): Promise<string> {
+      if (isSyntheticDriveId(parentId)) return parentId;
       let folderId = '';
       try {
           const query = `name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
@@ -1291,7 +1304,7 @@ export const api = {
       if (!includeSystemFolders) { localChildren = localChildren.filter(f => f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER); } 
       localChildren = localChildren.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime()); 
       
-      if (!navigator.onLine || authService.isGuest()) {
+      if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(targetId)) {
           return localChildren; 
       }
       
@@ -1334,7 +1347,7 @@ export const api = {
   // ... rest of the file
   async enrichItemCounts(items: FileItem[]): Promise<FileItem[]> { 
       if (!navigator.onLine) return items;
-      const folders = items.filter(i => i.type === ItemType.FOLDER); 
+      const folders = items.filter(i => i.type === ItemType.FOLDER && !isSyntheticDriveId(i.id)); 
       if (folders.length === 0) return items; 
       const updatedItems = [...items]; 
       const promises = folders.map(async (folder) => { try { const query = `'${folder.id}' in parents and trashed = false`; const res = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=files(mimeType,id)`); if (res && res.files) { const filesCount = res.files.filter((f: any) => f.mimeType !== 'application/vnd.google-apps.folder').length; const foldersCount = res.files.filter((f: any) => f.mimeType === 'application/vnd.google-apps.folder').length; const idx = updatedItems.findIndex(i => i.id === folder.id); if (idx !== -1) { updatedItems[idx] = { ...updatedItems[idx], fileCount: filesCount, folderCount: foldersCount }; } } } catch(e) { } }); await Promise.all(promises); return updatedItems; 
@@ -1342,7 +1355,7 @@ export const api = {
   async getFileMetadata(id: string): Promise<FileItem | null> { 
       if (!authService.isAuthenticated()) return null; 
       const localFile = await dbService.getItem<FileItem>('files', id);
-      if (!navigator.onLine) { return localFile || null; }
+      if (!navigator.onLine || isSyntheticDriveId(id)) { return localFile || null; }
       try { 
           const res = await fetchDrive(`files/${id}?fields=id,name,mimeType,parents,createdTime,size`); 
           return { id: res.id, name: res.name, type: res.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, parentId: res.parents?.[0] || '', createdTime: res.createdTime, size: res.size ? parseInt(res.size) : 0 }; 

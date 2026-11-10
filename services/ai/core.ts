@@ -24,10 +24,10 @@ export interface FunctionDeclaration {
 }
 
 // --- MODEL CONFIGURATION (STANDARD ACTIVE GEMINI MODELS) ---
-export const MODEL_COMPLEX = 'gemini-2.5-pro'; 
-export const MODEL_SMART = 'gemini-2.5-flash'; 
-export const MODEL_TRANSCRIBE = 'gemini-2.5-flash';
-export const MODEL_LIVE = 'gemini-2.5-flash';
+export const MODEL_COMPLEX = 'gemini-3.8-flash'; 
+export const MODEL_SMART = 'gemini-3.8-flash'; 
+export const MODEL_TRANSCRIBE = 'gemini-3.5-transcribe';
+export const MODEL_LIVE = 'gemini-3.8-live';
 
 // --- HELPER: ROBUST NUMBER PARSING ---
 export const cleanNumber = (val: any): number => {
@@ -197,9 +197,9 @@ const generateDirectWithGoogleApi = async (model: string, apiKey: string, params
 
     if (!res.ok) {
         // Fallback to flash if complex model fails or hits 429/404
-        if (cleanModel !== 'gemini-2.5-flash') {
-            console.warn(`Direct model ${cleanModel} returned ${res.status}, falling back to gemini-2.5-flash...`);
-            return await generateDirectWithGoogleApi('gemini-2.5-flash', apiKey, params);
+        if (cleanModel !== 'gemini-3.8-flash') {
+            console.warn(`Direct model ${cleanModel} returned ${res.status}, falling back to gemini-3.8-flash...`);
+            return await generateDirectWithGoogleApi('gemini-3.8-flash', apiKey, params);
         }
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error?.message || `Google API status ${res.status}`);

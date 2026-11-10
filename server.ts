@@ -74,11 +74,11 @@ const rotateKey = () => {
 };
 
 // Supported standard Gemini models
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
 
 const normalizeModel = (model: string | undefined): string => {
-  if (!model || model.includes('3.') || model.includes('preview') || model.includes('latest')) {
-    return 'gemini-2.5-flash';
+  if (!model || model.includes('2.') || model.includes('1.') || model.includes('preview') || model.includes('latest')) {
+    return 'gemini-3.8-flash';
   }
   return model;
 };
