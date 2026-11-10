@@ -1,8 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
-import appletConfig from "../firebase-applet-config.json";
 
-const firebaseConfig = appletConfig || {
+export const firebaseConfig = {
   apiKey: "AIzaSyBEkZNYpRWhkNErbhFMgHZ3lDrg4irUz0s",
   authDomain: "construction-manager-pro-14ead.firebaseapp.com",
   projectId: "construction-manager-pro-14ead",
@@ -11,7 +10,7 @@ const firebaseConfig = appletConfig || {
   appId: "1:133291168732:web:a32944eea3e343e7453519"
 };
 
-// Initialize Firebase
+// Initialize Firebase with user's specific project
 export const app = initializeApp(firebaseConfig);
 
 // Initialize Cloud Firestore and get a reference to the service

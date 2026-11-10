@@ -1170,10 +1170,11 @@ export const api = {
       if (!authService.isAuthenticated()) return null; 
       contentCache.delete('projects_list'); 
       if (!isSyncProcess) triggerLoadingStart(); 
-      let project: Project | null = null;
-      try { project = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
+      let existing: Project | null = null;
+      try { existing = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
       
-      const updatedProject: Project = project ? { ...project, ...updates } : ({ id, ...updates } as Project);
+      const partialProject = { id, ...updates } as Project;
+      const updatedProject = existing ? mergeProjectData(existing, partialProject) : enrichProjectWithAI(partialProject);
 
       // 1. Instant local persistence (0ms)
       try {
@@ -1184,14 +1185,12 @@ export const api = {
           updateCache('projects_list', merged);
       } catch (e) {}
 
-      // 2. Cloud Firestore persistence (SetDoc with merge to avoid 'no document' errors)
+      // 2. Cloud Firestore persistence (SetDoc with merge)
       if (navigator.onLine && !authService.isGuest()) {
           try {
               const projectRef = doc(db, "projects", id);
-              if (Object.keys(updates).length > 0) {
-                  const safeUpdates = sanitizeForFirestore(updates);
-                  await setDoc(projectRef, safeUpdates, { merge: true });
-              }
+              const safeUpdates = sanitizeForFirestore(updatedProject);
+              await setDoc(projectRef, safeUpdates, { merge: true });
               if (!isSyncProcess) triggerLoadingStop();
               return updatedProject;
           } catch (e: any) {
@@ -1200,13 +1199,13 @@ export const api = {
                   return updatedProject;
               }
               if (!isSyncProcess) { 
-                  await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); 
+                  await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
                   triggerLoadingStop(); 
               } else throw e;
           }
       } else {
           if (!isSyncProcess) { 
-              await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); 
+              await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
           }
       }
       if (!isSyncProcess) triggerLoadingStop();
@@ -1214,10 +1213,15 @@ export const api = {
   },
   async addProjectLog(projectId: string, log: ProjectLog): Promise<void> {
       if (!authService.isAuthenticated()) return;
+      let newLogs: ProjectLog[] = [log];
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project) {
-              const newLogs = [log, ...(project.executionLogs || [])];
+              const existingLogs = project.executionLogs || [];
+              const logMap = new Map<string, ProjectLog>();
+              existingLogs.forEach(l => { if (l && l.id) logMap.set(l.id, l); });
+              logMap.set(log.id, log);
+              newLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
               await dbService.putItem('projects', { ...project, executionLogs: newLogs });
           }
       } catch(e) {}
@@ -1225,7 +1229,9 @@ export const api = {
       if (navigator.onLine && !authService.isGuest()) {
           try {
               const logsRef = collection(db, "projects", projectId, "logs");
-              await setDoc(doc(logsRef, log.id), log);
+              await setDoc(doc(logsRef, log.id), sanitizeForFirestore(log));
+              const projectRef = doc(db, "projects", projectId);
+              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
           } catch (e: any) { 
               if (e.code !== 'permission-denied') {
                   console.warn("Firestore sync failed, data saved locally.");
@@ -1235,18 +1241,23 @@ export const api = {
   },
   async updateProjectLog(projectId: string, log: ProjectLog): Promise<void> {
       if (!authService.isAuthenticated()) return;
+      let newLogs: ProjectLog[] = [];
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project && project.executionLogs) {
-              const newLogs = project.executionLogs.map(l => l.id === log.id ? log : l);
+              newLogs = project.executionLogs.map(l => l.id === log.id ? log : l);
               await dbService.putItem('projects', { ...project, executionLogs: newLogs });
           }
       } catch(e) {}
 
-      if (navigator.onLine) {
+      if (navigator.onLine && !authService.isGuest()) {
           try {
               const logRef = doc(db, "projects", projectId, "logs", log.id);
-              await setDoc(logRef, log, { merge: true });
+              await setDoc(logRef, sanitizeForFirestore(log), { merge: true });
+              if (newLogs.length > 0) {
+                  const projectRef = doc(db, "projects", projectId);
+                  await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
+              }
           } catch (e: any) { 
               if (e.code !== 'permission-denied') console.warn("Firestore sync failed"); 
           }
@@ -1254,18 +1265,21 @@ export const api = {
   },
   async deleteProjectLog(projectId: string, logId: string): Promise<void> {
       if (!authService.isAuthenticated()) return;
+      let newLogs: ProjectLog[] = [];
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project && project.executionLogs) {
-              const newLogs = project.executionLogs.filter(l => l.id !== logId);
+              newLogs = project.executionLogs.filter(l => l.id !== logId);
               await dbService.putItem('projects', { ...project, executionLogs: newLogs });
           }
       } catch(e) {}
 
-      if (navigator.onLine) {
+      if (navigator.onLine && !authService.isGuest()) {
           try {
               const logRef = doc(db, "projects", projectId, "logs", logId);
               await deleteDoc(logRef);
+              const projectRef = doc(db, "projects", projectId);
+              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
           } catch (e: any) { 
               if (e.code !== 'permission-denied') console.warn("Firestore sync failed");
           }
