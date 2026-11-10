@@ -77,9 +77,8 @@ const rotateKey = () => {
 const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
 
 const normalizeModel = (model: string | undefined): string => {
-  if (!model || model.includes('2.') || model.includes('1.') || model.includes('preview') || model.includes('latest')) {
-    return 'gemini-3.8-flash';
-  }
+  if (!model) return 'gemini-3.8-flash';
+  if (model.includes('2.') || model.includes('1.')) return 'gemini-3.8-flash';
   return model;
 };
 
@@ -103,7 +102,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
   const primaryModel = normalizeModel(requestedModel);
 
-  const sequence = [primaryModel, ...FALLBACK_MODELS];
+  const sequence = [primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
   const uniqueSequence = [...new Set(sequence)];
 
   let lastError: any = null;
@@ -111,7 +110,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
   for (const model of uniqueSequence) {
     if (stopAllModels) break;
-    const maxAttempts = customUserKey ? 1 : Math.max(1, API_KEYS.length);
+    const maxAttempts = customUserKey ? 2 : Math.max(2, API_KEYS.length * 2);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -146,7 +145,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         }
 
         if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
-          if (!customUserKey && attempt < API_KEYS.length - 1) {
+          if (!customUserKey && API_KEYS.length > 1) {
             rotateKey();
             continue;
           } else {
@@ -155,12 +154,12 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
           }
         }
 
-        if (status === 429 || status === 503) {
-          if (!customUserKey && attempt < API_KEYS.length - 1) {
-            rotateKey();
+        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
+          if (!customUserKey && API_KEYS.length > 1 && rotateKey()) {
+            await new Promise(r => setTimeout(r, 400));
             continue;
           } else {
-            break;
+            await new Promise(r => setTimeout(r, 600));
           }
         }
 
@@ -192,7 +191,10 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
 // --- GEMINI STREAMING ENDPOINT (Server-Sent Events) ---
 app.post('/api/gemini/stream', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config } = req.body;
+  const { model: requestedModel, contents, config, apiKey: bodyKey } = req.body;
+  const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
+  const customUserKey = (headerKey || bodyKey || '').trim();
+
   const primaryModel = normalizeModel(requestedModel);
   const sequence = [primaryModel, ...FALLBACK_MODELS];
   const uniqueSequence = [...new Set(sequence)];
@@ -207,7 +209,7 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
 
   for (const model of uniqueSequence) {
     try {
-      const client = getAiClient();
+      const client = getAiClient(customUserKey);
       const responseStream = await client.models.generateContentStream({
         model,
         contents,
@@ -245,12 +247,14 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
 // --- LIVE API WEBSOCKET BRIDGE ---
 const wss = new WebSocketServer({ server, path: '/api/gemini/live' });
 
-wss.on('connection', async (clientWs: WebSocket) => {
+wss.on('connection', async (clientWs: WebSocket, req) => {
   console.log('Client connected to Gemini Live WebSocket');
   let session: any = null;
 
   try {
-    const client = getAiClient();
+    const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '');
+    const customUserKey = urlParams.get('apiKey') || undefined;
+    const client = getAiClient(customUserKey);
     session = await client.live.connect({
       model: 'gemini-3.8-live',
       config: {
