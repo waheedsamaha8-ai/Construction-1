@@ -18,10 +18,46 @@ interface ProjectMasterDataProps {
     onClose: () => void;
     onReportGenerated?: () => void;
     initialProjectData?: Project | null; // NEW PROP FOR INSTANT LOAD
+    onProjectUpdated?: (project: Project) => void;
     onOpenAI: () => void;
 }
 
-export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onOpenAI }: ProjectMasterDataProps) {
+const normalizeBoqList = (items: any[] = []): BOQItem[] => {
+    if (!Array.isArray(items)) return [];
+    return items.filter(Boolean).map((b, idx) => {
+        const code = b.itemCode !== undefined ? String(b.itemCode) : (b.itemNumber !== undefined ? String(b.itemNumber) : String(idx + 1));
+        const qty = Number(b.quantity) || 0;
+        const price = Number(b.unitPrice) || 0;
+        const execQty = Number(b.executedQuantity) || 0;
+        return {
+            ...b,
+            id: b.id || `boq_${b.batchId || 'default'}_${idx}_${code.replace(/\s+/g, '_')}`,
+            itemCode: code,
+            quantity: qty,
+            unitPrice: price,
+            total: b.total !== undefined && !isNaN(Number(b.total)) && Number(b.total) > 0 ? Number(b.total) : (qty * price),
+            executedQuantity: execQty
+        };
+    });
+};
+
+const normalizePaymentsList = (payments: any[] = []): ProjectPayment[] => {
+    if (!Array.isArray(payments)) return [];
+    return payments.filter(Boolean).map((p, idx) => {
+        const cum = Number(p.cumulativeAmount) || Number(p.amount) || Number(p.netAmount) || 0;
+        const net = p.netAmount !== undefined ? Number(p.netAmount) : (Number(p.amount) || cum);
+        return {
+            ...p,
+            id: p.id || `pay_${p.date || 'nodate'}_${p.invoiceNumber || p.number || idx}`,
+            cumulativeAmount: cum,
+            netAmount: net,
+            amount: net,
+            note: p.note !== undefined ? p.note : (p.notes || '')
+        };
+    });
+};
+
+export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onProjectUpdated, onOpenAI }: ProjectMasterDataProps) {
     const navigate = useNavigate();
     
     // --- State Management ---
@@ -32,32 +68,32 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [showReportModal, setShowReportModal] = useState(false);
     const [isGeneratingReport, setIsGeneratingReport] = useState(false);
     
-    // LOADING STATE: Initialize based on whether we have data. 
-    // If we have initialData, we show it instantly (loading=false). 
-    // If not, we show spinner (loading=true).
-    const [loading, setLoading] = useState(!initialProjectData);
-    
-    // REFRESH STATE: Tracks background syncing even if we showed initial data
+    const seedProject = useMemo(() => {
+        if (initialProjectData && ((initialProjectData.boqItems && initialProjectData.boqItems.length > 0) || (initialProjectData.payments && initialProjectData.payments.length > 0) || (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0))) {
+            return initialProjectData;
+        }
+        const cached = api.getCachedProjects()?.find(p => p.id === projectId) || api.getSyncProjects()?.find(p => p.id === projectId);
+        return cached || initialProjectData || null;
+    }, [initialProjectData, projectId]);
+
+    const [loading, setLoading] = useState(!seedProject);
     const [isRefreshing, setIsRefreshing] = useState(false);
 
     // --- LAZY LOAD STATE ---
-    const [visibleLogsCount, setVisibleLogsCount] = useState(10); // Start small for instant open
+    const [visibleLogsCount, setVisibleLogsCount] = useState(10);
 
-    // CRITICAL FIX: Ref to track if we are currently saving locally.
+    // CRITICAL FIX: Refs to track local saving and last edit timestamp so stale snapshots never overwrite user edits
     const isSavingRef = useRef(false);
+    const lastLocalEditRef = useRef<number>(0);
 
     // Helper to sort logs descending (Date DESC -> Creation Time DESC)
     const sortLogs = (logs: ProjectLog[]) => {
         if (!logs) return [];
         return [...logs].sort((a, b) => {
-            // 1. Sort by Date (Newest Day First)
             const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
             if (dateDiff !== 0) return dateDiff;
-            
-            // 2. If same day, Sort by ID timestamp (Newest Entry First)
-            // Assuming ID format is `log_${timestamp}`
-            const timeA = parseInt(a.id.split('_')[1] || '0');
-            const timeB = parseInt(b.id.split('_')[1] || '0');
+            const timeA = parseInt((a.id || '').split('_')[1] || '0');
+            const timeB = parseInt((b.id || '').split('_')[1] || '0');
             return timeB - timeA;
         });
     };
@@ -68,37 +104,35 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         logs: ProjectLog[]; 
         payments: ProjectPayment[]; 
         boqItems: BOQItem[]; 
-        engineeringReports: EngineeringReportItem[]; // NEW ARRAY
-        soilReport: string; // DEPRECATED: Keep for backward compatibility view
+        engineeringReports: EngineeringReportItem[];
+        soilReport: string;
         newLog: string; 
         logDate: string; 
-        newPaymentCumulative: string; // CHANGED to Cumulative Input
+        newPaymentCumulative: string;
         newPaymentNote: string; 
-        newInvoiceNumber: string; // NEW
-        // NEW: DCS & QHSE Data
+        newInvoiceNumber: string;
         rfis: RFI[];
         submittals: Submittal[];
         correspondence: Correspondence[];
         checklists: Checklist[];
         ncrs: NCR[];
     }>({ 
-        fullDescription: initialProjectData?.fullDescription || '', 
-        logs: sortLogs(initialProjectData?.executionLogs || []), // Sort initially
-        payments: initialProjectData?.payments || [], 
-        boqItems: initialProjectData?.boqItems || [], 
-        engineeringReports: initialProjectData?.engineeringReports || [],
-        soilReport: initialProjectData?.soilReportAnalysis || '', 
+        fullDescription: seedProject?.fullDescription || '', 
+        logs: sortLogs(seedProject?.executionLogs || []),
+        payments: normalizePaymentsList(seedProject?.payments || []), 
+        boqItems: normalizeBoqList(seedProject?.boqItems || []), 
+        engineeringReports: seedProject?.engineeringReports || [],
+        soilReport: seedProject?.soilReportAnalysis || '', 
         newLog: '', 
         logDate: new Date().toISOString().split('T')[0], 
         newPaymentCumulative: '', 
         newPaymentNote: '',
         newInvoiceNumber: '',
-        // Initialize new arrays
-        rfis: initialProjectData?.rfis || [],
-        submittals: initialProjectData?.submittals || [],
-        correspondence: initialProjectData?.correspondence || [],
-        checklists: initialProjectData?.checklists || [],
-        ncrs: initialProjectData?.ncrs || []
+        rfis: seedProject?.rfis || [],
+        submittals: seedProject?.submittals || [],
+        correspondence: seedProject?.correspondence || [],
+        checklists: seedProject?.checklists || [],
+        ncrs: seedProject?.ncrs || []
     });
 
     // --- Report Generation ---
@@ -189,6 +223,9 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [tempEditLogContent, setTempEditLogContent] = useState('');
     const [tempEditLogDate, setTempEditLogDate] = useState('');
     const [tempEditLogImages, setTempEditLogImages] = useState<string[]>([]);
+    const [tempEditLogBoqItemId, setTempEditLogBoqItemId] = useState<string>('');
+    const [selectedLogBoqItemId, setSelectedLogBoqItemId] = useState<string>('');
+    const [viewingBoqLogsItem, setViewingBoqLogsItem] = useState<BOQItem | null>(null);
     const [logToDeleteId, setLogToDeleteId] = useState<string | null>(null);
     
     // Specific States (Payments)
@@ -197,6 +234,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [newPaymentItems, setNewPaymentItems] = useState<PaymentItem[]>([]);
     const [isAnalyzingPayment, setIsAnalyzingPayment] = useState(false);
     const [editingPayId, setEditingPayId] = useState<string | null>(null);
+    const [tempEditPayCumulative, setTempEditPayCumulative] = useState('');
     const [tempEditPayAmount, setTempEditPayAmount] = useState('');
     const [tempEditPayNote, setTempEditPayNote] = useState('');
     const [tempEditPayDate, setTempEditPayDate] = useState('');
@@ -271,53 +309,101 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // --- Effects ---
     useEffect(() => {
-        // If initial data changes, reflect it without overwriting non-empty existing data with empty arrays
-        if (initialProjectData) {
-             setMasterData(prev => ({
-                ...prev,
-                fullDescription: initialProjectData.fullDescription || prev.fullDescription || '',
-                logs: (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0) 
-                    ? sortLogs(initialProjectData.executionLogs) 
-                    : prev.logs,
-                payments: (initialProjectData.payments && initialProjectData.payments.length > 0) 
-                    ? initialProjectData.payments 
-                    : prev.payments,
-                boqItems: (initialProjectData.boqItems && initialProjectData.boqItems.length > 0) 
-                    ? initialProjectData.boqItems 
-                    : prev.boqItems,
-                engineeringReports: (initialProjectData.engineeringReports && initialProjectData.engineeringReports.length > 0) 
-                    ? initialProjectData.engineeringReports 
-                    : prev.engineeringReports,
-                soilReport: initialProjectData.soilReportAnalysis || prev.soilReport || '',
-                rfis: (initialProjectData.rfis && initialProjectData.rfis.length > 0) ? initialProjectData.rfis : prev.rfis,
-                submittals: (initialProjectData.submittals && initialProjectData.submittals.length > 0) ? initialProjectData.submittals : prev.submittals,
-                correspondence: (initialProjectData.correspondence && initialProjectData.correspondence.length > 0) ? initialProjectData.correspondence : prev.correspondence,
-                checklists: (initialProjectData.checklists && initialProjectData.checklists.length > 0) ? initialProjectData.checklists : prev.checklists,
-                ncrs: (initialProjectData.ncrs && initialProjectData.ncrs.length > 0) ? initialProjectData.ncrs : prev.ncrs
-            }));
+        if (!initialProjectData) return;
+        // Never overwrite active local edits in the modal
+        if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 20000)) {
             setLoading(false);
+            return;
         }
+        setMasterData(prev => ({
+            ...prev,
+            fullDescription: initialProjectData.fullDescription || prev.fullDescription || '',
+            logs: (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0) 
+                ? sortLogs(initialProjectData.executionLogs) 
+                : prev.logs,
+            payments: (initialProjectData.payments && initialProjectData.payments.length > 0) 
+                ? normalizePaymentsList(initialProjectData.payments) 
+                : prev.payments,
+            boqItems: (initialProjectData.boqItems && initialProjectData.boqItems.length > 0) 
+                ? normalizeBoqList(initialProjectData.boqItems) 
+                : prev.boqItems,
+            engineeringReports: (initialProjectData.engineeringReports && initialProjectData.engineeringReports.length > 0) 
+                ? initialProjectData.engineeringReports 
+                : prev.engineeringReports,
+            soilReport: initialProjectData.soilReportAnalysis || prev.soilReport || '',
+            rfis: (initialProjectData.rfis && initialProjectData.rfis.length > 0) ? initialProjectData.rfis : prev.rfis,
+            submittals: (initialProjectData.submittals && initialProjectData.submittals.length > 0) ? initialProjectData.submittals : prev.submittals,
+            correspondence: (initialProjectData.correspondence && initialProjectData.correspondence.length > 0) ? initialProjectData.correspondence : prev.correspondence,
+            checklists: (initialProjectData.checklists && initialProjectData.checklists.length > 0) ? initialProjectData.checklists : prev.checklists,
+            ncrs: (initialProjectData.ncrs && initialProjectData.ncrs.length > 0) ? initialProjectData.ncrs : prev.ncrs
+        }));
+        setLoading(false);
     }, [initialProjectData]);
 
-    const applyProjectDataToState = (proj: Project) => {
+    const applyProjectDataToState = (proj: Project, isInitialLocal = false) => {
+        if (!proj) return;
+        const isCurrentlyEditing = !isInitialLocal && (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 15000));
+
         setMasterData(prev => {
+            // If user is actively editing, only backfill tabs that are currently empty in state
+            if (isCurrentlyEditing) {
+                const remoteBoq = normalizeBoqList(proj.boqItems || []);
+                const remotePayments = normalizePaymentsList(proj.payments || []);
+                const remoteLogs = sortLogs(proj.executionLogs || []);
+                return {
+                    ...prev,
+                    boqItems: prev.boqItems.length === 0 && remoteBoq.length > 0 ? remoteBoq : prev.boqItems,
+                    payments: prev.payments.length === 0 && remotePayments.length > 0 ? remotePayments : prev.payments,
+                    logs: prev.logs.length === 0 && remoteLogs.length > 0 ? remoteLogs : prev.logs,
+                    engineeringReports: prev.engineeringReports.length === 0 && (proj.engineeringReports || []).length > 0 ? (proj.engineeringReports || []) : prev.engineeringReports
+                };
+            }
+
             const remoteLogs = proj.executionLogs || [];
             const logMap = new Map<string, ProjectLog>();
-            (prev.logs || []).forEach(l => { if (l && l.id) logMap.set(l.id, l); });
             remoteLogs.forEach(l => { if (l && l.id) logMap.set(l.id, l); });
+            (prev.logs || []).forEach(l => {
+                if (l && l.id) {
+                    const rem = logMap.get(l.id);
+                    const images = (l.images && l.images.length > 0) ? l.images : (rem?.images || []);
+                    logMap.set(l.id, { ...(rem || {}), ...l, images });
+                }
+            });
             const mergedLogs = sortLogs(Array.from(logMap.values()));
 
-            const remotePayments = proj.payments || [];
-            const paymentMap = new Map<string, ProjectPayment>();
-            (prev.payments || []).forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-            remotePayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            const remotePayments = normalizePaymentsList(proj.payments || []);
+            const prevPayments = normalizePaymentsList(prev.payments || []);
+            let mergedPayments: ProjectPayment[] = [];
+            if (remotePayments.length > 0 && prevPayments.length === 0) {
+                mergedPayments = remotePayments;
+            } else {
+                const paymentMap = new Map<string, ProjectPayment>();
+                prevPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+                remotePayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+                mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            }
 
-            const remoteBoq = proj.boqItems || [];
-            const boqMap = new Map<string, BOQItem>();
-            (prev.boqItems || []).forEach(b => { if (b && (b.id || b.itemNumber)) boqMap.set(b.id || b.itemNumber, b); });
-            remoteBoq.forEach(b => { if (b && (b.id || b.itemNumber)) boqMap.set(b.id || b.itemNumber, b); });
-            const mergedBoq = Array.from(boqMap.values());
+            const remoteBoq = normalizeBoqList(proj.boqItems || []);
+            const prevBoq = normalizeBoqList(prev.boqItems || []);
+            let mergedBoq: BOQItem[] = [];
+            if (remoteBoq.length > 0 && prevBoq.length === 0) {
+                mergedBoq = remoteBoq;
+            } else {
+                const boqMap = new Map<string, BOQItem>();
+                prevBoq.forEach(b => {
+                    if (b) {
+                        const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
+                        boqMap.set(key, b);
+                    }
+                });
+                remoteBoq.forEach(b => {
+                    if (b) {
+                        const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
+                        boqMap.set(key, b);
+                    }
+                });
+                mergedBoq = Array.from(boqMap.values());
+            }
 
             const remoteReports = proj.engineeringReports || [];
             const reportMap = new Map<string, EngineeringReportItem>();
@@ -337,7 +423,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 fullDescription: proj.fullDescription || prev.fullDescription || '',
                 logs: mergedLogs,
                 payments: mergedPayments,
-                boqItems: mergedBoq.length > 0 ? mergedBoq : (prev.boqItems || []),
+                boqItems: mergedBoq.length > 0 ? mergedBoq : prevBoq,
                 engineeringReports: mergedReports.length > 0 ? mergedReports : (prev.engineeringReports || []),
                 soilReport: proj.soilReportAnalysis || prev.soilReport || '',
                 rfis: mergeArr(prev.rfis, proj.rfis),
@@ -357,12 +443,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 try {
                     const localProj = await api.getProjectById(projectId, false);
                     if (localProj && !isCancelled) {
-                        applyProjectDataToState(localProj);
+                        applyProjectDataToState(localProj, true);
                         setLoading(false);
                     }
                 } catch(e) {}
 
-                const hasExistingData = Boolean(initialProjectData || masterData.logs.length > 0 || masterData.boqItems.length > 0 || masterData.fullDescription);
+                const hasExistingData = Boolean(initialProjectData || masterData.logs.length > 0 || masterData.boqItems.length > 0 || masterData.payments.length > 0 || masterData.fullDescription);
                 if (hasExistingData) {
                     setIsRefreshing(true);
                     setLoading(false);
@@ -370,18 +456,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     setLoading(true);
                 }
 
-                // Safety timer: isRefreshing NEVER hangs
                 const refreshSafety = setTimeout(() => {
                     if (!isCancelled) {
                         setIsRefreshing(false);
                         setLoading(false);
                     }
-                }, 1200);
+                }, 1000);
 
                 try {
                     const currentProject = await api.getProjectById(projectId, true);
                     if (currentProject && !isCancelled) {
-                        applyProjectDataToState(currentProject);
+                        applyProjectDataToState(currentProject, false);
+                        if (onProjectUpdated) onProjectUpdated(currentProject);
                     }
                 } finally {
                     clearTimeout(refreshSafety);
@@ -395,11 +481,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
             if (!api.isGuest()) {
                 const unsubscribe = api.subscribeToProject(projectId, (updatedProject) => {
-                    if (isSavingRef.current) {
+                    if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 20000)) {
                         return;
                     }
                     if (updatedProject) {
-                        applyProjectDataToState(updatedProject);
+                        applyProjectDataToState(updatedProject, false);
+                        if (onProjectUpdated) onProjectUpdated(updatedProject);
                     }
                 });
                 return () => {
@@ -411,36 +498,45 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
     }, [isOpen, projectId]);
 
-    const triggerAutoSave = async (newData: any) => {
+    const triggerAutoSave = async (newData: any, flags?: { _allowEmptyBoq?: boolean; _allowEmptyPayments?: boolean; _allowEmptyLogs?: boolean; _allowEmptyReports?: boolean }) => {
         if (!projectId) return;
+        const now = Date.now();
+        lastLocalEditRef.current = now;
+        isSavingRef.current = true;
         setAutoSaveStatus('saving');
-        isSavingRef.current = true; 
         
         try {
-            await api.updateProjectMasterData(projectId, { 
+            const normalizedPayments = normalizePaymentsList(newData.payments !== undefined ? newData.payments : masterData.payments);
+            const normalizedBoq = normalizeBoqList(newData.boqItems !== undefined ? newData.boqItems : masterData.boqItems);
+
+            const savedProject = await api.updateProjectMasterData(projectId, { 
                 fullDescription: newData.fullDescription !== undefined ? newData.fullDescription : (masterData.fullDescription || ''), 
-                executionLogs: newData.logs || masterData.logs || [],
-                logs: newData.logs || masterData.logs || [],
-                payments: newData.payments || masterData.payments || [], 
-                boqItems: newData.boqItems || masterData.boqItems || [], 
-                engineeringReports: newData.engineeringReports || masterData.engineeringReports || [], 
+                executionLogs: newData.logs !== undefined ? newData.logs : (masterData.logs || []),
+                payments: normalizedPayments, 
+                boqItems: normalizedBoq, 
+                engineeringReports: newData.engineeringReports !== undefined ? newData.engineeringReports : (masterData.engineeringReports || []), 
                 soilReportAnalysis: newData.soilReport !== undefined ? newData.soilReport : (masterData.soilReport || ''), 
-                rfis: newData.rfis || masterData.rfis || [],
-                submittals: newData.submittals || masterData.submittals || [],
-                correspondence: newData.correspondence || masterData.correspondence || [],
-                checklists: newData.checklists || masterData.checklists || [],
-                ncrs: newData.ncrs || masterData.ncrs || []
+                rfis: newData.rfis !== undefined ? newData.rfis : (masterData.rfis || []),
+                submittals: newData.submittals !== undefined ? newData.submittals : (masterData.submittals || []),
+                correspondence: newData.correspondence !== undefined ? newData.correspondence : (masterData.correspondence || []),
+                checklists: newData.checklists !== undefined ? newData.checklists : (masterData.checklists || []),
+                ncrs: newData.ncrs !== undefined ? newData.ncrs : (masterData.ncrs || []),
+                updatedAt: now,
+                ...(flags || {})
             });
+            if (savedProject && onProjectUpdated) {
+                onProjectUpdated(savedProject);
+            }
             setAutoSaveStatus('saved');
             setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } catch (e) {
             console.error("Auto save failed", e);
-            setAutoSaveStatus('saved'); // Local cache already saved
+            setAutoSaveStatus('saved');
             setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } finally {
             setTimeout(() => {
                 isSavingRef.current = false;
-            }, 600);
+            }, 2500);
         }
     };
 
@@ -558,12 +654,22 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const addLog = async () => { 
         if (!masterData.newLog && logImages.length === 0) return; 
         
+        const linkedBoq = selectedLogBoqItemId
+            ? masterData.boqItems.find(b => b.id === selectedLogBoqItemId)
+            : undefined;
+
         // --- OPTIMISTIC UPDATE: UPDATE UI IMMEDIATELY ---
         const newLogItem: ProjectLog = { 
             id: `log_${Date.now()}`, 
             date: masterData.logDate || new Date().toISOString().split('T')[0], 
             content: masterData.newLog,
-            images: logImages 
+            images: logImages,
+            ...(linkedBoq ? {
+                boqItemId: linkedBoq.id,
+                boqItemCode: linkedBoq.itemCode,
+                boqItemDescription: linkedBoq.description,
+                boqBatchName: linkedBoq.batchName
+            } : {})
         };
 
         // 1. Update State First (Instant Feedback)
@@ -572,6 +678,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const newData = { ...masterData, logs: updatedLogs, newLog: '' };
         setMasterData(newData);
         setLogImages([]); 
+        setSelectedLogBoqItemId('');
         
         // 2. Indicate Saving Background
         setAutoSaveStatus('saving');
@@ -693,22 +800,32 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const saveEditLog = async (id: string) => { 
         if (!tempEditLogContent.trim() && tempEditLogImages.length === 0) return; 
         
+        const linkedBoq = tempEditLogBoqItemId
+            ? masterData.boqItems.find(b => b.id === tempEditLogBoqItemId)
+            : undefined;
+
         const updatedLogItem: ProjectLog = {
             id,
             content: tempEditLogContent,
             date: tempEditLogDate,
-            images: tempEditLogImages
+            images: tempEditLogImages,
+            boqItemId: linkedBoq ? linkedBoq.id : undefined,
+            boqItemCode: linkedBoq ? linkedBoq.itemCode : undefined,
+            boqItemDescription: linkedBoq ? linkedBoq.description : undefined,
+            boqBatchName: linkedBoq ? linkedBoq.batchName : undefined
         };
 
         // Optimistic Update
         const updatedLogs = sortLogs(masterData.logs.map(l => l.id === id ? updatedLogItem : l)); 
-        
-        setMasterData(prev => ({ ...prev, logs: updatedLogs })); 
+        const newData = { ...masterData, logs: updatedLogs };
+        setMasterData(newData); 
         setEditingLogId(null); 
+        setTempEditLogBoqItemId('');
         
         setAutoSaveStatus('saving');
         try {
             await api.updateProjectLog(projectId, updatedLogItem);
+            triggerAutoSave(newData);
             setAutoSaveStatus('saved');
         } catch(e) {
             setAutoSaveStatus('idle');
@@ -801,17 +918,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     const saveEditPayment = (id: string) => { 
-        if (!tempEditPayAmount) return; 
-        // Update basic info. Note: If amounts are changed here, we should probably check cumulative logic too,
-        // but for basic edits we assume user knows what they are doing with Net Amount.
-        const newData = { ...masterData, payments: masterData.payments.map(p => p.id === id ? { ...p, netAmount: parseFloat(tempEditPayAmount), amount: parseFloat(tempEditPayAmount), note: tempEditPayNote, date: tempEditPayDate } : p).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()) };
-        setMasterData(newData); setEditingPayId(null); triggerAutoSave(newData);
+        const parsedNet = parseFloat(String(tempEditPayAmount || '0').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '')) || 0;
+        const parsedCum = parseFloat(String(tempEditPayCumulative || '0').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '')) || parsedNet;
+        const updatedPayments = masterData.payments.map(p => p.id === id ? {
+            ...p,
+            cumulativeAmount: parsedCum > 0 ? parsedCum : parsedNet,
+            netAmount: parsedNet,
+            amount: parsedNet,
+            note: tempEditPayNote,
+            date: tempEditPayDate
+        } : p).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const newData = { ...masterData, payments: updatedPayments };
+        setMasterData(newData);
+        setEditingPayId(null);
+        triggerAutoSave(newData);
     };
 
     const confirmDeletePayment = () => { 
         if (paymentToDeleteId) { 
             const newData = { ...masterData, payments: masterData.payments.filter(p => p.id !== paymentToDeleteId) };
-            setMasterData(newData); setPaymentToDeleteId(null); triggerAutoSave(newData);
+            setMasterData(newData);
+            setPaymentToDeleteId(null);
+            triggerAutoSave(newData, { _allowEmptyPayments: true });
         } 
     };
 
@@ -960,13 +1088,61 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         triggerAutoSave(newData);
         setEditingBoqItem(newItem);
     };
-    const confirmDeleteBOQItem = () => { if (!editingBoqItem) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => item.id !== editingBoqItem.id) }; setMasterData(newData); setEditingBoqItem(null); setShowBoqDeleteConfirm(false); triggerAutoSave(newData); };
-    const saveBOQItemEdit = () => { if (!editingBoqItem) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => item.id === editingBoqItem.id ? editingBoqItem : item) }; setMasterData(newData); setEditingBoqItem(null); triggerAutoSave(newData); };
-    const addItemBelow = () => { if (!editingBoqItem) return; const currentIndex = masterData.boqItems.findIndex(i => i.id === editingBoqItem.id); if (currentIndex === -1) return; const newItem: BOQItem = { id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`, itemCode: '', description: '', unit: '', quantity: 0, unitPrice: 0, total: 0, executedQuantity: 0, batchId: editingBoqItem.batchId, batchName: editingBoqItem.batchName }; const newItems = [...masterData.boqItems]; newItems.splice(currentIndex + 1, 0, newItem); const newData = { ...masterData, boqItems: newItems }; setMasterData(newData); setEditingBoqItem(null); triggerAutoSave(newData); };
+    const confirmDeleteBOQItem = () => {
+        if (!editingBoqItem) return;
+        const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => item.id !== editingBoqItem.id) };
+        setMasterData(newData);
+        setEditingBoqItem(null);
+        setShowBoqDeleteConfirm(false);
+        triggerAutoSave(newData, { _allowEmptyBoq: true });
+    };
+    const saveBOQItemEdit = () => {
+        if (!editingBoqItem) return;
+        const qty = Number(editingBoqItem.quantity) || 0;
+        const price = Number(editingBoqItem.unitPrice) || 0;
+        const execQty = Number(editingBoqItem.executedQuantity) || 0;
+        const updatedItem: BOQItem = {
+            ...editingBoqItem,
+            quantity: qty,
+            unitPrice: price,
+            executedQuantity: execQty,
+            total: qty * price
+        };
+        const newData = {
+            ...masterData,
+            boqItems: masterData.boqItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+        };
+        setMasterData(newData);
+        setEditingBoqItem(null);
+        triggerAutoSave(newData);
+    };
+    const addItemBelow = () => {
+        if (!editingBoqItem) return;
+        const currentIndex = masterData.boqItems.findIndex(i => i.id === editingBoqItem.id);
+        if (currentIndex === -1) return;
+        const newItem: BOQItem = {
+            id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            itemCode: String(currentIndex + 2),
+            description: 'بند جديد',
+            unit: editingBoqItem.unit || 'عدد',
+            quantity: 1,
+            unitPrice: 0,
+            total: 0,
+            executedQuantity: 0,
+            batchId: editingBoqItem.batchId,
+            batchName: editingBoqItem.batchName
+        };
+        const newItems = [...masterData.boqItems];
+        newItems.splice(currentIndex + 1, 0, newItem);
+        const newData = { ...masterData, boqItems: newItems };
+        setMasterData(newData);
+        setEditingBoqItem(newItem);
+        triggerAutoSave(newData);
+    };
     
     const handleDeleteBatchClick = (batchId: string) => { setBatchToDeleteId(batchId); };
-    const confirmDeleteBatch = () => { if (!batchToDeleteId) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => item.batchId !== batchToDeleteId) }; setMasterData(newData); setBatchToDeleteId(null); triggerAutoSave(newData); };
-    const saveBatchRename = (batchId: string) => { if (!newBatchName.trim()) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => item.batchId === batchId ? { ...item, batchName: newBatchName } : item) }; setMasterData(newData); setRenamingBatchId(null); triggerAutoSave(newData); };
+    const confirmDeleteBatch = () => { if (!batchToDeleteId) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => (item.batchId || 'default') !== batchToDeleteId) }; setMasterData(newData); setBatchToDeleteId(null); triggerAutoSave(newData, { _allowEmptyBoq: true }); };
+    const saveBatchRename = (batchId: string) => { if (!newBatchName.trim()) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => (item.batchId || 'default') === batchId ? { ...item, batchName: newBatchName } : item) }; setMasterData(newData); setRenamingBatchId(null); triggerAutoSave(newData); };
     
     const handleEditBatchAsLetter = (batchItems: BOQItem[], batchName: string) => {
         const tableRows = batchItems.map(item => `
@@ -1588,6 +1764,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         return Math.max(...masterData.payments.map(p => p.cumulativeAmount || 0), 0);
     }, [masterData.payments]);
 
+    // Map each BOQ item ID to its linked daily logs
+    const logsByBoqItemId = useMemo(() => {
+        const map = new Map<string, ProjectLog[]>();
+        masterData.logs.forEach(log => {
+            if (log.boqItemId) {
+                const list = map.get(log.boqItemId) || [];
+                list.push(log);
+                map.set(log.boqItemId, list);
+            }
+        });
+        return map;
+    }, [masterData.logs]);
+
+    // Filterable BOQ items that can be linked to logs (non-note items)
+    const linkableBoqItems = useMemo(() => {
+        return masterData.boqItems.filter(item => Boolean(item.quantity || item.unitPrice));
+    }, [masterData.boqItems]);
+
     const renderBoqTable = () => { 
         const { groupedItems, batchOrder, grandTotalValue, grandExecutedValue } = boqDerivedData;
         return ( 
@@ -1679,6 +1873,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                   </tr> 
                   {!isCollapsed && groupItems.map((item) => {
                       const isNote = !item.quantity && !item.unitPrice;
+                      const linkedLogs = logsByBoqItemId.get(item.id) || [];
+                      const linkedPhotosCount = linkedLogs.reduce((sum, l) => sum + ((l.images || []).length), 0);
                       return ( 
                       <tr key={item.id} className="hover:bg-blue-50/50 transition border-b border-slate-200"> 
                           <td colSpan={6} className="p-3"> 
@@ -1698,12 +1894,50 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                       {item.description}
                                   </div>
                                   {!isNote && (
-                                      <div className="grid grid-cols-4 gap-1.5 sm:gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-2"> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الوحدة</span><span className="text-sm sm:text-base font-bold">{item.unit}</span></div> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الكمية</span><span className="text-sm sm:text-base font-bold font-mono">{item.quantity}</span></div> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الفئة</span><span className="text-sm sm:text-base font-bold font-mono">{item.unitPrice}</span></div> 
-                                          <div className="flex flex-col"><span className="text-xs text-slate-500 font-bold">الإجمالي</span><span className="text-sm sm:text-base font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
-                                      </div> 
+                                      <>
+                                          <div className="grid grid-cols-4 gap-1.5 sm:gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-1"> 
+                                              <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الوحدة</span><span className="text-sm sm:text-base font-bold">{item.unit}</span></div> 
+                                              <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الكمية</span><span className="text-sm sm:text-base font-bold font-mono">{item.quantity}</span></div> 
+                                              <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الفئة</span><span className="text-sm sm:text-base font-bold font-mono">{item.unitPrice}</span></div> 
+                                              <div className="flex flex-col"><span className="text-xs text-slate-500 font-bold">الإجمالي</span><span className="text-sm sm:text-base font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
+                                          </div>
+                                          <div className="flex items-center justify-between gap-2 pt-1">
+                                              {linkedLogs.length > 0 ? (
+                                                  <button
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          setViewingBoqLogsItem(item);
+                                                      }}
+                                                      className="bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs"
+                                                  >
+                                                      <i className="fa-solid fa-clipboard-check text-indigo-600"></i>
+                                                      <span>{linkedLogs.length} يومية مرتبطة</span>
+                                                      {linkedPhotosCount > 0 && (
+                                                          <span className="bg-indigo-600 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono flex items-center gap-1">
+                                                              <i className="fa-solid fa-camera text-[8px]"></i> {linkedPhotosCount}
+                                                          </span>
+                                                      )}
+                                                  </button>
+                                              ) : (
+                                                  <span className="text-[11px] text-slate-400 font-bold flex items-center gap-1">
+                                                      <i className="fa-regular fa-clipboard"></i> لا توجد يوميات مرتبطة بهذا البند
+                                                  </span>
+                                              )}
+                                              <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setSelectedLogBoqItemId(item.id);
+                                                      setActiveTab('logs');
+                                                  }}
+                                                  className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-xs shrink-0"
+                                              >
+                                                  <i className="fa-solid fa-plus text-[10px]"></i>
+                                                  <span>تسجيل يومية للبند</span>
+                                              </button>
+                                          </div>
+                                      </>
                                   )}
                               </div>
                           </td> 
@@ -1813,7 +2047,6 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                     {activeTab === 'logs' && (
                         <div className="flex flex-col gap-2 pb-20">
-                            {/* ... (Keep Log Tab Content) ... */}
                             <div className="bg-white rounded-xl p-2 border border-blue-100 shadow-sm shrink-0">
                                 <div className="flex gap-2 items-center mb-2">
                                     <input type="date" className="bg-white border border-blue-200 text-xs rounded-lg px-2 py-1.5 outline-none text-slate-700 font-bold w-24" value={masterData.logDate} onChange={(e) => setMasterData({...masterData, logDate: e.target.value})} />
@@ -1827,6 +2060,37 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                         <span>إضافة</span>
                                     </button>
                                 </div>
+
+                                {/* BOQ Item Link Selector */}
+                                {linkableBoqItems.length > 0 && (
+                                    <div className="mb-2 flex items-center gap-1.5">
+                                        <div className="relative flex-1">
+                                            <select
+                                                value={selectedLogBoqItemId}
+                                                onChange={(e) => setSelectedLogBoqItemId(e.target.value)}
+                                                className="w-full bg-indigo-50/70 border border-indigo-200 text-indigo-950 text-[11px] font-bold rounded-lg px-2.5 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+                                            >
+                                                <option value="">🔗 ربط اليومية ببند من المقايسة (اختياري)...</option>
+                                                {linkableBoqItems.map(bItem => (
+                                                    <option key={bItem.id} value={bItem.id}>
+                                                        {bItem.batchName ? `[${bItem.batchName}] ` : ''}بند ({bItem.itemCode}): {(bItem.description || '').slice(0, 65)}{(bItem.description || '').length > 65 ? '...' : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        {selectedLogBoqItemId && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedLogBoqItemId('')}
+                                                className="w-7 h-7 rounded-lg bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 transition shrink-0"
+                                                title="إلغاء ربط البند"
+                                            >
+                                                <i className="fa-solid fa-times text-xs"></i>
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+
                                 {isUploadingImages && (
                                     <div className="mb-2 text-xs text-blue-600 font-bold flex items-center gap-2 bg-blue-50 p-2 rounded-lg">
                                         <i className="fa-solid fa-gear fa-spin"></i> جاري ضغط الصور وتجهيزها للحفظ...
@@ -1837,11 +2101,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             </div>
                             
                             <div className="space-y-2 pr-1">
-                                {visibleLogs.map((log, idx) => (
+                                {visibleLogs.map((log, idx) => {
+                                    const matchedBoqItem = log.boqItemId ? masterData.boqItems.find(b => b.id === log.boqItemId) : undefined;
+                                    return (
                                     <div key={log.id} className="relative group">
                                         {editingLogId === log.id ? (
                                             <div className="bg-blue-50 p-2 rounded-xl border-2 border-blue-300 shadow-md">
                                                 <input type="date" className="w-full p-2 text-xs bg-white border border-blue-200 rounded-lg mb-2" value={tempEditLogDate} onChange={(e) => setTempEditLogDate(e.target.value)} />
+                                                {linkableBoqItems.length > 0 && (
+                                                    <select
+                                                        value={tempEditLogBoqItemId}
+                                                        onChange={(e) => setTempEditLogBoqItemId(e.target.value)}
+                                                        className="w-full p-2 text-xs bg-white border border-indigo-200 rounded-lg mb-2 font-bold text-indigo-950"
+                                                    >
+                                                        <option value="">🔗 بدون ربط ببند مقايسة</option>
+                                                        {linkableBoqItems.map(bItem => (
+                                                            <option key={bItem.id} value={bItem.id}>
+                                                                {bItem.batchName ? `[${bItem.batchName}] ` : ''}بند ({bItem.itemCode}): {(bItem.description || '').slice(0, 65)}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                )}
                                                 <textarea className="w-full p-2 text-xs bg-white border border-blue-200 rounded-lg mb-2 min-h-[80px]" value={tempEditLogContent} onChange={(e) => setTempEditLogContent(e.target.value)} />
                                                 <div className="flex gap-2 flex-wrap mb-2">{tempEditLogImages.map((img, i) => <div key={i} className="relative w-16 h-16"><img src={img} alt="" className="w-full h-full object-cover rounded-lg" /><button onClick={() => setTempEditLogImages(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px]"><i className="fa-solid fa-times"></i></button></div>)}</div>
                                                 <div className="flex justify-between"><button onClick={() => setSourceModal({ type: 'editLog', title: 'إضافة صورة' })} className="text-[10px] text-blue-600 bg-blue-100 px-2 py-1 rounded">إضافة صورة</button><div className="flex gap-2"><button onClick={() => saveEditLog(log.id)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">حفظ</button><button onClick={() => setEditingLogId(null)} className="text-xs bg-white border px-3 py-1 rounded">إلغاء</button></div></div>
@@ -1857,10 +2137,29 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     <div className="flex items-center gap-2 mt-[-2px]"><div className="w-8 h-8 rounded-full bg-white/50 text-slate-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-calendar-day text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none pb-1.5">{log.date}</span></div>
                                                     <div className="flex gap-1 log-actions-container">
                                                         <button onClick={() => shareLogToWhatsApp(log)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-green-600 transition flex items-center justify-center" title="مشاركة واتساب"><i className="fa-brands fa-whatsapp text-[12px]"></i></button>
-                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
+                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogBoqItemId(log.boqItemId || ''); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
                                                         <button onClick={() => setLogToDeleteId(log.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button>
                                                     </div>
                                                 </div>
+                                                {(log.boqItemId || log.boqItemCode) && (
+                                                    <div
+                                                        onClick={() => {
+                                                            if (matchedBoqItem) {
+                                                                setViewingBoqLogsItem(matchedBoqItem);
+                                                            } else {
+                                                                setActiveTab('boq');
+                                                            }
+                                                        }}
+                                                        className="bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-300 text-indigo-950 px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-between gap-2"
+                                                    >
+                                                        <div className="flex items-center gap-1.5 truncate">
+                                                            <i className="fa-solid fa-link text-indigo-600 text-[10px]"></i>
+                                                            <span className="font-mono text-indigo-800 shrink-0">بند ({log.boqItemCode || matchedBoqItem?.itemCode || '-'}):</span>
+                                                            <span className="truncate">{log.boqItemDescription || matchedBoqItem?.description || ''}</span>
+                                                        </div>
+                                                        <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-indigo-600 shrink-0"></i>
+                                                    </div>
+                                                )}
                                                 <p className="text-slate-900 text-lg leading-normal font-bold whitespace-pre-wrap mt-[-4px]">{log.content}</p>
                                                 {/* OPTIMIZED IMAGES: Loading Eager for top 2 logs for instant feel */}
                                                 {log.images && log.images.length > 0 && (
@@ -1892,7 +2191,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                )})}
                                 
                                 {/* Show More Button */}
                                 {visibleLogsCount < masterData.logs.length && (
@@ -1945,15 +2244,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <div key={pay.id} className="relative group animate-scale-in">
                                         {editingPayId === pay.id ? (
                                             <div className="bg-green-50 p-4 rounded-xl border-2 border-green-300 shadow-md flex flex-col gap-2">
-                                                <div className="flex gap-2"><input type="date" className="w-1/3 p-2 text-xs rounded-lg border" value={tempEditPayDate} onChange={(e) => setTempEditPayDate(e.target.value)} /><input type="number" className="w-2/3 p-2 text-xs rounded-lg border" value={tempEditPayAmount} onChange={(e) => setTempEditPayAmount(e.target.value)} /></div>
-                                                <textarea className="w-full p-2 text-xs rounded-lg border" value={tempEditPayNote} onChange={(e) => setTempEditPayNote(e.target.value)} />
-                                                <div className="flex justify-end gap-2"><button onClick={() => saveEditPayment(pay.id)} className="text-[10px] bg-green-600 text-white px-3 py-1 rounded">حفظ</button><button onClick={() => setEditingPayId(null)} className="text-[10px] bg-white border px-3 py-1 rounded">إلغاء</button></div>
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    <div className="flex flex-col">
+                                                        <label className="text-[9px] font-bold text-slate-500 mb-0.5">التاريخ</label>
+                                                        <input type="date" className="w-full p-2 text-xs rounded-lg border bg-white font-bold" value={tempEditPayDate} onChange={(e) => setTempEditPayDate(e.target.value)} />
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <label className="text-[9px] font-bold text-slate-500 mb-0.5">إجمالي الأعمال</label>
+                                                        <input type="number" className="w-full p-2 text-xs rounded-lg border bg-white font-bold" value={tempEditPayCumulative} onChange={(e) => { setTempEditPayCumulative(e.target.value); setTempEditPayAmount(e.target.value); }} />
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <label className="text-[9px] font-bold text-green-700 mb-0.5">صافي المستخلص</label>
+                                                        <input type="number" className="w-full p-2 text-xs rounded-lg border bg-white font-bold text-green-800" value={tempEditPayAmount} onChange={(e) => setTempEditPayAmount(e.target.value)} />
+                                                    </div>
+                                                </div>
+                                                <textarea className="w-full p-2 text-xs rounded-lg border bg-white font-bold" value={tempEditPayNote} onChange={(e) => setTempEditPayNote(e.target.value)} placeholder="البيان..." />
+                                                <div className="flex justify-end gap-2"><button onClick={() => saveEditPayment(pay.id)} className="text-xs font-bold bg-green-600 text-white px-4 py-1.5 rounded-lg shadow-sm">حفظ التعديل</button><button onClick={() => setEditingPayId(null)} className="text-xs font-bold bg-white border px-4 py-1.5 rounded-lg">إلغاء</button></div>
                                             </div>
                                         ) : (
                                             <div className={`p-3 rounded-2xl shadow-sm border-4 hover:shadow-md transition relative flex flex-col gap-2 ${getCardColor(idx)}`}>
                                                 <div className="flex justify-between items-center border-b border-black/5 pb-2">
                                                     <div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-white/50 text-green-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-file-invoice text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none pt-1">{pay.date} | #{pay.invoiceNumber || '-'}</span></div>
-                                                    <div className="flex gap-1"><button onClick={() => { setEditingPayId(pay.id); setTempEditPayAmount((pay.netAmount || pay.amount || 0).toString()); setTempEditPayNote(pay.note); setTempEditPayDate(pay.date); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button><button onClick={() => setPaymentToDeleteId(pay.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button></div>
+                                                    <div className="flex gap-1"><button onClick={() => { setEditingPayId(pay.id); setTempEditPayCumulative((pay.cumulativeAmount || pay.netAmount || (pay as any).amount || 0).toString()); setTempEditPayAmount((pay.netAmount || (pay as any).amount || pay.cumulativeAmount || 0).toString()); setTempEditPayNote(pay.note || ''); setTempEditPayDate(pay.date); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button><button onClick={() => setPaymentToDeleteId(pay.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button></div>
                                                 </div>
                                                 <div className="bg-white/40 p-2.5 rounded-lg border border-black/5 flex flex-col gap-1">
                                                     <div className="flex justify-between items-center border-b border-black/5 pb-1 mb-1">
@@ -2411,6 +2723,91 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             </div>
                             <div className="p-3 bg-white border-t border-slate-200 shrink-0">
                                 <button onClick={confirmPickerSelection} disabled={selectedPickerItems.size === 0 || isProcessingPicker} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50">{isProcessingPicker ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-check-double"></i>} {isProcessingPicker ? 'جاري التحميل...' : `إضافة ${selectedPickerItems.size} ملفات`}</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* BOQ Item Linked Logs & Photos Modal */}
+                {viewingBoqLogsItem && (
+                    <div className="fixed inset-0 z-[1750] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                        <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 flex flex-col max-h-[85vh] overflow-hidden animate-scale-in">
+                            <div className="bg-gradient-to-r from-indigo-800 to-slate-900 text-white p-4 flex justify-between items-center shrink-0">
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <span className="bg-indigo-500/30 border border-indigo-400/40 text-indigo-100 text-xs font-mono font-bold px-2.5 py-0.5 rounded-lg">
+                                            بند رقم: {viewingBoqLogsItem.itemCode}
+                                        </span>
+                                        {viewingBoqLogsItem.batchName && (
+                                            <span className="text-[11px] text-indigo-200 truncate">
+                                                ({viewingBoqLogsItem.batchName})
+                                            </span>
+                                        )}
+                                    </div>
+                                    <h3 className="font-bold text-sm sm:text-base mt-1 line-clamp-2 text-white">
+                                        {viewingBoqLogsItem.description}
+                                    </h3>
+                                </div>
+                                <button
+                                    onClick={() => setViewingBoqLogsItem(null)}
+                                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition shrink-0 mr-2"
+                                >
+                                    <i className="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+
+                            <div className="bg-indigo-50/70 px-4 py-2.5 border-b border-indigo-100 flex flex-wrap justify-between items-center gap-2 shrink-0 text-xs font-bold">
+                                <div className="flex items-center gap-3">
+                                    <span className="text-slate-600">الكمية التعاقدية: <strong className="font-mono text-slate-900">{viewingBoqLogsItem.quantity} {viewingBoqLogsItem.unit}</strong></span>
+                                    <span className="text-green-700">المنفذ: <strong className="font-mono text-green-800">{viewingBoqLogsItem.executedQuantity || 0} {viewingBoqLogsItem.unit}</strong></span>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        const itemId = viewingBoqLogsItem.id;
+                                        setViewingBoqLogsItem(null);
+                                        setSelectedLogBoqItemId(itemId);
+                                        setActiveTab('logs');
+                                    }}
+                                    className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                                >
+                                    <i className="fa-solid fa-plus"></i>
+                                    <span>إضافة يومية جديدة لهذا البند</span>
+                                </button>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+                                {(logsByBoqItemId.get(viewingBoqLogsItem.id) || []).length === 0 ? (
+                                    <div className="text-center py-12 text-slate-400">
+                                        <i className="fa-regular fa-clipboard text-3xl mb-2 opacity-40"></i>
+                                        <p className="text-xs font-bold">لا توجد يوميات مسجلة لهذا البند حتى الآن.</p>
+                                    </div>
+                                ) : (
+                                    (logsByBoqItemId.get(viewingBoqLogsItem.id) || []).map((log, i) => (
+                                        <div key={log.id} className={`p-3 rounded-2xl border-2 shadow-xs bg-white border-indigo-100 flex flex-col gap-2`}>
+                                            <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                                                <span className="font-mono font-bold text-xs text-indigo-900 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                                                    <i className="fa-solid fa-calendar-day ml-1.5 text-indigo-500"></i>
+                                                    {log.date}
+                                                </span>
+                                                <span className="text-[10px] text-slate-400 font-bold">سجل #{i + 1}</span>
+                                            </div>
+                                            <p className="text-slate-800 text-sm font-bold leading-relaxed whitespace-pre-wrap">{log.content}</p>
+                                            {log.images && log.images.length > 0 && (
+                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                                                    {log.images.map((img, imgIdx) => (
+                                                        <div
+                                                            key={imgIdx}
+                                                            onClick={() => setSelectedFullScreenImage(img)}
+                                                            className="aspect-square rounded-xl overflow-hidden border border-slate-200 cursor-pointer hover:opacity-90 transition"
+                                                        >
+                                                            <img src={img} alt="" className="w-full h-full object-cover" />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))
+                                )}
                             </div>
                         </div>
                     </div>

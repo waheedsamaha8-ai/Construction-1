@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { FileItem } from '../types';
 import { aiHelper } from '../services/aiHelper';
 import { api } from '../services/api';
+import { dbService } from '../services/db';
 import { printService } from '../services/printService';
 import * as pdfjsLib from 'pdfjs-dist';
 import ImageEditor from './ImageEditor';
@@ -184,15 +185,32 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
     const load = async () => {
         if (isImage) {
-            let instantUrl = currentItem.previewUrl;
+            // 1. Check local IndexedDB cache first (0ms)
+            try {
+                const cachedBlob = await dbService.getBlob(currentItem.id);
+                if (cachedBlob && active) {
+                    setDisplayUrl(URL.createObjectURL(cachedBlob));
+                    setIsHighResLoaded(true);
+                    return;
+                }
+            } catch (e) {}
+
+            // 2. Show high-res Google Drive preview immediately (<100ms, crisp)
+            let instantUrl = currentItem.previewUrl || currentItem.thumbnailLink;
             if (instantUrl && instantUrl.includes('googleusercontent.com')) {
                 instantUrl = instantUrl.replace(/=s\d+/, '=s1600'); 
+            } else if (!instantUrl && currentItem.id && !currentItem.id.startsWith('temp_')) {
+                instantUrl = `https://drive.google.com/thumbnail?id=${currentItem.id}&sz=w1600`;
             }
-            if (instantUrl && active) setDisplayUrl(instantUrl);
+            if (instantUrl && active) {
+                setDisplayUrl(instantUrl);
+                setIsHighResLoaded(true);
+            }
 
+            // 3. Silently cache full blob in background for offline/zoom
             try {
-                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
-                if (active) {
+                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active && !instantUrl) setDownloadProgress(p); }, !!instantUrl);
+                if (active && blob) {
                     const blobUrl = URL.createObjectURL(blob);
                     setDisplayUrl(blobUrl);
                     setIsHighResLoaded(true);
@@ -231,20 +249,30 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             }
         }
         else if (isVideo || isAudio) {
+             // 1. Check local IndexedDB blob first (0ms for locally recorded or cached media)
+             try {
+                 const localBlob = await dbService.getBlob(currentItem.id);
+                 if (localBlob && active) {
+                     setDisplayUrl(URL.createObjectURL(localBlob));
+                     return;
+                 }
+             } catch (e) {}
+
+             // 2. Stream directly via HTTP Range without competing full-file XHR download
              const token = api.getAccessToken ? api.getAccessToken() : '';
-             const streamUrl = token 
+             const streamUrl = token && !currentItem.id.startsWith('temp_')
                  ? `https://www.googleapis.com/drive/v3/files/${currentItem.id}?alt=media&access_token=${token}` 
                  : (currentItem.webContentLink || currentItem.previewUrl);
              
              if (streamUrl && active) {
                  setDisplayUrl(streamUrl);
-             }
-
-             try {
-                 const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
-                 if (active) setDisplayUrl(URL.createObjectURL(blob));
-             } catch(e) {
-                 if (!streamUrl && active) setLoadError(true);
+             } else {
+                 try {
+                     const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
+                     if (active) setDisplayUrl(URL.createObjectURL(blob));
+                 } catch(e) {
+                     if (active) setLoadError(true);
+                 }
              }
         }
         else if (isText) {

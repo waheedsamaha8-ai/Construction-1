@@ -76,6 +76,23 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
 
   const style = getStatusStyle(project.status);
   const progress = project.calculatedProgress || 0;
+  const timeProgress = project.timeProgress || 0;
+  const scheduleStatus = project.scheduleStatus || 'unset';
+
+  const getScheduleBadge = () => {
+    if (scheduleStatus === 'ahead') {
+      return { text: 'متقدم زمنياً', color: 'bg-emerald-600 text-white', barColor: 'bg-emerald-500' };
+    }
+    if (scheduleStatus === 'delayed') {
+      return { text: 'متأخر زمنياً', color: 'bg-rose-600 text-white', barColor: 'bg-rose-500' };
+    }
+    if (scheduleStatus === 'on_track') {
+      return { text: 'منتظم زمنياً', color: 'bg-blue-600 text-white', barColor: 'bg-blue-500' };
+    }
+    return { text: 'غير محدد المدة', color: 'bg-slate-500 text-white', barColor: 'bg-slate-400' };
+  };
+
+  const schedBadge = getScheduleBadge();
 
   const toggleExpand = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -106,7 +123,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                 </span>
             </div>
             
-            {/* Title, Location & Financial Progress */}
+            {/* Title, Location & Financial vs Time Progress */}
             <div className="min-w-0 pt-0.5 flex-1">
                  <h3 className={`font-black ${style.textColor} leading-tight truncate transition-all ${isExpanded ? 'text-lg mb-1' : 'text-base'}`}>
                     {project.name}
@@ -120,15 +137,38 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                  )}
 
                  {!isExpanded && (
-                     <div className="w-full mt-2">
-                         <div className="flex justify-between items-center text-[10px] font-bold mb-0.5">
-                             <span className={`${style.subTextColor} opacity-90`}>الإنجاز المالي:</span>
-                             <span className="font-mono text-[10px] font-extrabold text-slate-900 bg-white/80 px-1.5 py-0.2 rounded border border-black/10">
-                                 {progress}%
-                             </span>
+                     <div className="w-full mt-2 space-y-1.5">
+                         {/* Financial Progress Bar */}
+                         <div>
+                             <div className="flex justify-between items-center text-[10px] font-bold mb-0.5">
+                                 <span className={`${style.subTextColor} opacity-90`}>الإنجاز المالي:</span>
+                                 <span className="font-mono text-[10px] font-extrabold text-slate-900 bg-white/80 px-1.5 py-0.2 rounded border border-black/10">
+                                     {progress}%
+                                 </span>
+                             </div>
+                             <div className="w-full bg-black/10 h-1.5 rounded-full overflow-hidden shadow-inner">
+                                 <div className={`h-full rounded-full transition-all duration-500 ${style.progressColor}`} style={{width: `${Math.min(Math.max(progress, 0), 100)}%`}}></div>
+                             </div>
                          </div>
-                         <div className="w-full bg-black/10 h-2 rounded-full overflow-hidden shadow-inner">
-                             <div className={`h-full rounded-full transition-all duration-500 ${style.progressColor}`} style={{width: `${Math.min(Math.max(progress, 0), 100)}%`}}></div>
+
+                         {/* Time Elapsed Progress Bar */}
+                         <div>
+                             <div className="flex justify-between items-center text-[9px] font-bold mb-0.5">
+                                 <div className="flex items-center gap-1">
+                                     <span className={`${style.subTextColor} opacity-85`}>المدة المنقضية:</span>
+                                     {scheduleStatus !== 'unset' && (
+                                         <span className={`text-[7px] font-bold px-1.5 py-0.1 rounded-full ${schedBadge.color}`}>
+                                             {schedBadge.text}
+                                         </span>
+                                     )}
+                                 </div>
+                                 <span className="font-mono text-[9px] font-extrabold text-slate-800 bg-white/70 px-1.5 py-0.1 rounded border border-black/10">
+                                     {timeProgress}%
+                                 </span>
+                             </div>
+                             <div className="w-full bg-black/10 h-1.5 rounded-full overflow-hidden shadow-inner">
+                                 <div className={`h-full rounded-full transition-all duration-500 ${schedBadge.barColor}`} style={{width: `${Math.min(Math.max(timeProgress, 0), 100)}%`}}></div>
+                             </div>
                          </div>
                      </div>
                  )}
@@ -201,19 +241,49 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                 <span>{project.location || 'الموقع غير محدد'}</span>
             </div>
 
-            {/* Real Progress */}
-            <div className="mb-5">
-                <div className={`flex justify-between text-xs font-bold ${style.textColor} mb-1.5`}>
-                    <span>نسبة الإنجاز المالي</span>
-                    <span className="font-mono text-sm">{progress}%</span>
-                </div>
-                <div className="w-full bg-white/50 h-3 rounded-full overflow-hidden border border-black/5 shadow-inner">
-                    <div 
-                        className={`h-full rounded-full transition-all duration-1000 ${style.progressColor} shadow-sm relative`} 
-                        style={{width: `${Math.min(progress, 100)}%`}}
-                    >
-                        <div className="absolute top-0 left-0 right-0 h-[1px] bg-white/30"></div>
+            {/* Financial vs Time Progress Comparison */}
+            <div className="mb-5 bg-white/60 p-3 rounded-2xl border border-black/5 shadow-sm space-y-3">
+                <div>
+                    <div className={`flex justify-between text-xs font-bold ${style.textColor} mb-1`}>
+                        <span>نسبة الإنجاز المالي</span>
+                        <span className="font-mono text-sm">{progress}%</span>
                     </div>
+                    <div className="w-full bg-black/10 h-2.5 rounded-full overflow-hidden shadow-inner">
+                        <div 
+                            className={`h-full rounded-full transition-all duration-1000 ${style.progressColor} shadow-sm relative`} 
+                            style={{width: `${Math.min(progress, 100)}%`}}
+                        ></div>
+                    </div>
+                </div>
+
+                <div>
+                    <div className={`flex justify-between items-center text-xs font-bold ${style.textColor} mb-1`}>
+                        <div className="flex items-center gap-1.5">
+                            <span>نسبة المدة المنقضية</span>
+                            {scheduleStatus !== 'unset' && (
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${schedBadge.color}`}>
+                                    {schedBadge.text}
+                                </span>
+                            )}
+                        </div>
+                        <span className="font-mono text-sm">{timeProgress}%</span>
+                    </div>
+                    <div className="w-full bg-black/10 h-2.5 rounded-full overflow-hidden shadow-inner">
+                        <div 
+                            className={`h-full rounded-full transition-all duration-1000 ${schedBadge.barColor} shadow-sm relative`} 
+                            style={{width: `${Math.min(timeProgress, 100)}%`}}
+                        ></div>
+                    </div>
+                    {project.totalDays ? (
+                        <div className="flex justify-between items-center text-[10px] text-slate-600 font-bold mt-1.5">
+                            <span>المنقضي: {project.elapsedDays || 0} يوم من {project.totalDays} يوم</span>
+                            <span className={project.daysRemaining && project.daysRemaining < 0 ? 'text-rose-600 font-extrabold' : 'text-slate-700'}>
+                                {project.daysRemaining !== undefined
+                                    ? (project.daysRemaining >= 0 ? `متبقي ${project.daysRemaining} يوم` : `تجاوز المدة بـ ${Math.abs(project.daysRemaining)} يوم`)
+                                    : ''}
+                            </span>
+                        </div>
+                    ) : null}
                 </div>
             </div>
 

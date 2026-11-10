@@ -44,8 +44,8 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
             <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-inner border ${style.bg} relative overflow-hidden shrink-0`}>
                 {isVideoItem ? (
                     <VideoThumbnail item={item} className="w-full h-full" />
-                ) : item.previewUrl ? (
-                    <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
+                ) : (item.previewUrl || item.thumbnailLink || (mime.startsWith('image/') && !item.id.startsWith('temp_') && !item.id.startsWith('file_'))) ? (
+                    <img src={item.previewUrl || item.thumbnailLink || `https://drive.google.com/thumbnail?id=${item.id}&sz=w300`} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 ) : (
                     <i className={`fa-solid ${style.icon} ${style.color} drop-shadow-sm`}></i>
                 )}
@@ -126,16 +126,26 @@ export default function ProjectFolder() {
   const [useGeotagging, setUseGeotagging] = useState(true);
   const targetId = folderId || projectId || '';
   const cachedData = useMemo(() => api.getCachedContents(targetId), [targetId]);
+  const initialProj = useMemo(() => {
+      if (!projectId) return null;
+      const list = api.getCachedProjects() || api.getSyncProjects();
+      return list?.find(p => p.id === projectId) || null;
+  }, [projectId]);
+
   const [items, setItems] = useState<FileItem[]>(cachedData || []);
   const [loading, setLoading] = useState(!cachedData);
-  const [currentProject, setCurrentProject] = useState<Project | null>(null);
+  const [currentProject, setCurrentProject] = useState<Project | null>(initialProj);
   // ... (Modal states remain unchanged)
   const [modalMode, setModalMode] = useState<'none' | 'createFolder' | 'upload' | 'masterData' | 'rename' | 'move' | 'createManualBOQ'>('none');
   const [selectedItem, setSelectedItem] = useState<FileItem | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [currentFolderId, setCurrentFolderId] = useState(targetId);
-  const [currentFolderName, setCurrentFolderName] = useState<string>(isArchiveRoute ? ARCHIVE_FOLDER_NAME : (location.state?.folderName || '...'));
+  const [currentFolderName, setCurrentFolderName] = useState<string>(
+      isArchiveRoute
+          ? ARCHIVE_FOLDER_NAME
+          : (location.state?.folderName || (targetId === projectId && initialProj?.name ? initialProj.name : '...'))
+  );
   const [currentParentId, setCurrentParentId] = useState<string | null>(null);
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const [showPdfModeModal, setShowPdfModeModal] = useState(false);
@@ -192,13 +202,26 @@ export default function ProjectFolder() {
       if (!api.isAuthenticated()) { navigate('/'); return; } 
       const newId = folderId || projectId || ''; 
       if (newId !== currentFolderId) { 
-          if (location.state?.folderName) setCurrentFolderName(location.state.folderName); 
+          if (location.state?.folderName) {
+              setCurrentFolderName(location.state.folderName);
+          } else if (newId === projectId && currentProject?.name) {
+              setCurrentFolderName(currentProject.name);
+          }
           setCurrentFolderId(newId); 
           const freshCache = api.getCachedContents(newId); 
-          if (freshCache) { setItems(freshCache); setLoading(false); } 
-          else { setLoading(true); } 
+          if (freshCache) {
+              setItems(freshCache);
+              setLoading(false);
+          } else {
+              api.getLocalContents(newId).then(localItems => {
+                  if (localItems && localItems.length > 0) {
+                      setItems(localItems);
+                      setLoading(false);
+                  }
+              });
+          } 
       } 
-  }, [folderId, projectId, navigate, currentFolderId, location.state]);
+  }, [folderId, projectId, navigate, currentFolderId, location.state, currentProject]);
 
   useEffect(() => {
       if (location.state?.returnToMasterData) {
@@ -210,31 +233,60 @@ export default function ProjectFolder() {
 
   const fetchContents = async () => { 
       if (!api.isAuthenticated()) return; 
+
+      // 1. Show cached folder contents immediately (0ms)
+      const immediateCached = api.getCachedContents(currentFolderId);
+      if (immediateCached && immediateCached.length > 0) {
+          setItems(immediateCached);
+          setLoading(false);
+      } else {
+          // 1b. Fast IndexedDB read (~2ms) before network request
+          const localItems = await api.getLocalContents(currentFolderId);
+          if (localItems && localItems.length > 0) {
+              setItems(localItems);
+              setLoading(false);
+          }
+      }
+
+      // 2. Load cached project metadata immediately (0ms)
       try { 
-          if (currentFolderId && currentFolderId !== projectId) { 
-              // Fix: Auto-redirect if metadata fails or invalid folder
-              try {
-                  const meta = await api.getFileMetadata(currentFolderId); 
-                  if (meta) { 
-                      if (!location.state?.folderName) setCurrentFolderName(meta.name); 
-                      setCurrentParentId(meta.parentId); 
-                  } else {
-                      // Metadata not found or failed (could be guest mode glitch or offline)
-                      // Only redirect if we absolutely have no folder name (meaning direct link access)
-                      if (!location.state?.folderName) {
-                          console.warn("Folder metadata missing, might be invalid link");
-                          // Optional: navigate('/', { replace: true });
-                      }
-                  }
-              } catch(e) {
-                  // API error, stay on page if possible or show error
-                  console.warn("Metadata fetch error", e);
+          const cachedProjects = api.getCachedProjects() || api.getSyncProjects(); 
+          if (projectId && cachedProjects) { 
+              const p = cachedProjects.find(p => p.id === projectId); 
+              if (p) {
+                  setCurrentProject(p);
+                  if (currentFolderId === projectId && p.name) setCurrentFolderName(p.name);
               }
-          } else { 
-              setCurrentParentId(null); 
-          } 
-          
-          const folderData = await api.getContents(currentFolderId); 
+          }
+          if (projectId) {
+              api.getProjectById(projectId).then(fullProj => {
+                  if (fullProj) {
+                      setCurrentProject(fullProj);
+                      if (currentFolderId === projectId && fullProj.name) setCurrentFolderName(fullProj.name);
+                  }
+              });
+          }
+      } catch (error) {}
+
+      try { 
+          // 3. Fetch folder contents and metadata in parallel in background
+          const metadataPromise = (currentFolderId && currentFolderId !== projectId)
+              ? api.getFileMetadata(currentFolderId).catch(() => null)
+              : Promise.resolve(null);
+
+          const contentsPromise = api.getContents(currentFolderId);
+
+          const [meta, folderData] = await Promise.all([metadataPromise, contentsPromise]);
+
+          if (currentFolderId && currentFolderId !== projectId) {
+              if (meta) {
+                  if (!location.state?.folderName) setCurrentFolderName(meta.name);
+                  setCurrentParentId(meta.parentId);
+              }
+          } else {
+              setCurrentParentId(null);
+          }
+
           startTransition(() => { setItems(folderData); setLoading(false); }); 
           
           if (!api.isGuest()) { 
@@ -245,24 +297,6 @@ export default function ProjectFolder() {
       } catch(e) { 
           setLoading(false); 
       } 
-      
-      try { 
-          const cachedProjects = api.getCachedProjects(); 
-          let projects = cachedProjects; 
-          if (!projects) { projects = await api.getProjects(); } 
-          if (projectId && projects) { 
-              const p = projects.find(p => p.id === projectId); 
-              setCurrentProject(p || null); 
-              
-              // NEW: Fetch FULL project details immediately (Sub-collection logs, BOQ, etc)
-              // This fixes the "Missing Data" and "Stale Logs" issue in MasterData
-              api.getProjectById(projectId).then(fullProj => {
-                  if (fullProj) setCurrentProject(fullProj);
-              });
-
-              if (currentFolderId === projectId) setCurrentFolderName(p?.name || 'مجلد المشروع'); 
-          } 
-      } catch (error) {} 
   };
   
   useEffect(() => { if (currentFolderId) fetchContents(); }, [currentFolderId]);
@@ -824,6 +858,7 @@ export default function ProjectFolder() {
           onClose={() => setModalMode('none')}
           onReportGenerated={fetchContents}
           initialProjectData={currentProject} 
+          onProjectUpdated={(updated) => setCurrentProject(updated)}
           onOpenAI={() => setShowAI(true)}
       />
       

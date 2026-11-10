@@ -73,8 +73,11 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
     if (isVideo) return { type: 'video' };
 
     // Images
-    if (item.previewUrl && mime.startsWith('image/')) return { type: 'image', url: item.previewUrl };
-    if (mime.startsWith('image/')) return { icon: 'fa-file-image', color: 'text-purple-600', bg: 'bg-purple-50' };
+    if (mime.startsWith('image/')) {
+        const imgUrl = item.previewUrl || item.thumbnailLink || (!item.id.startsWith('temp_') && !item.id.startsWith('file_') ? `https://drive.google.com/thumbnail?id=${item.id}&sz=w200` : '');
+        if (imgUrl) return { type: 'image', url: imgUrl };
+        return { icon: 'fa-file-image', color: 'text-purple-600', bg: 'bg-purple-50' };
+    }
 
     // Documents
     if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50' };
@@ -106,7 +109,7 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
     >
       <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type !== 'image' && config.type !== 'video' ? config.bg : 'bg-slate-900'}`}>
         {config.type === 'image' ? (
-             <img src={config.url} alt="" className="w-full h-full object-cover" />
+             <img src={config.url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
         ) : config.type === 'video' ? (
              <VideoThumbnail item={item} className="w-full h-full" />
         ) : (

@@ -46,15 +46,51 @@ let accessToken: string | null = localStorage.getItem('google_access_token');
 
 export let GOOGLE_DRIVE_TARGET_ID = detectedRootFolderId || 'Connecting...';
 
-const CACHE_TTL = 1000 * 60 * 60; 
+const CACHE_TTL = 1000 * 60 * 60 * 24; 
 const contentCache = new Map<string, { timestamp: number, data: any }>();
 
 const LOCAL_STORAGE_PROJECTS_KEY = 'construction_pro_projects_sync';
 const LOCAL_STORAGE_RECENT_FILES_KEY = 'construction_pro_recent_files_sync';
 const LOCAL_STORAGE_MARKET_PRICES_KEY = 'construction_pro_market_prices'; 
+const LOCAL_STORAGE_FOLDER_CACHE_KEY = 'construction_pro_folder_cache_v1';
+
+// Hydrate memory cache synchronously on startup for 0ms navigation
+try {
+    const rawProjects = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
+    if (rawProjects) {
+        const parsedProjects = JSON.parse(rawProjects);
+        if (Array.isArray(parsedProjects) && parsedProjects.length > 0) {
+            contentCache.set('projects_list', { timestamp: Date.now(), data: parsedProjects });
+        }
+    }
+    const rawFolders = localStorage.getItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
+    if (rawFolders) {
+        const parsedFolders = JSON.parse(rawFolders);
+        if (parsedFolders && typeof parsedFolders === 'object') {
+            Object.entries(parsedFolders).forEach(([k, v]: [string, any]) => {
+                if (v && Array.isArray(v.data)) {
+                    contentCache.set(k, { timestamp: v.timestamp || Date.now(), data: v.data });
+                }
+            });
+        }
+    }
+} catch (e) {}
 
 const updateCache = (key: string, data: any) => {
-    contentCache.set(key, { timestamp: Date.now(), data });
+    const now = Date.now();
+    contentCache.set(key, { timestamp: now, data });
+    if (key && key !== 'projects_list' && Array.isArray(data)) {
+        try {
+            const raw = localStorage.getItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
+            const store = raw ? JSON.parse(raw) : {};
+            store[key] = { timestamp: now, data };
+            const keys = Object.keys(store);
+            if (keys.length > 40) {
+                delete store[keys[0]];
+            }
+            localStorage.setItem(LOCAL_STORAGE_FOLDER_CACHE_KEY, JSON.stringify(store));
+        } catch (e) {}
+    }
 };
 
 const saveToSyncCache = (key: string, data: any) => {
@@ -275,11 +311,46 @@ const uploadFileResumable = async (parentId: string, file: File, onProgress?: (p
     });
 };
 
+const normalizeBoqItems = (items: any[] = []): any[] => {
+    if (!Array.isArray(items)) return [];
+    return items.filter(Boolean).map((b, idx) => {
+        const code = b.itemCode !== undefined ? String(b.itemCode) : (b.itemNumber !== undefined ? String(b.itemNumber) : String(idx + 1));
+        const qty = Number(b.quantity) || 0;
+        const price = Number(b.unitPrice) || 0;
+        const execQty = Number(b.executedQuantity) || 0;
+        return {
+            ...b,
+            id: b.id || `boq_${b.batchId || 'default'}_${idx}_${code.replace(/\s+/g, '_')}`,
+            itemCode: code,
+            quantity: qty,
+            unitPrice: price,
+            total: b.total !== undefined && !isNaN(Number(b.total)) && Number(b.total) > 0 ? Number(b.total) : (qty * price),
+            executedQuantity: execQty
+        };
+    });
+};
+
+const normalizePayments = (payments: any[] = []): any[] => {
+    if (!Array.isArray(payments)) return [];
+    return payments.filter(Boolean).map((p, idx) => {
+        const cum = Number(p.cumulativeAmount) || Number(p.amount) || Number(p.netAmount) || 0;
+        const net = p.netAmount !== undefined ? Number(p.netAmount) : (Number(p.amount) || cum);
+        return {
+            ...p,
+            id: p.id || `pay_${p.date || 'nodate'}_${p.invoiceNumber || p.number || idx}`,
+            cumulativeAmount: cum,
+            netAmount: net,
+            amount: net,
+            note: p.note !== undefined ? p.note : (p.notes || '')
+        };
+    });
+};
+
 const sanitizeForFirestore = (obj: any): any => {
     if (obj === null || obj === undefined) return null;
     if (typeof obj === 'string') {
-        if (obj.length > 250000 && (obj.startsWith('data:image/') || obj.startsWith('data:application/'))) {
-            return '[ATTACHMENT_TRUNCATED_FOR_FIRESTORE]';
+        if (obj.length > 150000 && (obj.startsWith('data:image/') || obj.startsWith('data:application/'))) {
+            return '';
         }
         return obj;
     }
@@ -294,6 +365,30 @@ const sanitizeForFirestore = (obj: any): any => {
         return newObj;
     }
     return obj;
+};
+
+// Ensures the root projects/{id} document NEVER exceeds Firestore's 1MB limit
+const prepareProjectForFirestore = (project: Project): any => {
+    const sanitized = sanitizeForFirestore(project);
+    try {
+        const serialized = JSON.stringify(sanitized);
+        if (serialized.length > 750000) {
+            // Strip heavy inline base64 images from root project doc (logs are already stored in projects/{id}/logs subcollection & IndexedDB)
+            if (Array.isArray(sanitized.executionLogs)) {
+                sanitized.executionLogs = sanitized.executionLogs.map((l: any) => ({
+                    ...l,
+                    images: Array.isArray(l.images) ? l.images.filter((img: string) => typeof img === 'string' && !img.startsWith('data:')) : []
+                }));
+            }
+            if (Array.isArray(sanitized.payments)) {
+                sanitized.payments = sanitized.payments.map((p: any) => ({
+                    ...p,
+                    attachments: Array.isArray(p.attachments) ? p.attachments.filter((att: string) => typeof att === 'string' && att.length < 40000) : []
+                }));
+            }
+        }
+    } catch (e) {}
+    return sanitized;
 };
 
 // --- SYNC SERVICE (PERMANENT AUTO-HEALING & NO STUCK QUEUE) ---
@@ -422,15 +517,48 @@ const enrichProjectWithAI = (project: Project): Project => {
     
     // 1. Calculate Total Contract / Project Value
     let totalProjectValue = parseFloat(project.value) || 0;
-    const boqTotal = (project.boqItems || []).reduce((sum, item) => sum + ((item.quantity || 0) * (item.unitPrice || 0)), 0);
+    const boqItems = normalizeBoqItems(project.boqItems);
+    const boqTotal = boqItems.reduce((sum, item) => sum + ((item.quantity || 0) * (item.unitPrice || 0)), 0);
     if (totalProjectValue === 0 && boqTotal > 0) {
         totalProjectValue = boqTotal;
     }
 
     // 2. Calculate Executed Value from Payment Certificates (المستخلصات) or BOQ items
+    let payments = normalizePayments(project.payments);
+    const boqExecutedTotal = boqItems.reduce((sum, item) => sum + ((item.executedQuantity || 0) * (item.unitPrice || 0)), 0);
+
+    // If BOQ has executed quantities (> 0) and payments list is empty, synthesize the baseline payment certificate so both tabs match
+    if (boqExecutedTotal > 0 && payments.length === 0 && !(project as any)._allowEmptyPayments) {
+        const executedItems = boqItems.filter(item => (item.executedQuantity || 0) > 0);
+        const batchTitle = executedItems[0]?.batchName ? `مستخلص أعمال تنفيذ (${executedItems[0].batchName.trim()})` : 'مستخلص أعمال منفذة من المقايسة';
+        payments = [{
+            id: `pay_boq_${project.id}`,
+            invoiceNumber: '1',
+            date: (project.handoverDate && project.handoverDate.length >= 8) ? project.handoverDate : '2026-11-10',
+            cumulativeAmount: boqExecutedTotal,
+            netAmount: boqExecutedTotal,
+            amount: boqExecutedTotal,
+            status: 'approved',
+            note: batchTitle,
+            items: executedItems.map(item => ({
+                boqItemId: item.id,
+                itemCode: item.itemCode || '1',
+                description: item.description,
+                unit: item.unit,
+                contractQuantity: item.quantity,
+                unitPrice: item.unitPrice,
+                prevQuantity: 0,
+                currQuantity: item.executedQuantity || 0,
+                totalQuantity: item.executedQuantity || 0,
+                completionRatio: 100,
+                totalValue: (item.executedQuantity || 0) * (item.unitPrice || 0)
+            }))
+        }];
+    }
+
     let maxExecuted = 0;
-    if (project.payments && project.payments.length > 0) {
-        const cumulativeVals = project.payments.map(p => {
+    if (payments.length > 0) {
+        const cumulativeVals = payments.map(p => {
             const cum = parseFloat(p.cumulativeAmount as any) || 0;
             const net = parseFloat(p.netAmount as any) || 0;
             const amt = parseFloat(p.amount as any) || 0;
@@ -439,8 +567,8 @@ const enrichProjectWithAI = (project: Project): Project => {
         maxExecuted = Math.max(...cumulativeVals, 0);
     }
     
-    if (maxExecuted === 0 && project.boqItems && project.boqItems.length > 0) {
-        maxExecuted = project.boqItems.reduce((sum, item) => sum + ((item.executedQuantity || 0) * (item.unitPrice || 0)), 0);
+    if (maxExecuted === 0 && boqExecutedTotal > 0) {
+        maxExecuted = boqExecutedTotal;
     }
 
     if (totalProjectValue > 0 && maxExecuted > 0) {
@@ -451,18 +579,22 @@ const enrichProjectWithAI = (project: Project): Project => {
     let smartStatus = project.status || ProjectStatus.DESIGN;
     let statusReason = project.autoStatusReason || "لم يتم تسجيل محضر استلام موقع";
 
-    const sortedLogs = (project.executionLogs || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const sortedLogs = [...(project.executionLogs || [])].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     
     let hasSiteHandover = false; 
     let isPaused = false;        
     let isCompleted = false;     
 
+    let inferredHandoverDate = project.handoverDate || '';
     for (const log of sortedLogs) {
         const text = (log.content || '').toLowerCase();
         
         if (text.includes('استلام موقع') || text.includes('استلام ارض') || text.includes('استلام أرض') || text.includes('تسليم موقع')) {
             hasSiteHandover = true;
             isPaused = false;
+            if (!inferredHandoverDate && log.date) {
+                inferredHandoverDate = log.date;
+            }
         }
         if (text.includes('ايقاف اعمال') || text.includes('إيقاف أعمال') || text.includes('وقف تنفيذ') || text.includes('تعليق الأعمال')) {
             isPaused = true;
@@ -475,10 +607,14 @@ const enrichProjectWithAI = (project: Project): Project => {
         }
     }
 
+    if (!inferredHandoverDate && sortedLogs.length > 0 && (hasSiteHandover || calculatedProgress > 0 || payments.length > 0)) {
+        inferredHandoverDate = sortedLogs[0].date;
+    }
+
     if (isCompleted) {
         smartStatus = ProjectStatus.COMPLETED;
         statusReason = "تم تسجيل محضر الاستلام الابتدائي";
-    } else if (hasSiteHandover || calculatedProgress > 0 || (project.payments && project.payments.length > 0)) {
+    } else if (hasSiteHandover || calculatedProgress > 0 || payments.length > 0) {
         if (isPaused) {
             smartStatus = ProjectStatus.PAUSED;
             statusReason = "تم تسجيل محضر إيقاف أعمال ولم يتم الاستئناف";
@@ -488,7 +624,63 @@ const enrichProjectWithAI = (project: Project): Project => {
         }
     }
 
-    return { ...project, calculatedProgress, status: smartStatus, autoStatusReason: statusReason };
+    // 3. Calculate Time Elapsed Progress (نسبة المدة المنقضية) vs Financial Progress
+    let timeProgress = 0;
+    let totalDays = 0;
+    let elapsedDays = 0;
+    let daysRemaining = 0;
+    let scheduleStatus: 'ahead' | 'on_track' | 'delayed' | 'unset' = 'unset';
+
+    const effectiveStartStr = project.handoverDate || inferredHandoverDate;
+    let effectiveEndStr = project.completionDate || '';
+
+    if (effectiveStartStr && !effectiveEndStr && smartStatus === ProjectStatus.ONGOING) {
+        // Default 12-month contractual duration if start date is known from site handover
+        const startObj = new Date(effectiveStartStr);
+        if (!isNaN(startObj.getTime())) {
+            const endObj = new Date(startObj.getTime() + 365 * 24 * 60 * 60 * 1000);
+            effectiveEndStr = endObj.toISOString().split('T')[0];
+        }
+    }
+
+    if (effectiveStartStr && effectiveEndStr) {
+        const startMs = new Date(effectiveStartStr).getTime();
+        const endMs = new Date(effectiveEndStr).getTime();
+        const nowMs = Date.now();
+        if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+            totalDays = Math.max(1, Math.round((endMs - startMs) / (1000 * 60 * 60 * 24)));
+            elapsedDays = Math.max(0, Math.round((nowMs - startMs) / (1000 * 60 * 60 * 24)));
+            daysRemaining = Math.round((endMs - nowMs) / (1000 * 60 * 60 * 24));
+            const rawTimeRatio = ((nowMs - startMs) / (endMs - startMs)) * 100;
+            timeProgress = rawTimeRatio <= 0 ? 0 : rawTimeRatio >= 100 ? 100 : Math.round(rawTimeRatio);
+
+            if (smartStatus === ProjectStatus.COMPLETED || calculatedProgress >= 100) {
+                scheduleStatus = 'ahead';
+            } else if (calculatedProgress >= timeProgress + 5) {
+                scheduleStatus = 'ahead';
+            } else if (timeProgress - calculatedProgress > 15) {
+                scheduleStatus = 'delayed';
+            } else {
+                scheduleStatus = 'on_track';
+            }
+        }
+    }
+
+    return {
+        ...project,
+        handoverDate: project.handoverDate || inferredHandoverDate || '',
+        completionDate: project.completionDate || effectiveEndStr || '',
+        boqItems,
+        payments,
+        calculatedProgress,
+        timeProgress,
+        scheduleStatus,
+        daysRemaining,
+        totalDays,
+        elapsedDays,
+        status: smartStatus,
+        autoStatusReason: statusReason
+    };
 };
 
 const DEFAULT_STARTER_PROJECT: Project = {
@@ -536,45 +728,115 @@ const ensureStarterProjectIfNeeded = async (projects: Project[]): Promise<Projec
 const createCardHtml = (title: string, content: string) => `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>${title}</title><style>@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap'); body { font-family: 'Tajawal', sans-serif; padding: 20px; line-height: 1.6; color: #1e293b; direction: rtl; background-color: white; } .archive-content { font-size: 1.1em; } table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.9em; } th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: right; } th { background: #f8fafc; color: #334155; } h1, h2, h3 { color: #1e3a8a; margin-top: 0; } strong { color: #0f172a; } .highlight-box, blockquote { background-color: #f0fdfa; border-right: 4px solid #0d9488; padding: 12px; margin: 15px 0; border-radius: 4px; color: #115e59; } .warning-box { background-color: #fef2f2; border-right: 4px solid #ef4444; padding: 12px; margin: 15px 0; color: #991b1b; }</style></head><body><div class="archive-content">${content}</div></body></html>`;
 
 function mergeProjectData(localP: Project | undefined, remoteP: Project): Project {
-    if (!localP) return remoteP;
+    if (!localP) {
+        return {
+            ...remoteP,
+            payments: normalizePayments(remoteP.payments),
+            boqItems: normalizeBoqItems(remoteP.boqItems)
+        };
+    }
 
-    // Merge executionLogs (deduplicate by id or date+content)
+    const localTime = Number(localP.updatedAt) || 0;
+    const remoteTime = Number(remoteP.updatedAt) || 0;
+    const localIsNewer = localTime > 0 && (localTime >= remoteTime || (Date.now() - localTime < 25000));
+
+    // Merge executionLogs (keep local base64 images if remote stripped them for size)
     const localLogs = localP.executionLogs || [];
     const remoteLogs = remoteP.executionLogs || [];
-    const logMap = new Map<string, ProjectLog>();
-    localLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
-    remoteLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
-    const mergedLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    let mergedLogs: ProjectLog[] = [];
+    if (localIsNewer && (localP as any)._allowEmptyLogs) {
+        mergedLogs = [...localLogs].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    } else {
+        const logMap = new Map<string, ProjectLog>();
+        const olderLogs = localIsNewer ? remoteLogs : localLogs;
+        const newerLogs = localIsNewer ? localLogs : remoteLogs;
+        olderLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
+        newerLogs.forEach(l => {
+            if (l && (l.id || l.content)) {
+                const key = l.id || `${l.date}_${l.content}`;
+                const existing = logMap.get(key);
+                const images = (l.images && l.images.length > 0) ? l.images : (existing?.images || []);
+                logMap.set(key, { ...existing, ...l, images });
+            }
+        });
+        mergedLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
 
-    // Merge payments (deduplicate by id or number)
-    const localPayments = localP.payments || [];
-    const remotePayments = remoteP.payments || [];
-    const paymentMap = new Map<string, ProjectPayment>();
-    localPayments.forEach(p => { if (p && (p.id || p.number)) paymentMap.set(p.id || `pay_${p.number}`, p); });
-    remotePayments.forEach(p => { if (p && (p.id || p.number)) paymentMap.set(p.id || `pay_${p.number}`, p); });
-    const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    // Payments: NEVER let an empty local array wipe out remote payments unless explicitly deleted
+    const localPayments = normalizePayments(localP.payments);
+    const remotePayments = normalizePayments(remoteP.payments);
+    let mergedPayments: ProjectPayment[] = [];
+    if (localIsNewer && (localP as any)._allowEmptyPayments) {
+        mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    } else if (localPayments.length === 0 && remotePayments.length > 0) {
+        mergedPayments = remotePayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    } else if (remotePayments.length === 0 && localPayments.length > 0) {
+        mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    } else {
+        const paymentMap = new Map<string, ProjectPayment>();
+        const olderPayments = localIsNewer ? remotePayments : localPayments;
+        const newerPayments = localIsNewer ? localPayments : remotePayments;
+        olderPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+        newerPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
+        mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
 
-    // Merge boqItems (deduplicate by id, itemNumber, or description)
-    const localBoq = localP.boqItems || [];
-    const remoteBoq = remoteP.boqItems || [];
-    const boqMap = new Map<string, BOQItem>();
-    localBoq.forEach(b => { if (b && (b.id || b.itemNumber || b.description)) boqMap.set(b.id || `${b.itemNumber}_${b.description}`, b); });
-    remoteBoq.forEach(b => { if (b && (b.id || b.itemNumber || b.description)) boqMap.set(b.id || `${b.itemNumber}_${b.description}`, b); });
-    const mergedBoq = Array.from(boqMap.values());
+    // BOQ Items: NEVER let an empty local array wipe out remote BOQ items unless explicitly deleted
+    const localBoq = normalizeBoqItems(localP.boqItems);
+    const remoteBoq = normalizeBoqItems(remoteP.boqItems);
+    let mergedBoq: BOQItem[] = [];
+    if (localIsNewer && (localP as any)._allowEmptyBoq) {
+        mergedBoq = localBoq;
+    } else if (localBoq.length === 0 && remoteBoq.length > 0) {
+        mergedBoq = remoteBoq;
+    } else if (remoteBoq.length === 0 && localBoq.length > 0) {
+        mergedBoq = localBoq;
+    } else {
+        const boqMap = new Map<string, BOQItem>();
+        const olderBoq = localIsNewer ? remoteBoq : localBoq;
+        const newerBoq = localIsNewer ? localBoq : remoteBoq;
+        olderBoq.forEach(b => {
+            if (b) {
+                const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
+                boqMap.set(key, b);
+            }
+        });
+        newerBoq.forEach(b => {
+            if (b) {
+                const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
+                boqMap.set(key, b);
+            }
+        });
+        mergedBoq = Array.from(boqMap.values());
+    }
 
-    // Merge engineeringReports (deduplicate by id or name/title)
+    // Engineering Reports
     const localReports = localP.engineeringReports || [];
     const remoteReports = remoteP.engineeringReports || [];
-    const reportMap = new Map<string, EngineeringReportItem>();
-    localReports.forEach(r => { if (r && (r.id || r.name || r.title)) reportMap.set(r.id || r.name || (r as any).title, r); });
-    remoteReports.forEach(r => { if (r && (r.id || r.name || r.title)) reportMap.set(r.id || r.name || (r as any).title, r); });
-    const mergedReports = Array.from(reportMap.values());
+    let mergedReports: EngineeringReportItem[] = [];
+    if (localIsNewer && (localP as any)._allowEmptyReports) {
+        mergedReports = localReports;
+    } else if (localReports.length === 0 && remoteReports.length > 0) {
+        mergedReports = remoteReports;
+    } else if (remoteReports.length === 0 && localReports.length > 0) {
+        mergedReports = localReports;
+    } else {
+        const reportMap = new Map<string, EngineeringReportItem>();
+        const olderRep = localIsNewer ? remoteReports : localReports;
+        const newerRep = localIsNewer ? localReports : remoteReports;
+        olderRep.forEach(r => { if (r && (r.id || r.title)) reportMap.set(r.id || r.title, r); });
+        newerRep.forEach(r => { if (r && (r.id || r.title)) reportMap.set(r.id || r.title, r); });
+        mergedReports = Array.from(reportMap.values());
+    }
 
-    // Helper for generic items with id
     const mergeById = <T extends { id: string }>(localArr: T[] = [], remoteArr: T[] = []): T[] => {
+        if (localArr.length === 0 && remoteArr.length > 0) return remoteArr;
+        if (remoteArr.length === 0 && localArr.length > 0) return localArr;
         const map = new Map<string, T>();
-        localArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
-        remoteArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+        const olderArr = localIsNewer ? remoteArr : localArr;
+        const newerArr = localIsNewer ? localArr : remoteArr;
+        olderArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
+        newerArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
         return Array.from(map.values());
     };
 
@@ -585,14 +847,16 @@ function mergeProjectData(localP: Project | undefined, remoteP: Project): Projec
     const mergedNcrs = mergeById(localP.ncrs, remoteP.ncrs);
 
     return {
-        ...localP,
         ...remoteP,
-        fullDescription: remoteP.fullDescription || localP.fullDescription || '',
-        soilReportAnalysis: remoteP.soilReportAnalysis || localP.soilReportAnalysis || '',
+        ...localP,
+        ...(localIsNewer ? localP : remoteP),
+        updatedAt: Math.max(localTime, remoteTime),
+        fullDescription: localIsNewer ? (localP.fullDescription ?? remoteP.fullDescription ?? '') : (remoteP.fullDescription || localP.fullDescription || ''),
+        soilReportAnalysis: localIsNewer ? (localP.soilReportAnalysis ?? remoteP.soilReportAnalysis ?? '') : (remoteP.soilReportAnalysis || localP.soilReportAnalysis || ''),
         executionLogs: mergedLogs,
         payments: mergedPayments,
-        boqItems: mergedBoq.length > 0 ? mergedBoq : (localP.boqItems || []),
-        engineeringReports: mergedReports.length > 0 ? mergedReports : (localP.engineeringReports || []),
+        boqItems: mergedBoq,
+        engineeringReports: mergedReports,
         rfis: mergedRfis,
         submittals: mergedSubmittals,
         correspondence: mergedCorr,
@@ -669,7 +933,7 @@ export const api = {
   getSyncTasks(): Task[] { return [...localTasks]; },
   
   // --- OFFLINE-READY DOWNLOAD FUNCTION ---
-  async downloadFileBlob(fileId: string, onProgress?: (percent: number) => void): Promise<Blob> { 
+  async downloadFileBlob(fileId: string, onProgress?: (percent: number) => void, silent: boolean = false): Promise<Blob> { 
       try {
           const cachedBlob = await dbService.getBlob(fileId);
           if (cachedBlob) {
@@ -684,7 +948,7 @@ export const api = {
 
       if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED");
       
-      triggerLoadingStart(); 
+      if (!silent) triggerLoadingStart(); 
       return new Promise((resolve, reject) => { 
           const xhr = new XMLHttpRequest(); 
           xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`); 
@@ -694,11 +958,11 @@ export const api = {
               if (event.lengthComputable && onProgress) { 
                   const percent = Math.round((event.loaded / event.total) * 100); 
                   onProgress(percent); 
-                  triggerLoadingProgress(percent); 
+                  if (!silent) triggerLoadingProgress(percent); 
               } 
           }; 
           xhr.onload = async () => { 
-              triggerLoadingStop(); 
+              if (!silent) triggerLoadingStop(); 
               if (xhr.status >= 200 && xhr.status < 300) { 
                   const blob = xhr.response; 
                   try { await dbService.putBlob(fileId, blob); } catch (e) {}
@@ -720,7 +984,7 @@ export const api = {
               } 
           }; 
           xhr.onerror = () => { 
-              triggerLoadingStop(); 
+              if (!silent) triggerLoadingStop(); 
               reject(new Error('Network error during download')); 
           }; 
           xhr.send(); 
@@ -757,8 +1021,43 @@ export const api = {
   async getArchiveFolderId(): Promise<string> { const rootId = await this.ensureRootFolder(); return await this.ensureArchiveFolder(rootId); },
 
   async saveToArchive(title: string, content: string, sectionName?: string): Promise<string> { triggerLoadingStart(); try { const archiveId = await this.getArchiveFolderId(); if (!archiveId) { throw new Error("Could not find archive folder"); } let targetFolderId = archiveId; if (sectionName) { const archiveContents = await this.getContents(archiveId, true); const sectionFolder = archiveContents.find(f => f.name === sectionName && f.type === ItemType.FOLDER); if (sectionFolder) { targetFolderId = sectionFolder.id; } } const htmlDoc = createCardHtml(title, content); const file = await this.saveLetter(targetFolderId, title, htmlDoc); return file.id; } finally { triggerLoadingStop(); } },
-  getCachedContents(folderId: string): FileItem[] | null { const cached = contentCache.get(folderId); if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) { return cached.data; } return null; },
-  getCachedProjects(): Project[] | null { const cached = contentCache.get('projects_list'); if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) { return cached.data; } return null; },
+  getCachedContents(folderId: string): FileItem[] | null {
+      if (!folderId) return null;
+      const cached = contentCache.get(folderId);
+      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+          return cached.data;
+      }
+      return null;
+  },
+  async getLocalContents(folderId: string, includeSystemFolders: boolean = false): Promise<FileItem[]> {
+      if (!folderId) return [];
+      try {
+          const allFiles = await dbService.getAllItems<FileItem>('files');
+          let localChildren = allFiles.filter(f => f.parentId === folderId);
+          if (!includeSystemFolders) {
+              localChildren = localChildren.filter(f => f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER);
+          }
+          localChildren = localChildren.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime());
+          if (localChildren.length > 0 && !contentCache.has(folderId)) {
+              updateCache(folderId, localChildren);
+          }
+          return localChildren;
+      } catch (e) {
+          return [];
+      }
+  },
+  getCachedProjects(): Project[] | null {
+      const cached = contentCache.get('projects_list');
+      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+          return cached.data;
+      }
+      const sync = this.getSyncProjects();
+      if (sync && sync.length > 0) {
+          contentCache.set('projects_list', { timestamp: Date.now(), data: sync });
+          return sync;
+      }
+      return null;
+  },
   async getLocalProjects(): Promise<Project[]> { 
       const localProjects = await dbService.getAllItems<Project>('projects'); 
       let processed = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); 
@@ -1235,12 +1534,46 @@ export const api = {
   async updateProject(id: string, updates: Partial<Project>, isSyncProcess = false): Promise<Project | null> { 
       if (!authService.isAuthenticated()) return null; 
       contentCache.delete('projects_list'); 
-      if (!isSyncProcess) triggerLoadingStart(); 
       let existing: Project | null = null;
       try { existing = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
+      if (!existing) {
+          const syncCached = this.getSyncProjects();
+          existing = syncCached.find(p => p.id === id) || null;
+      }
       
-      const partialProject = { id, ...updates } as Project;
-      const updatedProject = enrichProjectWithAI(existing ? mergeProjectData(existing, partialProject) : partialProject);
+      // Safeguard against accidental empty-array overwrites from unloaded tabs
+      const safeUpdates: any = { ...updates };
+      if (existing) {
+          if (existing.boqItems && existing.boqItems.length > 0 && Array.isArray(safeUpdates.boqItems) && safeUpdates.boqItems.length === 0 && !safeUpdates._allowEmptyBoq) {
+              safeUpdates.boqItems = existing.boqItems;
+          }
+          if (existing.payments && existing.payments.length > 0 && Array.isArray(safeUpdates.payments) && safeUpdates.payments.length === 0 && !safeUpdates._allowEmptyPayments) {
+              safeUpdates.payments = existing.payments;
+          }
+          if (existing.executionLogs && existing.executionLogs.length > 0 && Array.isArray(safeUpdates.executionLogs) && safeUpdates.executionLogs.length === 0 && !safeUpdates._allowEmptyLogs) {
+              safeUpdates.executionLogs = existing.executionLogs;
+          }
+          if (existing.engineeringReports && existing.engineeringReports.length > 0 && Array.isArray(safeUpdates.engineeringReports) && safeUpdates.engineeringReports.length === 0 && !safeUpdates._allowEmptyReports) {
+              safeUpdates.engineeringReports = existing.engineeringReports;
+          }
+      }
+
+      // Apply updates on top of existing
+      const rawMerged: Project = {
+          ...(existing || {}),
+          ...safeUpdates,
+          id,
+          updatedAt: Date.now()
+      } as Project;
+
+      if (rawMerged.payments) {
+          rawMerged.payments = normalizePayments(rawMerged.payments);
+      }
+      if (rawMerged.boqItems) {
+          rawMerged.boqItems = normalizeBoqItems(rawMerged.boqItems);
+      }
+
+      const updatedProject = enrichProjectWithAI(rawMerged);
 
       // 1. Instant local persistence (0ms)
       try {
@@ -1251,22 +1584,19 @@ export const api = {
           updateCache('projects_list', merged);
       } catch (e) {}
 
-      // 2. Cloud Firestore persistence (SetDoc with merge)
+      // 2. Cloud Firestore persistence (SetDoc with merge & 1MB size guard)
       if (navigator.onLine && !authService.isGuest()) {
           try {
               const projectRef = doc(db, "projects", id);
-              const safeUpdates = sanitizeForFirestore(updatedProject);
+              const safeUpdates = prepareProjectForFirestore(updatedProject);
               await setDoc(projectRef, safeUpdates, { merge: true });
-              if (!isSyncProcess) triggerLoadingStop();
               return updatedProject;
           } catch (e: any) {
               if (e.code === 'permission-denied') {
-                  if (!isSyncProcess) triggerLoadingStop();
                   return updatedProject;
               }
               if (!isSyncProcess) { 
                   await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
-                  triggerLoadingStop(); 
               } else throw e;
           }
       } else {
@@ -1274,12 +1604,12 @@ export const api = {
               await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
           }
       }
-      if (!isSyncProcess) triggerLoadingStop();
       return updatedProject;
   },
   async addProjectLog(projectId: string, log: ProjectLog): Promise<void> {
       if (!authService.isAuthenticated()) return;
       let newLogs: ProjectLog[] = [log];
+      const now = Date.now();
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project) {
@@ -1288,7 +1618,7 @@ export const api = {
               existingLogs.forEach(l => { if (l && l.id) logMap.set(l.id, l); });
               logMap.set(log.id, log);
               newLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-              await dbService.putItem('projects', { ...project, executionLogs: newLogs });
+              await dbService.putItem('projects', { ...project, executionLogs: newLogs, updatedAt: now });
           }
       } catch(e) {}
 
@@ -1297,7 +1627,8 @@ export const api = {
               const logsRef = collection(db, "projects", projectId, "logs");
               await setDoc(doc(logsRef, log.id), sanitizeForFirestore(log));
               const projectRef = doc(db, "projects", projectId);
-              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
+              const lightLogs = newLogs.map(l => ({ ...l, images: (l.images || []).filter(img => !img.startsWith('data:') || img.length < 60000) }));
+              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(lightLogs), updatedAt: now }, { merge: true });
           } catch (e: any) { 
               if (e.code !== 'permission-denied') {
                   console.warn("Firestore sync failed, data saved locally.");
@@ -1308,11 +1639,12 @@ export const api = {
   async updateProjectLog(projectId: string, log: ProjectLog): Promise<void> {
       if (!authService.isAuthenticated()) return;
       let newLogs: ProjectLog[] = [];
+      const now = Date.now();
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project && project.executionLogs) {
               newLogs = project.executionLogs.map(l => l.id === log.id ? log : l);
-              await dbService.putItem('projects', { ...project, executionLogs: newLogs });
+              await dbService.putItem('projects', { ...project, executionLogs: newLogs, updatedAt: now });
           }
       } catch(e) {}
 
@@ -1322,7 +1654,8 @@ export const api = {
               await setDoc(logRef, sanitizeForFirestore(log), { merge: true });
               if (newLogs.length > 0) {
                   const projectRef = doc(db, "projects", projectId);
-                  await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
+                  const lightLogs = newLogs.map(l => ({ ...l, images: (l.images || []).filter(img => !img.startsWith('data:') || img.length < 60000) }));
+                  await setDoc(projectRef, { executionLogs: sanitizeForFirestore(lightLogs), updatedAt: now }, { merge: true });
               }
           } catch (e: any) { 
               if (e.code !== 'permission-denied') console.warn("Firestore sync failed"); 
@@ -1332,11 +1665,12 @@ export const api = {
   async deleteProjectLog(projectId: string, logId: string): Promise<void> {
       if (!authService.isAuthenticated()) return;
       let newLogs: ProjectLog[] = [];
+      const now = Date.now();
       try {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project && project.executionLogs) {
               newLogs = project.executionLogs.filter(l => l.id !== logId);
-              await dbService.putItem('projects', { ...project, executionLogs: newLogs });
+              await dbService.putItem('projects', { ...project, executionLogs: newLogs, updatedAt: now });
           }
       } catch(e) {}
 
@@ -1345,7 +1679,8 @@ export const api = {
               const logRef = doc(db, "projects", projectId, "logs", logId);
               await deleteDoc(logRef);
               const projectRef = doc(db, "projects", projectId);
-              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(newLogs) }, { merge: true });
+              const lightLogs = newLogs.map(l => ({ ...l, images: (l.images || []).filter(img => !img.startsWith('data:') || img.length < 60000) }));
+              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(lightLogs), updatedAt: now }, { merge: true });
           } catch (e: any) { 
               if (e.code !== 'permission-denied') console.warn("Firestore sync failed");
           }
@@ -1353,7 +1688,14 @@ export const api = {
   },
   async updateProjectMasterData(id: string, data: any): Promise<any> { 
       const executionLogs = data.executionLogs || data.logs;
-      const updates = { ...data };
+      const updates: any = { ...data };
+      delete updates.logs;
+      delete updates.newLog;
+      delete updates.logDate;
+      delete updates.newPaymentCumulative;
+      delete updates.newPaymentNote;
+      delete updates.newInvoiceNumber;
+      delete updates.soilReport;
       if (executionLogs && Array.isArray(executionLogs)) {
           updates.executionLogs = executionLogs;
       }
@@ -1376,21 +1718,21 @@ export const api = {
   },
   async getContents(folderId: string, includeSystemFolders: boolean = false): Promise<FileItem[]> { 
       if (!authService.isAuthenticated()) return []; 
-      const rootId = await this.ensureRootFolder(); 
-      const targetId = (folderId && folderId !== 'undefined') ? folderId : rootId; 
+      const targetId = (folderId && folderId !== 'undefined') ? folderId : await this.ensureRootFolder(); 
       
+      // 1. Return memory cache immediately if fresh, while refreshing in background
+      const memCached = this.getCachedContents(targetId);
+
       const allFiles = await dbService.getAllItems<FileItem>('files'); 
       let localChildren = allFiles.filter(f => f.parentId === targetId); 
       if (!includeSystemFolders) { localChildren = localChildren.filter(f => f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER); } 
       localChildren = localChildren.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime()); 
       
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(targetId)) {
-          return localChildren; 
+          return localChildren.length > 0 ? localChildren : (memCached || []); 
       }
       
-      autoSync.prioritizeFolder(localChildren); 
-
-      if (!contentCache.has(targetId) && localChildren.length === 0) triggerLoadingStart(); 
+      if (!memCached && localChildren.length === 0) triggerLoadingStart(); 
       
       try { 
           let query = `'${targetId}' in parents and trashed = false and name != 'metadata.json'`; 
@@ -1398,7 +1740,7 @@ export const api = {
           const fields = 'files(id, name, mimeType, createdTime, webViewLink, webContentLink, thumbnailLink, size)'; 
           const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=folder,createdTime desc`); 
           
-          const data = (result.files || []).map((f: any) => ({ 
+          const data: FileItem[] = (result.files || []).map((f: any) => ({ 
               id: f.id, 
               parentId: targetId, 
               name: f.name, 
@@ -1407,20 +1749,21 @@ export const api = {
               createdTime: f.createdTime, 
               webViewLink: f.webViewLink, 
               previewUrl: f.thumbnailLink, 
+              thumbnailLink: f.thumbnailLink,
               webContentLink: f.webContentLink, 
               fileCount: 0, 
               folderCount: 0, 
               size: f.size ? parseInt(f.size) : 0 
           })); 
           
-          for (const item of data) { await dbService.putItem('files', item); } 
+          for (const item of data) { dbService.putItem('files', item).catch(() => {}); } 
           updateCache(targetId, data); 
           autoSync.prioritizeFolder(data);
 
-          triggerLoadingStop(); 
+          if (!memCached && localChildren.length === 0) triggerLoadingStop(); 
           return data; 
       } catch (e) { 
-          triggerLoadingStop(); 
+          if (!memCached && localChildren.length === 0) triggerLoadingStop(); 
           return localChildren; 
       } 
   },

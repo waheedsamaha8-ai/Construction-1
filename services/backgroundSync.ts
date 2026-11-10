@@ -1,4 +1,3 @@
-
 import { api } from './api';
 import { dbService } from './db';
 import { FileItem, ItemType } from '../types';
@@ -6,27 +5,32 @@ import { FileItem, ItemType } from '../types';
 class BackgroundSyncEngine {
     private queue: string[] = [];
     private isProcessing = false;
-    private maxConcurrent = 3;
+    private maxConcurrent = 1;
     private processedSet = new Set<string>();
 
     constructor() {
-        // Listen to online status to resume
         window.addEventListener('online', () => this.processQueue());
     }
 
     /**
-     * Called when a folder is opened. 
-     * Adds all files in the folder to the high-priority download queue.
+     * Called when a folder is opened.
+     * Only pre-caches small non-video files in the background so we never choke bandwidth
+     * or slow down immediate image/video viewing.
      */
     public async prioritizeFolder(files: FileItem[]) {
         if (!navigator.onLine) return;
 
-        const downloadCandidates = files.filter(f => 
-            f.type === ItemType.FILE && 
-            !this.processedSet.has(f.id)
-        );
+        const downloadCandidates = files.filter(f => {
+            if (f.type !== ItemType.FILE || this.processedSet.has(f.id)) return false;
+            const mime = (f.mimeType || '').toLowerCase();
+            const name = (f.name || '').toLowerCase();
+            const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi');
+            if (isVideo) return false;
+            // Skip files larger than 2MB in background pre-fetch
+            if (f.size && f.size > 2 * 1024 * 1024) return false;
+            return true;
+        });
 
-        // Check which ones are missing from DB
         for (const file of downloadCandidates) {
             const exists = await dbService.hasBlob(file.id);
             if (!exists) {
@@ -50,7 +54,6 @@ class BackgroundSyncEngine {
         this.isProcessing = true;
         const activeDownloads = [];
 
-        // Take batch of files
         while (this.queue.length > 0 && activeDownloads.length < this.maxConcurrent) {
             const fileId = this.queue.shift();
             if (fileId) {
@@ -60,37 +63,25 @@ class BackgroundSyncEngine {
 
         await Promise.allSettled(activeDownloads);
         this.isProcessing = false;
-        
-        // Loop if items remain
+
         if (this.queue.length > 0) {
-            this.processQueue();
+            setTimeout(() => this.processQueue(), 150);
         }
     }
 
     private async downloadFile(fileId: string) {
         try {
-            // Check existence one last time before network call
             const exists = await dbService.hasBlob(fileId);
             if (exists) return;
 
-            // This call automatically caches to IDB in api.ts
-            // We pass a dummy progress function to ensure it treats it as a download
-            await api.downloadFileBlob(fileId, () => {}); 
-            
+            await api.downloadFileBlob(fileId, undefined, true);
             this.processedSet.add(fileId);
-            // console.log(`[AutoSync] Synced: ${fileId}`);
         } catch (e: any) {
-            console.warn(`[AutoSync] Failed: ${fileId}`, e);
-            
-            // Handle 404 (Not Found) by removing the stale file record locally
             if (e.message && e.message.includes('404')) {
-                console.log(`[AutoSync] Removing stale file record: ${fileId}`);
                 try {
                     await dbService.deleteItem('files', fileId);
-                    this.processedSet.add(fileId); // Mark as processed to avoid immediate retry
-                } catch (dbError) {
-                    console.error("Failed to remove stale file", dbError);
-                }
+                    this.processedSet.add(fileId);
+                } catch (dbError) {}
             }
         }
     }

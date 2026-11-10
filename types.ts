@@ -46,6 +46,10 @@ export interface ProjectLog {
   date: string;
   content: string;
   images?: string[]; // Array of Base64 strings or URLs
+  boqItemId?: string;
+  boqItemCode?: string;
+  boqItemDescription?: string;
+  boqBatchName?: string;
 }
 
 export interface PaymentItem {
@@ -319,8 +323,14 @@ export interface Project {
   soilReportAnalysis?: string;
 
   calculatedProgress: number;
+  timeProgress?: number;
+  scheduleStatus?: 'ahead' | 'on_track' | 'delayed' | 'unset';
+  daysRemaining?: number;
+  totalDays?: number;
+  elapsedDays?: number;
   boqFolderId: string;
   createdAt: string;
+  updatedAt?: number;
   driveFolderId?: string; // Explicitly optional now
 }
 
@@ -332,6 +342,7 @@ export interface FileItem {
   mimeType?: string;
   url?: string;
   previewUrl?: string;
+  thumbnailLink?: string;
   webViewLink?: string;
   webContentLink?: string;
   fileCount?: number;
