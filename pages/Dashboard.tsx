@@ -360,21 +360,14 @@ const Dashboard: React.FC = () => {
   const handleGenerateFreshTip = async () => { 
       setIsGeneratingFreshTip(true); 
       try { 
-          // Use AI to generate a fresh, unique engineering tip
-          const result = await aiHelper.generateEngineeringTip();
-          if (result && result.tip && result.category) {
-              setTipOfTheDay(result.tip); 
-              setTipCategory(result.category); 
-              setTipKey(result.key || 'general');
-          } else {
-              // Fallback to local DB if AI fails
-              const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
-              setTipOfTheDay(selected.tip); 
-              setTipCategory(selected.category); 
-              setTipKey(selected.key);
-          }
+          // Instantly pick next random tip from local database for instant switching
+          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
+          setTipOfTheDay(selected.tip); 
+          setTipCategory(selected.category); 
+          setTipKey(selected.key);
+          setIsTipSaved(false);
+          setSavedTipReport(null);
       } catch(e) { 
-          // Fallback to local DB
           const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 

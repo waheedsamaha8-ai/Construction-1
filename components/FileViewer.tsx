@@ -27,17 +27,31 @@ interface FileViewerProps {
 
 // ... (Keep PdfPage Component) ...
 const PdfPage: React.FC<{ pdfDoc: any, pageNum: number, scale: number }> = ({ pdfDoc, pageNum, scale }) => {
+    const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isRendered, setIsRendered] = useState(false);
+    const [isVisible, setIsVisible] = useState(false);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                if (entry.isIntersecting) {
+                    setIsVisible(true);
+                }
+            },
+            { rootMargin: '600px 0px' }
+        );
+        if (containerRef.current) observer.observe(containerRef.current);
+        return () => observer.disconnect();
+    }, []);
 
     useEffect(() => {
         let active = true;
         const render = async () => {
-            if (!pdfDoc || !canvasRef.current) return;
+            if (!pdfDoc || !canvasRef.current || !isVisible) return;
             try {
                 const page = await pdfDoc.getPage(pageNum);
-                // Increase base scale for clearer zoom on mobile
-                const viewport = page.getViewport({ scale: scale * 2.0 });
+                const viewport = page.getViewport({ scale: scale * 1.8 });
                 
                 const canvas = canvasRef.current;
                 if (!canvas) return;
@@ -60,13 +74,18 @@ const PdfPage: React.FC<{ pdfDoc: any, pageNum: number, scale: number }> = ({ pd
         };
         render();
         return () => { active = false; };
-    }, [pdfDoc, pageNum, scale]);
+    }, [pdfDoc, pageNum, scale, isVisible]);
 
     return (
-        <div className="my-2 shadow-lg relative bg-white min-h-[200px] w-full max-w-4xl mx-auto flex justify-center items-center rounded-lg overflow-hidden">
-            {!isRendered && <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-xs bg-slate-50">جاري التحميل...</div>}
-            <canvas ref={canvasRef} className="block" />
-            <div className="absolute bottom-2 left-2 bg-black/50 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm z-10 font-bold">{pageNum}</div>
+        <div ref={containerRef} className="my-2.5 shadow-xl relative bg-white min-h-[280px] w-full max-w-4xl mx-auto flex justify-center items-center rounded-xl overflow-hidden border border-slate-700/60">
+            {!isRendered && (
+                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs bg-slate-900/80 gap-2 font-bold">
+                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span>جاري تحميل صفحة {pageNum}...</span>
+                </div>
+            )}
+            <canvas ref={canvasRef} className="block w-full h-auto" />
+            <div className="absolute bottom-2 left-2 bg-black/70 text-white text-[10px] px-2.5 py-0.5 rounded-md backdrop-blur-sm z-10 font-bold border border-white/10 shadow">{pageNum}</div>
         </div>
     );
 };
@@ -212,10 +231,21 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             }
         }
         else if (isVideo || isAudio) {
+             const token = api.getAccessToken ? api.getAccessToken() : '';
+             const streamUrl = token 
+                 ? `https://www.googleapis.com/drive/v3/files/${currentItem.id}?alt=media&access_token=${token}` 
+                 : (currentItem.webContentLink || currentItem.previewUrl);
+             
+             if (streamUrl && active) {
+                 setDisplayUrl(streamUrl);
+             }
+
              try {
                  const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
                  if (active) setDisplayUrl(URL.createObjectURL(blob));
-             } catch(e) { if (active) setLoadError(true); }
+             } catch(e) {
+                 if (!streamUrl && active) setLoadError(true);
+             }
         }
         else if (isText) {
             try {
@@ -413,16 +443,20 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       )}
       <div className="flex-1 w-full h-full bg-slate-900 relative flex flex-col items-center justify-center overflow-hidden">{renderContent()}</div>
       
-      {/* Dedicated Bottom Action Bar - Placed CLEANLY BELOW the media (Omitted for videos) */}
-      {!isDwg && displayUrl && !isEditing && !isVideo && (
-          <div className="bg-slate-950 border-t border-slate-800/80 py-2.5 px-4 flex items-center justify-center shrink-0 z-30 shadow-2xl no-print">
+      {/* Dedicated Floating & Fixed Action Bar for AI Technical Analysis (PDFs, Images, Audios) */}
+      {!isDwg && !isEditing && !isVideo && (isPdf || isImage || isAudio) && (
+          <div className="bg-slate-950/90 border-t border-slate-800/80 py-3 px-4 flex items-center justify-center shrink-0 z-40 shadow-2xl no-print backdrop-blur-md">
               <button 
                   onClick={handleAnalyze} 
                   disabled={analyzing} 
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-full shadow-lg border border-indigo-400/30 flex items-center gap-2 text-xs font-bold disabled:opacity-50 transition transform active:scale-95 cursor-pointer"
+                  className="bg-gradient-to-r from-blue-700 via-indigo-600 to-purple-600 hover:from-blue-600 hover:to-purple-500 text-white px-7 py-2.5 rounded-full shadow-2xl border border-white/20 flex items-center gap-2.5 text-xs sm:text-sm font-extrabold transition transform active:scale-95 cursor-pointer disabled:opacity-50 group"
               >
-                  {analyzing ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-wand-magic-sparkles text-yellow-300 text-xs"></i>}
-                  <span>{analyzing ? 'جاري التحليل...' : (isAudio ? 'تحليل وتفريغ التسجيل' : 'تحليل فني للمكتب الفني')}</span>
+                  {analyzing ? (
+                      <i className="fa-solid fa-circle-notch fa-spin text-sm text-yellow-300"></i>
+                  ) : (
+                      <i className="fa-solid fa-wand-magic-sparkles text-sm text-yellow-300 animate-pulse"></i>
+                  )}
+                  <span>{analyzing ? 'جاري التحليل الفني...' : (isAudio ? 'تحليل وتفريغ التسجيل' : 'تحليل فني للمكتب الفني')}</span>
               </button>
           </div>
       )}

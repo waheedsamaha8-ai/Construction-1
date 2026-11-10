@@ -1605,51 +1605,75 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
               <React.Fragment key={bId}> 
                   <tr className="bg-indigo-50 border-b border-indigo-200"> 
                       <td colSpan={6} className="p-2 text-right"> 
-                          <div className="flex justify-between items-center w-full">
-                              <div className="flex flex-col items-start gap-1 cursor-pointer flex-1 w-full" onClick={() => { const newSet = new Set(collapsedBatches); if (newSet.has(bId)) newSet.delete(bId); else newSet.add(bId); setCollapsedBatches(newSet); }}> 
+                          <div className="flex flex-col gap-2 w-full">
+                              {/* Row 1: 4 Action Buttons at Top */}
+                              <div className="flex items-center justify-between gap-2 border-b border-indigo-100/80 pb-1.5">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                      <button onClick={(e) => {
+                                          e.stopPropagation();
+                                          const newItem: BOQItem = {
+                                              id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                                              itemCode: String(groupItems.length + 1),
+                                              description: 'بند جديد (اضغط للتعديل)',
+                                              unit: 'عدد',
+                                              quantity: 1,
+                                              unitPrice: 0,
+                                              total: 0,
+                                              executedQuantity: 0,
+                                              batchId: bId,
+                                              batchName: groupName
+                                          };
+                                          const newData = { ...masterData, boqItems: [...masterData.boqItems, newItem] };
+                                          setMasterData(newData);
+                                          triggerAutoSave(newData);
+                                          setEditingBoqItem(newItem);
+                                      }} className="text-emerald-700 text-xs bg-emerald-100/80 border border-emerald-300 hover:bg-emerald-200 px-3 py-1 rounded-lg transition flex items-center gap-1 font-bold shadow-sm" title="إضافة بند لهذا الباب">
+                                          <i className="fa-solid fa-plus text-[10px]"></i> بند
+                                      </button>
+                                      <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-700 text-xs bg-indigo-100/80 border border-indigo-300 hover:bg-indigo-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm" title="تحليل وتصدير خطاب">
+                                          <i className="fa-solid fa-file-signature"></i>
+                                      </button>
+                                      {!isDefault && !isRenaming && (
+                                          <button onClick={(e) => { e.stopPropagation(); setRenamingBatchId(bId); setNewBatchName(groupName); }} className="text-blue-700 text-xs bg-blue-100/80 border border-blue-300 hover:bg-blue-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm" title="إعادة تسمية المقايسة">
+                                              <i className="fa-solid fa-pen"></i>
+                                          </button>
+                                      )}
+                                      {!isDefault && (
+                                          <button onClick={(e) => { e.stopPropagation(); handleDeleteBatchClick(bId); }} className="text-red-700 text-xs bg-red-100/80 border border-red-300 hover:bg-red-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm" title="حذف المقايسة بالكامل">
+                                              <i className="fa-solid fa-trash"></i>
+                                          </button>
+                                      )}
+                                  </div>
+                                  
+                                  {/* Collapse indicator */}
+                                  <button 
+                                      onClick={() => { const newSet = new Set(collapsedBatches); if (newSet.has(bId)) newSet.delete(bId); else newSet.add(bId); setCollapsedBatches(newSet); }}
+                                      className="text-indigo-600 hover:text-indigo-800 text-xs font-bold px-2 py-0.5 rounded bg-indigo-100/50"
+                                  >
+                                      <i className={`fa-solid ${isCollapsed ? 'fa-chevron-left' : 'fa-chevron-down'} text-indigo-500`}></i>
+                                  </button>
+                              </div>
+
+                              {/* Row 2: Section Title & Item Count */}
+                              <div className="cursor-pointer w-full" onClick={() => { const newSet = new Set(collapsedBatches); if (newSet.has(bId)) newSet.delete(bId); else newSet.add(bId); setCollapsedBatches(newSet); }}> 
                                   <div className="flex items-center gap-2"> 
-                                      <i className={`fa-solid ${isCollapsed ? 'fa-chevron-left' : 'fa-chevron-down'} text-indigo-500 w-4 text-center transition-transform`}></i> 
-                                      <i className="fa-solid fa-layer-group text-indigo-400"></i> 
+                                      <i className="fa-solid fa-layer-group text-indigo-500 text-base"></i> 
                                       {isRenaming ? ( 
                                           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}> 
-                                              <input type="text" value={newBatchName} onChange={(e) => setNewBatchName(e.target.value)} className="text-xs p-1 rounded border border-indigo-300 outline-none" autoFocus /> 
-                                              <button onClick={() => saveBatchRename(bId)} className="bg-green-500 text-white rounded px-2 py-1 text-[10px]"><i className="fa-solid fa-check"></i></button> 
+                                              <input type="text" value={newBatchName} onChange={(e) => setNewBatchName(e.target.value)} className="text-xs p-1.5 rounded border border-indigo-300 outline-none" autoFocus /> 
+                                              <button onClick={() => saveBatchRename(bId)} className="bg-green-500 text-white rounded px-2.5 py-1 text-xs font-bold"><i className="fa-solid fa-check"></i></button> 
                                           </div> 
                                       ) : ( 
-                                          <span className="font-bold text-indigo-900 text-sm">{groupName} <span className="text-[10px] text-indigo-400 font-normal">({groupItems.length} بند)</span></span> 
+                                          <span className="font-extrabold text-indigo-950 text-sm sm:text-base">{groupName} <span className="text-xs text-indigo-500 font-normal">({groupItems.length} بند)</span></span> 
                                       )} 
                                   </div> 
-                                  <div className="flex items-center gap-1 mr-6"> 
-                                      <div className="text-[9px] bg-white px-2 py-0.5 rounded border border-indigo-100 text-indigo-800 font-bold shadow-sm"> <span className="text-indigo-400 font-normal ml-1">إجمالي:</span> {batchTotal.toLocaleString()} </div> 
-                                      <div className="text-[9px] bg-white px-2 py-0.5 rounded border border-green-100 text-green-800 font-bold shadow-sm"> <span className="text-green-500 font-normal ml-1">منفذ:</span> {batchExecutedTotal.toLocaleString()} </div> 
-                                  </div>
                               </div> 
-                              <div className="flex items-center gap-1.5 pl-2"> 
-                                  <button onClick={(e) => {
-                                      e.stopPropagation();
-                                      const newItem: BOQItem = {
-                                          id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-                                          itemCode: String(groupItems.length + 1),
-                                          description: 'بند جديد (اضغط للتعديل)',
-                                          unit: 'عدد',
-                                          quantity: 1,
-                                          unitPrice: 0,
-                                          total: 0,
-                                          executedQuantity: 0,
-                                          batchId: bId,
-                                          batchName: groupName
-                                      };
-                                      const newData = { ...masterData, boqItems: [...masterData.boqItems, newItem] };
-                                      setMasterData(newData);
-                                      triggerAutoSave(newData);
-                                      setEditingBoqItem(newItem);
-                                  }} className="text-emerald-700 text-[10px] bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-2 py-1.5 rounded transition flex items-center gap-1 font-bold shadow-sm" title="إضافة بند لهذا الباب">
-                                      <i className="fa-solid fa-plus text-[9px]"></i> بند
-                                  </button>
-                                  <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-600 text-[10px] bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 p-1.5 rounded transition flex items-center justify-center font-bold shadow-sm" title="تحرير الخطاب"><i className="fa-solid fa-file-signature"></i></button>
-                                  {!isDefault && !isRenaming && ( <button onClick={(e) => { e.stopPropagation(); setRenamingBatchId(bId); setNewBatchName(groupName); }} className="text-blue-600 text-[10px] bg-blue-50 border border-blue-100 hover:bg-blue-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="تعديل الاسم"><i className="fa-solid fa-pen"></i></button> )} 
-                                  {!isDefault && ( <button onClick={(e) => { e.stopPropagation(); handleDeleteBatchClick(bId); }} className="text-red-600 text-[10px] bg-red-50 border border-red-100 hover:bg-red-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="حذف"><i className="fa-solid fa-trash"></i></button> )}
-                              </div> 
+
+                              {/* Row 3: Total & Executed Financial Stats */}
+                              <div className="flex items-center gap-2 pt-1"> 
+                                  <div className="text-[10px] bg-white px-2 py-1 rounded-md border border-indigo-200 text-indigo-900 font-bold shadow-sm"> <span className="text-indigo-400 font-normal ml-0.5">إجمالي:</span> {batchTotal.toLocaleString()} ج.م </div> 
+                                  <div className="text-[10px] bg-white px-2 py-1 rounded-md border border-green-200 text-green-900 font-bold shadow-sm"> <span className="text-green-600 font-normal ml-0.5">منفذ:</span> {batchExecutedTotal.toLocaleString()} ج.م </div> 
+                              </div>
                           </div> 
                       </td> 
                   </tr> 

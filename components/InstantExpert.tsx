@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { aiHelper } from '../services/aiHelper';
 import { api } from '../services/api';
-import { ReportGenerator } from '../services/reportGenerator';
+import { ReportGenerator, wrapTablesInHtml } from '../services/reportGenerator';
 
 interface InstantExpertProps {
     onClose: () => void;
@@ -198,7 +198,7 @@ const InstantExpert: React.FC<InstantExpertProps> = ({ onClose }) => {
                             {msg.role === 'user' && <div className="font-bold text-slate-900 mb-1 flex items-center gap-2"><i className="fa-solid fa-user text-slate-400"></i> أنت:</div>}
                             
                             {/* Render HTML Content with Prose for proper typography */}
-                            <div className={`prose prose-lg max-w-none text-slate-800 leading-relaxed ${msg.role === 'user' ? 'text-base' : ''}`} dangerouslySetInnerHTML={{ __html: msg.content }}></div>
+                            <div className={`prose prose-lg max-w-none text-slate-800 leading-relaxed ${msg.role === 'user' ? 'text-base' : ''}`} dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(msg.content) }}></div>
 
                             {/* Expert Action Buttons */}
                             {msg.role === 'expert' && idx > 0 && (

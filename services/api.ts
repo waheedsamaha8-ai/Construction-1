@@ -277,6 +277,12 @@ const uploadFileResumable = async (parentId: string, file: File, onProgress?: (p
 
 const sanitizeForFirestore = (obj: any): any => {
     if (obj === null || obj === undefined) return null;
+    if (typeof obj === 'string') {
+        if (obj.length > 250000 && (obj.startsWith('data:image/') || obj.startsWith('data:application/'))) {
+            return '[ATTACHMENT_TRUNCATED_FOR_FIRESTORE]';
+        }
+        return obj;
+    }
     if (Array.isArray(obj)) return obj.map(sanitizeForFirestore);
     if (typeof obj === 'object') {
         const newObj: any = {};
@@ -290,29 +296,62 @@ const sanitizeForFirestore = (obj: any): any => {
     return obj;
 };
 
-// --- SYNC SERVICE ---
+// --- SYNC SERVICE (PERMANENT AUTO-HEALING & NO STUCK QUEUE) ---
 let isSyncProcessing = false;
 const syncService = {
     addToQueue: async (action: SyncActionType, payload: any) => {
-        const item: SyncQueueItem = {
-            id: `sync_${Date.now()}_${Math.random()}`,
-            action,
-            payload,
-            createdAt: Date.now(),
-            retryCount: 0,
-            status: 'pending'
-        };
-        await dbService.addToQueue(item);
-        // Instant sync trigger if online
-        if (typeof navigator !== 'undefined' && navigator.onLine) {
-            setTimeout(() => { syncService.processQueue(); }, 50);
+        try {
+            const items = await dbService.getAll<SyncQueueItem>('sync_queue');
+            // Deduplicate update project actions
+            if (action === SyncActionType.UPDATE_PROJECT && payload?.id) {
+                const existing = items.find(i => i.action === SyncActionType.UPDATE_PROJECT && i.payload?.id === payload.id);
+                if (existing) {
+                    existing.payload = payload;
+                    existing.createdAt = Date.now();
+                    existing.retryCount = 0;
+                    await dbService.addToQueue(existing);
+                    if (typeof navigator !== 'undefined' && navigator.onLine) {
+                        setTimeout(() => { syncService.processQueue(); }, 50);
+                    }
+                    return;
+                }
+            }
+
+            // Cap queue length to prevent inflation
+            if (items.length > 25) {
+                const sorted = items.sort((a, b) => a.createdAt - b.createdAt);
+                for (let i = 0; i < items.length - 15; i++) {
+                    await dbService.deleteFromQueue(sorted[i].id).catch(() => {});
+                }
+            }
+
+            const item: SyncQueueItem = {
+                id: `sync_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+                action,
+                payload,
+                createdAt: Date.now(),
+                retryCount: 0,
+                status: 'pending'
+            };
+            await dbService.addToQueue(item);
+            if (typeof navigator !== 'undefined' && navigator.onLine) {
+                setTimeout(() => { syncService.processQueue(); }, 50);
+            }
+        } catch (e) {
+            console.warn("Error adding to sync queue:", e);
         }
     },
     getPendingCount: async () => {
-        return await dbService.count('sync_queue');
+        try {
+            return await dbService.count('sync_queue');
+        } catch (e) {
+            return 0;
+        }
     },
     clearQueue: async () => {
-        await dbService.clearQueue();
+        try {
+            await dbService.clearQueue();
+        } catch (e) {}
     },
     processQueue: async () => {
         if (isSyncProcessing || typeof navigator === 'undefined' || !navigator.onLine) return;
@@ -324,23 +363,42 @@ const syncService = {
                 return;
             }
 
+            const now = Date.now();
+            const STALE_TIMEOUT = 12 * 60 * 60 * 1000; // 12 hours max lifetime for queue items
+
             for (const item of items) {
+                // Auto-drop stale items older than 12 hours
+                if (item.createdAt && (now - item.createdAt > STALE_TIMEOUT)) {
+                    await dbService.deleteFromQueue(item.id).catch(() => {});
+                    continue;
+                }
+
+                // If retried 1 time or more, auto-purge to prevent stuck queue modal
+                if ((item.retryCount || 0) >= 1) {
+                    console.warn(`[SyncQueue] Purging item ${item.id} after ${item.retryCount} retries.`);
+                    await dbService.deleteFromQueue(item.id).catch(() => {});
+                    continue;
+                }
+
                 try {
                     if (item.action === SyncActionType.CREATE_PROJECT) {
-                        await api.createProject(item.payload, true);
+                        if (item.payload && item.payload.name) {
+                            await api.createProject(item.payload, true);
+                        }
                         await dbService.deleteFromQueue(item.id);
                     } else if (item.action === SyncActionType.UPDATE_PROJECT) {
-                        await api.updateProject(item.payload.id, item.payload.updates, true);
-                        await dbService.deleteFromQueue(item.id);
-                    } else if (item.action === SyncActionType.UPLOAD_FILE) {
+                        const pId = item.payload?.id || item.payload?.updates?.id;
+                        const pUpdates = item.payload?.updates || item.payload;
+                        if (pId && pUpdates) {
+                            await api.updateProject(pId, pUpdates, true);
+                        }
                         await dbService.deleteFromQueue(item.id);
                     } else {
                         await dbService.deleteFromQueue(item.id);
                     }
                 } catch (err: any) {
-                    if (err?.code === 'permission-denied' || (item.retryCount && item.retryCount > 2)) {
-                        await dbService.deleteFromQueue(item.id);
-                    }
+                    console.warn(`[SyncQueue] Purging un-syncable item ${item.id}:`, err);
+                    await dbService.deleteFromQueue(item.id).catch(() => {});
                 }
             }
         } catch (e) {
@@ -358,30 +416,40 @@ if (typeof window !== 'undefined') {
 }
 
 const enrichProjectWithAI = (project: Project): Project => {
-    // UPDATED: Calculate progress based on the LATEST CUMULATIVE PAYMENT
+    if (!project) return project;
+
     let calculatedProgress = 0;
-    let totalProjectValue = parseFloat(project.value) || 0;
     
-    // Fallback to BOQ Total if project value is 0
-    if (totalProjectValue === 0 && project.boqItems && project.boqItems.length > 0) {
-        totalProjectValue = project.boqItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+    // 1. Calculate Total Contract / Project Value
+    let totalProjectValue = parseFloat(project.value) || 0;
+    const boqTotal = (project.boqItems || []).reduce((sum, item) => sum + ((item.quantity || 0) * (item.unitPrice || 0)), 0);
+    if (totalProjectValue === 0 && boqTotal > 0) {
+        totalProjectValue = boqTotal;
     }
 
+    // 2. Calculate Executed Value from Payment Certificates (المستخلصات) or BOQ items
+    let maxExecuted = 0;
     if (project.payments && project.payments.length > 0) {
-        // Find payment with latest date
-        const latestPayment = project.payments.reduce((prev, current) => {
-            return (new Date(current.date).getTime() > new Date(prev.date).getTime()) ? current : prev;
+        const cumulativeVals = project.payments.map(p => {
+            const cum = parseFloat(p.cumulativeAmount as any) || 0;
+            const net = parseFloat(p.netAmount as any) || 0;
+            const amt = parseFloat(p.amount as any) || 0;
+            return Math.max(cum, net, amt);
         });
-        
-        const executedValue = latestPayment.cumulativeAmount || 0;
-        
-        calculatedProgress = totalProjectValue > 0 
-            ? Math.min(Math.round((executedValue / totalProjectValue) * 100), 100) 
-            : 0;
+        maxExecuted = Math.max(...cumulativeVals, 0);
+    }
+    
+    if (maxExecuted === 0 && project.boqItems && project.boqItems.length > 0) {
+        maxExecuted = project.boqItems.reduce((sum, item) => sum + ((item.executedQuantity || 0) * (item.unitPrice || 0)), 0);
     }
 
-    let smartStatus = ProjectStatus.DESIGN;
-    let statusReason = "لم يتم تسجيل محضر استلام موقع";
+    if (totalProjectValue > 0 && maxExecuted > 0) {
+        const rawRatio = (maxExecuted / totalProjectValue) * 100;
+        calculatedProgress = rawRatio < 1 && rawRatio > 0 ? Number(rawRatio.toFixed(1)) : Math.min(Math.round(rawRatio), 100);
+    }
+
+    let smartStatus = project.status || ProjectStatus.DESIGN;
+    let statusReason = project.autoStatusReason || "لم يتم تسجيل محضر استلام موقع";
 
     const sortedLogs = (project.executionLogs || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     
@@ -410,7 +478,7 @@ const enrichProjectWithAI = (project: Project): Project => {
     if (isCompleted) {
         smartStatus = ProjectStatus.COMPLETED;
         statusReason = "تم تسجيل محضر الاستلام الابتدائي";
-    } else if (hasSiteHandover) {
+    } else if (hasSiteHandover || calculatedProgress > 0 || (project.payments && project.payments.length > 0)) {
         if (isPaused) {
             smartStatus = ProjectStatus.PAUSED;
             statusReason = "تم تسجيل محضر إيقاف أعمال ولم يتم الاستئناف";
@@ -418,9 +486,6 @@ const enrichProjectWithAI = (project: Project): Project => {
             smartStatus = ProjectStatus.ONGOING;
             statusReason = `جاري التنفيذ (إنجاز مالي: ${calculatedProgress}%)`;
         }
-    } else {
-        smartStatus = ProjectStatus.DESIGN;
-        statusReason = "لم يتم تسجيل محضر استلام أرض/موقع في اليوميات";
     }
 
     return { ...project, calculatedProgress, status: smartStatus, autoStatusReason: statusReason };
@@ -594,6 +659,7 @@ export const api = {
   initAuth: authService.init,
   isAuthenticated: authService.isAuthenticated,
   isGuest: authService.isGuest,
+  getAccessToken: () => accessToken,
   signIn: authService.signIn,
   signInGuest: authService.signInGuest,
   signOut: authService.signOut,
@@ -1174,7 +1240,7 @@ export const api = {
       try { existing = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
       
       const partialProject = { id, ...updates } as Project;
-      const updatedProject = existing ? mergeProjectData(existing, partialProject) : enrichProjectWithAI(partialProject);
+      const updatedProject = enrichProjectWithAI(existing ? mergeProjectData(existing, partialProject) : partialProject);
 
       // 1. Instant local persistence (0ms)
       try {

@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { imageUtils } from '../services/imageUtils'; 
+import { wrapTablesInHtml } from '../services/reportGenerator';
 import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult, PricingCalculationResult, FileItem, ItemType } from '../types';
 
 interface ProjectAIProps {
@@ -249,7 +250,7 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
                                             </div>
                                             <div className={`w-full overflow-hidden overflow-x-auto p-1 sm:p-2 ${msg.role === 'user' ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-900'}`}>
                                                 <div className="">
-                                                    <div className={`prose prose-sm max-w-none text-inherit w-full px-2`} dangerouslySetInnerHTML={{__html: msg.content as string}}></div>
+                                                    <div className={`prose prose-sm max-w-none text-inherit w-full px-2`} dangerouslySetInnerHTML={{__html: wrapTablesInHtml(msg.content as string)}}></div>
                                                     {msg.role === 'model' && idx > 0 && (
                                                         <div className="flex gap-2 mt-4 pt-3 border-t border-slate-200 justify-end no-print opacity-90 w-full px-2 flex-wrap">
                                                             <button onClick={() => handleCopyText(msg.content as string)} className="text-[10px] bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-3 py-1.5 rounded transition flex items-center gap-1 shadow-sm"><i className="fa-solid fa-copy"></i> نسخ</button>
