@@ -254,7 +254,7 @@ body {
 }
 
 /* Tables - High Quality Technical Layout with Zero Broken Words */
-table, .prose table {
+.table-responsive-wrapper table, .prose table, .report-body table {
     border: 2px solid #000 !important;
     border-radius: 6px;
     margin: 10px 0 !important;
@@ -271,9 +271,19 @@ table, .prose table {
         padding: 8px 10px !important;
         margin: 8px 0 !important;
     }
-    table, .prose table {
+    .table-responsive-wrapper table, .prose table, .report-body table {
         min-width: 520px !important;
     }
+}
+
+/* App UI Tables (BOQ, Master Data, etc) - Strictly 100% Mobile Screen Width */
+.boq-table,
+.boq-container table {
+    min-width: 100% !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    border: none !important;
+    table-layout: fixed !important;
 }
 
 thead tr {

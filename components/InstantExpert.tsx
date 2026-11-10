@@ -165,9 +165,19 @@ const InstantExpert: React.FC<InstantExpertProps> = ({ onClose }) => {
                         <p className="text-[11px] text-slate-300 opacity-90 font-medium">أكواد • فيديك • نويفرت • تصميم</p>
                     </div>
                 </div>
-                <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition">
-                    <i className="fa-solid fa-times text-lg"></i>
-                </button>
+                <div className="flex items-center gap-2">
+                    <button 
+                        onClick={() => window.dispatchEvent(new CustomEvent('open_gemini_key_modal'))}
+                        className="bg-purple-600/90 hover:bg-purple-600 text-white px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition shadow-sm border border-purple-400/30"
+                        title="إدارة وتدوير مفاتيح Gemini"
+                    >
+                        <i className="fa-solid fa-key text-[11px]"></i>
+                        <span className="hidden sm:inline">مفاتيح AI</span>
+                    </button>
+                    <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition">
+                        <i className="fa-solid fa-times text-lg"></i>
+                    </button>
+                </div>
             </div>
 
             {/* Chat Area - Full Width & Height */}

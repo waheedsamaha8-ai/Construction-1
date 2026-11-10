@@ -165,9 +165,17 @@ const generateDirectWithGoogleApi = async (model: string, apiKey: string, params
     } else if (Array.isArray(contents)) {
         contents = contents.map(c => {
             if (typeof c === 'string') return { role: 'user', parts: [{ text: c }] };
-            if (c.parts) return c;
+            if (c && c.parts) return { role: c.role || 'user', parts: c.parts };
             return { role: 'user', parts: [{ text: JSON.stringify(c) }] };
         });
+    } else if (contents && typeof contents === 'object') {
+        if (contents.parts && Array.isArray(contents.parts)) {
+            contents = [{ role: contents.role || 'user', parts: contents.parts }];
+        } else {
+            contents = [{ role: 'user', parts: [{ text: JSON.stringify(contents) }] }];
+        }
+    } else {
+        contents = [{ role: 'user', parts: [{ text: '' }] }];
     }
 
     const body: any = { contents };
@@ -188,6 +196,11 @@ const generateDirectWithGoogleApi = async (model: string, apiKey: string, params
     });
 
     if (!res.ok) {
+        // Fallback to flash if complex model fails or hits 429/404
+        if (cleanModel !== 'gemini-2.5-flash') {
+            console.warn(`Direct model ${cleanModel} returned ${res.status}, falling back to gemini-2.5-flash...`);
+            return await generateDirectWithGoogleApi('gemini-2.5-flash', apiKey, params);
+        }
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error?.message || `Google API status ${res.status}`);
     }

@@ -688,9 +688,10 @@ export const api = {
       if (!navigator.onLine || authService.isGuest()) return processedLocal; 
       
       try { 
+          // Allow reasonable timeout (4000ms) so mobile connections complete cloud handshake
           const querySnapshot = await Promise.race([
               getDocs(collection(db, "projects")),
-              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 800))
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 4000))
           ]);
           let firestoreProjects: Project[] = []; 
           if (querySnapshot && !querySnapshot.empty) { 
@@ -701,9 +702,55 @@ export const api = {
           }
           const projectMap = new Map<string, Project>();
           firestoreProjects.forEach(p => projectMap.set(p.id, p));
-          processedLocal.forEach(p => { if (!projectMap.has(p.id)) { projectMap.set(p.id, p); } });
-          const mergedProjects = Array.from(projectMap.values());
-          for (const fp of firestoreProjects) dbService.putItem('projects', fp).catch(()=>{}); 
+
+          // Auto-discover Google Drive projects if authenticated
+          if (accessToken) {
+              try {
+                  const rootId = await this.ensureRootFolder();
+                  if (rootId) {
+                      const driveQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+                      const driveRes = await fetchDrive(`files?q=${encodeURIComponent(driveQuery)}&fields=files(id,name,createdTime)`);
+                      if (driveRes.files && driveRes.files.length > 0) {
+                          for (const folder of driveRes.files) {
+                              if (folder.name === ARCHIVE_FOLDER_NAME) continue;
+                              if (!projectMap.has(folder.id)) {
+                                  const discovered: Project = {
+                                      id: folder.id,
+                                      name: folder.name,
+                                      driveFolderId: folder.id,
+                                      location: 'الموقع الميداني',
+                                      contractor: 'المقاول العام',
+                                      value: '0',
+                                      handoverDate: '',
+                                      completionDate: '',
+                                      status: ProjectStatus.IN_PROGRESS,
+                                      fullDescription: '',
+                                      executionLogs: [],
+                                      payments: [],
+                                      boqItems: []
+                                  };
+                                  projectMap.set(folder.id, discovered);
+                                  setDoc(doc(db, "projects", folder.id), sanitizeForFirestore(discovered)).catch(() => {});
+                              }
+                          }
+                      }
+                  }
+              } catch(e) {}
+          }
+
+          processedLocal.forEach(p => { 
+              if (!projectMap.has(p.id) && p.id !== 'starter_demo_project') { 
+                  projectMap.set(p.id, p); 
+              } 
+          });
+          
+          let mergedProjects = Array.from(projectMap.values());
+          if (mergedProjects.some(p => p.id !== 'starter_demo_project')) {
+              mergedProjects = mergedProjects.filter(p => p.id !== 'starter_demo_project');
+              dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
+          }
+
+          for (const fp of mergedProjects) dbService.putItem('projects', fp).catch(()=>{}); 
           updateCache('projects_list', mergedProjects); 
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, mergedProjects); 
           return mergedProjects; 
@@ -716,11 +763,57 @@ export const api = {
       if (!navigator.onLine || authService.isGuest()) return;
       try {
           const querySnapshot = await getDocs(collection(db, "projects"));
+          let firestoreProjects: Project[] = [];
           if (!querySnapshot.empty) {
-              const list = querySnapshot.docs.map(doc => {
+              firestoreProjects = querySnapshot.docs.map(doc => {
                   const data = doc.data() as any;
                   return enrichProjectWithAI({ id: doc.id, ...data });
               });
+          }
+          const projectMap = new Map<string, Project>();
+          firestoreProjects.forEach(p => projectMap.set(p.id, p));
+
+          if (accessToken) {
+              try {
+                  const rootId = await this.ensureRootFolder();
+                  if (rootId) {
+                      const driveQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+                      const driveRes = await fetchDrive(`files?q=${encodeURIComponent(driveQuery)}&fields=files(id,name,createdTime)`);
+                      if (driveRes.files && driveRes.files.length > 0) {
+                          for (const folder of driveRes.files) {
+                              if (folder.name === ARCHIVE_FOLDER_NAME) continue;
+                              if (!projectMap.has(folder.id)) {
+                                  const discovered: Project = {
+                                      id: folder.id,
+                                      name: folder.name,
+                                      driveFolderId: folder.id,
+                                      location: 'الموقع الميداني',
+                                      contractor: 'المقاول العام',
+                                      value: '0',
+                                      handoverDate: '',
+                                      completionDate: '',
+                                      status: ProjectStatus.IN_PROGRESS,
+                                      fullDescription: '',
+                                      executionLogs: [],
+                                      payments: [],
+                                      boqItems: []
+                                  };
+                                  projectMap.set(folder.id, discovered);
+                                  setDoc(doc(db, "projects", folder.id), sanitizeForFirestore(discovered)).catch(() => {});
+                              }
+                          }
+                      }
+                  }
+              } catch(e) {}
+          }
+
+          let list = Array.from(projectMap.values());
+          if (list.some(p => p.id !== 'starter_demo_project')) {
+              list = list.filter(p => p.id !== 'starter_demo_project');
+              dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
+          }
+
+          if (list.length > 0) {
               updateCache('projects_list', list);
               saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
               for (const p of list) {
@@ -891,42 +984,48 @@ export const api = {
       if (!authService.isAuthenticated()) return null; 
       contentCache.delete('projects_list'); 
       if (!isSyncProcess) triggerLoadingStart(); 
-      let project = null;
-      try { project = await dbService.getItem<Project>('projects', id); } catch(e) {}
+      let project: Project | null = null;
+      try { project = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
       
       const { executionLogs, ...mainUpdates } = updates;
+      const updatedProject: Project = project ? { ...project, ...mainUpdates } : ({ id, ...mainUpdates } as Project);
 
+      // 1. Instant local persistence (0ms)
+      try {
+          await dbService.putItem('projects', updatedProject);
+          const cached = this.getSyncProjects();
+          const merged = cached.some(p => p.id === id) ? cached.map(p => p.id === id ? updatedProject : p) : [updatedProject, ...cached];
+          saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, merged);
+          updateCache('projects_list', merged);
+      } catch (e) {}
+
+      // 2. Cloud Firestore persistence (SetDoc with merge to avoid 'no document' errors)
       if (navigator.onLine && !authService.isGuest()) {
           try {
               const projectRef = doc(db, "projects", id);
               if (Object.keys(mainUpdates).length > 0) {
                   const safeUpdates = sanitizeForFirestore(mainUpdates);
-                  await updateDoc(projectRef, safeUpdates);
+                  await setDoc(projectRef, safeUpdates, { merge: true });
               }
-              const updatedProject = project ? { ...project, ...mainUpdates } : { id, ...mainUpdates } as Project;
-              try { if (project) { await dbService.putItem('projects', updatedProject); } } catch (e) {}
               if (!isSyncProcess) triggerLoadingStop();
               return updatedProject;
           } catch (e: any) {
               if (e.code === 'permission-denied') {
-                  const updatedProject = project ? { ...project, ...updates } : { id, ...updates } as Project;
-                  await dbService.putItem('projects', updatedProject);
                   if (!isSyncProcess) triggerLoadingStop();
                   return updatedProject;
               }
-              if (!isSyncProcess) { await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); triggerLoadingStop(); } else throw e;
+              if (!isSyncProcess) { 
+                  await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); 
+                  triggerLoadingStop(); 
+              } else throw e;
           }
       } else {
-          if (project) {
-              const updatedProject = { ...project, ...updates };
-              try { await dbService.putItem('projects', updatedProject); } catch(e) { }
-              if (!isSyncProcess) { await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); }
-              if (!isSyncProcess) triggerLoadingStop();
-              return updatedProject;
+          if (!isSyncProcess) { 
+              await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates }); 
           }
       }
       if (!isSyncProcess) triggerLoadingStop();
-      return project;
+      return updatedProject;
   },
   async addProjectLog(projectId: string, log: ProjectLog): Promise<void> {
       if (!authService.isAuthenticated()) return;

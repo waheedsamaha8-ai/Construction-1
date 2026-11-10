@@ -294,8 +294,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     useEffect(() => {
         if (isOpen && projectId) {
+            let isCancelled = false;
             const load = async () => {
-                // Fast non-blocking load: If we have any data (logs, boq, description or initialProjectData), show UI instantly
                 const hasExistingData = Boolean(initialProjectData || masterData.logs.length > 0 || masterData.boqItems.length > 0 || masterData.fullDescription);
                 if (hasExistingData) {
                     setIsRefreshing(true);
@@ -304,27 +304,47 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     setLoading(true);
                 }
 
+                // Safety timer: isRefreshing NEVER hangs
+                const refreshSafety = setTimeout(() => {
+                    if (!isCancelled) {
+                        setIsRefreshing(false);
+                        setLoading(false);
+                    }
+                }, 1200);
+
                 try {
                     const currentProject = await api.getProjectById(projectId);
-                    if (currentProject) {
-                        setMasterData(prev => ({
-                            ...prev,
-                            fullDescription: currentProject.fullDescription || prev.fullDescription,
-                            logs: sortLogs(currentProject.executionLogs || prev.logs), // Sort incoming
-                            payments: currentProject.payments || prev.payments || [],
-                            boqItems: currentProject.boqItems || prev.boqItems || [],
-                            engineeringReports: currentProject.engineeringReports || prev.engineeringReports || [],
-                            soilReport: currentProject.soilReportAnalysis || prev.soilReport,
-                            rfis: currentProject.rfis || prev.rfis || [],
-                            submittals: currentProject.submittals || prev.submittals || [],
-                            correspondence: currentProject.correspondence || prev.correspondence || [],
-                            checklists: currentProject.checklists || prev.checklists || [],
-                            ncrs: currentProject.ncrs || prev.ncrs || []
-                        }));
+                    if (currentProject && !isCancelled) {
+                        setMasterData(prev => {
+                            // Merge payments to preserve newly created items
+                            const remotePayments = currentProject.payments || [];
+                            const paymentMap = new Map<string, ProjectPayment>();
+                            remotePayments.forEach(p => paymentMap.set(p.id, p));
+                            (prev.payments || []).forEach(p => { if (!paymentMap.has(p.id)) paymentMap.set(p.id, p); });
+                            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                            return {
+                                ...prev,
+                                fullDescription: currentProject.fullDescription || prev.fullDescription,
+                                logs: sortLogs(currentProject.executionLogs || prev.logs),
+                                payments: mergedPayments,
+                                boqItems: (currentProject.boqItems && currentProject.boqItems.length > 0) ? currentProject.boqItems : prev.boqItems,
+                                engineeringReports: currentProject.engineeringReports || prev.engineeringReports || [],
+                                soilReport: currentProject.soilReportAnalysis || prev.soilReport,
+                                rfis: currentProject.rfis || prev.rfis || [],
+                                submittals: currentProject.submittals || prev.submittals || [],
+                                correspondence: currentProject.correspondence || prev.correspondence || [],
+                                checklists: currentProject.checklists || prev.checklists || [],
+                                ncrs: currentProject.ncrs || prev.ncrs || []
+                            };
+                        });
                     }
                 } finally {
-                    setLoading(false);
-                    setIsRefreshing(false);
+                    clearTimeout(refreshSafety);
+                    if (!isCancelled) {
+                        setLoading(false);
+                        setIsRefreshing(false);
+                    }
                 }
             };
             load();
@@ -335,25 +355,36 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         return;
                     }
 
-                    // CRITICAL FIX: Do NOT overwrite logs from the main document update if we are locally managing them
-                    // We only update non-log data from here, logs are handled specifically
-                    setMasterData(prev => ({
-                        ...prev,
-                        fullDescription: updatedProject.fullDescription || prev.fullDescription,
-                        // logs: prev.logs, // Keep local logs state priority to avoid deletion reversion
-                        payments: updatedProject.payments || [],
-                        boqItems: updatedProject.boqItems || [],
-                        engineeringReports: updatedProject.engineeringReports || prev.engineeringReports || [],
-                        soilReport: updatedProject.soilReportAnalysis || prev.soilReport,
-                        rfis: updatedProject.rfis || prev.rfis || [],
-                        submittals: updatedProject.submittals || prev.submittals || [],
-                        correspondence: updatedProject.correspondence || prev.correspondence || [],
-                        checklists: updatedProject.checklists || prev.checklists || [],
-                        ncrs: updatedProject.ncrs || prev.ncrs || []
-                    }));
+                    if (updatedProject) {
+                        setMasterData(prev => {
+                            const remotePayments = updatedProject.payments || [];
+                            const paymentMap = new Map<string, ProjectPayment>();
+                            remotePayments.forEach(p => paymentMap.set(p.id, p));
+                            (prev.payments || []).forEach(p => { if (!paymentMap.has(p.id)) paymentMap.set(p.id, p); });
+                            const mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                            return {
+                                ...prev,
+                                fullDescription: updatedProject.fullDescription || prev.fullDescription,
+                                payments: mergedPayments,
+                                boqItems: (updatedProject.boqItems && updatedProject.boqItems.length > 0) ? updatedProject.boqItems : prev.boqItems,
+                                engineeringReports: updatedProject.engineeringReports || prev.engineeringReports || [],
+                                soilReport: updatedProject.soilReportAnalysis || prev.soilReport,
+                                rfis: updatedProject.rfis || prev.rfis || [],
+                                submittals: updatedProject.submittals || prev.submittals || [],
+                                correspondence: updatedProject.correspondence || prev.correspondence || [],
+                                checklists: updatedProject.checklists || prev.checklists || [],
+                                ncrs: updatedProject.ncrs || prev.ncrs || []
+                            };
+                        });
+                    }
                 });
-                return () => unsubscribe();
+                return () => {
+                    isCancelled = true;
+                    unsubscribe();
+                };
             }
+            return () => { isCancelled = true; };
         }
     }, [isOpen, projectId]);
 
@@ -364,29 +395,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         
         try {
             await api.updateProjectMasterData(projectId, { 
-                fullDescription: newData.fullDescription, 
-                // Logs handled separately via api.addProjectLog / updateProjectLog
-                // executionLogs: newData.logs, 
-                payments: newData.payments, 
-                boqItems: newData.boqItems, 
-                engineeringReports: newData.engineeringReports, // Save new array
-                soilReportAnalysis: newData.soilReport, // Legacy field sync
-                // NEW FIELDS
-                rfis: newData.rfis,
-                submittals: newData.submittals,
-                correspondence: newData.correspondence,
-                checklists: newData.checklists,
-                ncrs: newData.ncrs
+                fullDescription: newData.fullDescription || '', 
+                payments: newData.payments || [], 
+                boqItems: newData.boqItems || [], 
+                engineeringReports: newData.engineeringReports || [], 
+                soilReportAnalysis: newData.soilReport || '', 
+                rfis: newData.rfis || [],
+                submittals: newData.submittals || [],
+                correspondence: newData.correspondence || [],
+                checklists: newData.checklists || [],
+                ncrs: newData.ncrs || []
             });
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 2000);
+            setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } catch (e) {
-            setAutoSaveStatus('idle');
             console.error("Auto save failed", e);
+            setAutoSaveStatus('saved'); // Local cache already saved
+            setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } finally {
             setTimeout(() => {
                 isSavingRef.current = false;
-            }, 5000);
+            }, 600);
         }
     };
 
@@ -704,31 +733,35 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     const addPayment = () => { 
-        if (!masterData.newPaymentCumulative) return; 
-        
-        let cumulativeAmount = parseFloat(masterData.newPaymentCumulative);
-        
-        // Net Calculation Logic: 
-        // Net = Current Cumulative - Last Payment Cumulative
-        // Find the payment with highest cumulative amount so far (PREVIOUS Max)
-        let previousCumulative = 0;
-        if (masterData.payments.length > 0) {
-            previousCumulative = Math.max(...masterData.payments.map(p => p.cumulativeAmount || 0));
+        const rawAmount = String(masterData.newPaymentCumulative || '').trim();
+        if (!rawAmount && newPaymentItems.length === 0) {
+            alert("يرجى إدخال قيمة المستخلص (إجمالي الأعمال)");
+            return;
         }
         
-        let netAmount = cumulativeAmount - previousCumulative;
+        // Normalize Arabic digits & clean formatting
+        const cleanAmountStr = rawAmount.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '');
+        let cumulativeAmount = parseFloat(cleanAmountStr);
+        if (isNaN(cumulativeAmount)) cumulativeAmount = 0;
         
-        if (netAmount < 0) {
-            if(!confirm(`قيمة المستخلص التراكمي (${cumulativeAmount}) أقل من السابق (${previousCumulative}). الصافي سيكون بالسالب (${netAmount}). هل أنت متأكد؟`)) return;
+        let previousCumulative = 0;
+        if (masterData.payments.length > 0) {
+            previousCumulative = Math.max(...masterData.payments.map(p => p.cumulativeAmount || (p as any).amount || 0));
+        }
+        
+        let netAmount = cumulativeAmount > 0 ? (cumulativeAmount - previousCumulative) : 0;
+        if (netAmount < 0 && cumulativeAmount > 0) {
+            if (!confirm(`قيمة المستخلص التراكمي (${cumulativeAmount.toLocaleString()}) أقل من السابق (${previousCumulative.toLocaleString()}). الصافي سيكون بالسالب (${netAmount.toLocaleString()}). هل أنت متأكد؟`)) return;
         }
 
         const newPay: ProjectPayment = { 
-            id: `pay_${Date.now()}`, 
-            invoiceNumber: masterData.newInvoiceNumber,
+            id: `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`, 
+            invoiceNumber: masterData.newInvoiceNumber ? String(masterData.newInvoiceNumber).trim() : '',
             date: newPaymentDate || new Date().toISOString().split('T')[0], 
             cumulativeAmount: cumulativeAmount,
             netAmount: netAmount, 
-            note: masterData.newPaymentNote || `مستخلص رقم ${masterData.newInvoiceNumber || '-'}`,
+            amount: netAmount,
+            note: masterData.newPaymentNote || (masterData.newInvoiceNumber ? `مستخلص رقم ${masterData.newInvoiceNumber}` : 'مستخلص أعمال'),
             items: newPaymentItems.length > 0 ? newPaymentItems : [],
             attachments: newPaymentFile ? [newPaymentFile] : []
         };
@@ -880,11 +913,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     const confirmCreateManualBOQ = (e: React.FormEvent) => {
-        e.preventDefault(); if (!manualBoqName.trim()) return;
+        e.preventDefault(); 
+        const trimmedName = manualBoqName.trim();
+        if (!trimmedName) return;
         const newBatchId = `batch_${Date.now()}`;
-        const newItem: BOQItem = { id: `boq_${Date.now()}`, batchId: newBatchId, batchName: manualBoqName, itemCode: '1', description: 'بند جديد (اضغط للتعديل)', unit: 'عدد', quantity: 1, unitPrice: 0, total: 0, executedQuantity: 0 };
+        const newItem: BOQItem = { 
+            id: `boq_${Date.now()}`, 
+            batchId: newBatchId, 
+            batchName: trimmedName, 
+            itemCode: '1', 
+            description: 'بند جديد (اضغط للتعديل)', 
+            unit: 'عدد', 
+            quantity: 1, 
+            unitPrice: 0, 
+            total: 0, 
+            executedQuantity: 0 
+        };
         const newData = { ...masterData, boqItems: [...masterData.boqItems, newItem] };
-        setMasterData(newData); setShowManualBoqModal(false); triggerAutoSave(newData);
+        setMasterData(newData); 
+        setShowManualBoqModal(false); 
+        triggerAutoSave(newData);
+        setEditingBoqItem(newItem);
     };
     const confirmDeleteBOQItem = () => { if (!editingBoqItem) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => item.id !== editingBoqItem.id) }; setMasterData(newData); setEditingBoqItem(null); setShowBoqDeleteConfirm(false); triggerAutoSave(newData); };
     const saveBOQItemEdit = () => { if (!editingBoqItem) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => item.id === editingBoqItem.id ? editingBoqItem : item) }; setMasterData(newData); setEditingBoqItem(null); triggerAutoSave(newData); };
@@ -1550,7 +1599,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                       <div className="text-[9px] bg-white px-2 py-0.5 rounded border border-green-100 text-green-800 font-bold shadow-sm"> <span className="text-green-500 font-normal ml-1">منفذ:</span> {batchExecutedTotal.toLocaleString()} </div> 
                                   </div>
                               </div> 
-                              <div className="flex flex-col items-center justify-center gap-1.5 pl-2"> 
+                              <div className="flex items-center gap-1.5 pl-2"> 
+                                  <button onClick={(e) => {
+                                      e.stopPropagation();
+                                      const newItem: BOQItem = {
+                                          id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                                          itemCode: String(groupItems.length + 1),
+                                          description: 'بند جديد (اضغط للتعديل)',
+                                          unit: 'عدد',
+                                          quantity: 1,
+                                          unitPrice: 0,
+                                          total: 0,
+                                          executedQuantity: 0,
+                                          batchId: bId,
+                                          batchName: groupName
+                                      };
+                                      const newData = { ...masterData, boqItems: [...masterData.boqItems, newItem] };
+                                      setMasterData(newData);
+                                      triggerAutoSave(newData);
+                                      setEditingBoqItem(newItem);
+                                  }} className="text-emerald-700 text-[10px] bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-2 py-1.5 rounded transition flex items-center gap-1 font-bold shadow-sm" title="إضافة بند لهذا الباب">
+                                      <i className="fa-solid fa-plus text-[9px]"></i> بند
+                                  </button>
                                   <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-600 text-[10px] bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 p-1.5 rounded transition flex items-center justify-center font-bold shadow-sm" title="تحرير الخطاب"><i className="fa-solid fa-file-signature"></i></button>
                                   {!isDefault && !isRenaming && ( <button onClick={(e) => { e.stopPropagation(); setRenamingBatchId(bId); setNewBatchName(groupName); }} className="text-blue-600 text-[10px] bg-blue-50 border border-blue-100 hover:bg-blue-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="تعديل الاسم"><i className="fa-solid fa-pen"></i></button> )} 
                                   {!isDefault && ( <button onClick={(e) => { e.stopPropagation(); handleDeleteBatchClick(bId); }} className="text-red-600 text-[10px] bg-red-50 border border-red-100 hover:bg-red-100 p-1.5 rounded transition flex items-center justify-center font-bold" title="حذف"><i className="fa-solid fa-trash"></i></button> )}
@@ -1575,15 +1645,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                           </div>
                                       )}
                                   </div>
-                                  <div className="w-full text-lg font-bold text-slate-900 leading-relaxed whitespace-pre-wrap">
+                                  <div className="w-full text-base sm:text-lg font-bold text-slate-900 leading-relaxed whitespace-pre-wrap break-words">
                                       {item.description}
                                   </div>
                                   {!isNote && (
-                                      <div className="grid grid-cols-4 gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-2"> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الوحدة</span><span className="text-lg font-bold">{item.unit}</span></div> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الكمية</span><span className="text-lg font-bold font-mono">{item.quantity}</span></div> 
-                                          <div className="flex flex-col border-l border-slate-200"><span className="text-sm text-slate-500 font-bold">الفئة</span><span className="text-lg font-bold font-mono">{item.unitPrice}</span></div> 
-                                          <div className="flex flex-col"><span className="text-sm text-slate-500 font-bold">الإجمالي</span><span className="text-lg font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
+                                      <div className="grid grid-cols-4 gap-1.5 sm:gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-2"> 
+                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الوحدة</span><span className="text-sm sm:text-base font-bold">{item.unit}</span></div> 
+                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الكمية</span><span className="text-sm sm:text-base font-bold font-mono">{item.quantity}</span></div> 
+                                          <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الفئة</span><span className="text-sm sm:text-base font-bold font-mono">{item.unitPrice}</span></div> 
+                                          <div className="flex flex-col"><span className="text-xs text-slate-500 font-bold">الإجمالي</span><span className="text-sm sm:text-base font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
                                       </div> 
                                   )}
                               </div>
@@ -1595,9 +1665,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
           })} 
           {masterData.boqItems.length > 0 && ( 
               <tr className="bg-slate-900 !text-white font-bold border-t-4 border-slate-600 shadow-lg relative z-10"> 
-                  <td colSpan={4} className="p-3 text-right text-sm sm:text-base !text-white"> <span className="sm:hidden">الإجمالي: </span> <span className="hidden sm:inline">الإجمالي العام للمشروع</span> </td> 
-                  <td className="p-3 text-center text-sm sm:text-base font-mono !text-yellow-400">{grandTotalValue.toLocaleString()}</td> 
-                  <td className="p-3 text-center text-sm sm:text-base font-mono !text-green-400">{grandExecutedValue.toLocaleString()}</td> 
+                  <td colSpan={6} className="p-3 !text-white">
+                      <div className="flex flex-wrap justify-between items-center gap-2">
+                          <span className="text-xs sm:text-sm font-bold text-slate-200">الإجمالي العام للمشروع:</span>
+                          <div className="flex items-center gap-3">
+                              <span className="text-xs sm:text-sm bg-slate-800 px-2.5 py-1 rounded-lg">التعاقدي: <strong className="font-mono text-yellow-400 mr-1">{grandTotalValue.toLocaleString()}</strong></span>
+                              <span className="text-xs sm:text-sm bg-slate-800 px-2.5 py-1 rounded-lg">المنفذ: <strong className="font-mono text-green-400 mr-1">{grandExecutedValue.toLocaleString()}</strong></span>
+                          </div>
+                      </div>
+                  </td>
               </tr> 
           )} 
           </> 
@@ -1928,14 +2004,80 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <button onClick={() => setSourceModal({ type: 'boq', title: 'رفع المقايسة' })} disabled={isAnalyzingBOQ} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg hover:bg-indigo-700 transition flex items-center gap-1.5 disabled:opacity-50">{isAnalyzingBOQ ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-file-import"></i>} تحليل</button>
                                 </div>
                             </div>
-                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm text-right">
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col boq-container w-full max-w-full">
+                                <div className="w-full max-w-full overflow-hidden">
+                                    <table className="w-full text-sm text-right boq-table table-fixed">
                                         <tbody className="divide-y divide-slate-100">{renderBoqTable()}</tbody>
                                     </table>
-                                    {masterData.boqItems.length === 0 && <div className="text-center py-12 text-slate-400 text-xs">لا توجد بنود.</div>}
+                                    {masterData.boqItems.length === 0 && (
+                                        <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center justify-center gap-2">
+                                            <i className="fa-solid fa-clipboard-list text-2xl text-slate-300"></i>
+                                            <span>لا توجد بنود في المقايسة حالياً.</span>
+                                            <button 
+                                                onClick={handleCreateManualBOQ} 
+                                                className="mt-2 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                                            >
+                                                <i className="fa-solid fa-plus"></i> إنشاء مقايسة يدوية
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
+                            {/* Manual BOQ Creation Modal */}
+                            {showManualBoqModal && (
+                                <div className="fixed inset-0 z-[1650] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-scale-in">
+                                        <div className="bg-gradient-to-r from-indigo-700 to-indigo-900 text-white p-4 flex justify-between items-center">
+                                            <h3 className="font-bold text-white flex items-center gap-2 text-sm">
+                                                <i className="fa-solid fa-list-check text-yellow-300"></i>
+                                                إنشاء مقايسة يدوية جديدة
+                                            </h3>
+                                            <button 
+                                                onClick={() => setShowManualBoqModal(false)} 
+                                                className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center text-white transition"
+                                            >
+                                                <i className="fa-solid fa-times"></i>
+                                            </button>
+                                        </div>
+                                        <form onSubmit={confirmCreateManualBOQ} className="p-4 space-y-4">
+                                            <div>
+                                                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                                    اسم المقايسة أو الحزمة (الباب):
+                                                </label>
+                                                <input 
+                                                    type="text" 
+                                                    required 
+                                                    autoFocus
+                                                    value={manualBoqName} 
+                                                    onChange={(e) => setManualBoqName(e.target.value)} 
+                                                    placeholder="مثال: مقايسة الأعمال الاعتيادية / الحفر والردم" 
+                                                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                                />
+                                                <p className="text-[11px] text-slate-500 mt-1">
+                                                    سيتم إنشاء المقايسة وإضافة أول بند تلقائياً لتتمكن من كتابة الوصف وتحديد الكمية والفئة مباشرة.
+                                                </p>
+                                            </div>
+                                            <div className="flex gap-2 pt-2 border-t border-slate-100">
+                                                <button 
+                                                    type="submit" 
+                                                    disabled={!manualBoqName.trim()}
+                                                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
+                                                >
+                                                    <i className="fa-solid fa-check"></i>
+                                                    إنشاء المقايسة
+                                                </button>
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => setShowManualBoqModal(false)} 
+                                                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-4 rounded-xl text-xs transition"
+                                                >
+                                                    إلغاء
+                                                </button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            )}
                             {/* BOQ Edit Modal (Updated with FIXED positioning) */}
                             {editingBoqItem && (
                                 <div className="fixed inset-0 z-[1600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">

@@ -13,7 +13,7 @@ interface VideoThumbnailProps {
 export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({ item, className = "w-full h-full", showPlayBadge = true }) => {
   const [imgSrc, setImgSrc] = useState<string | null>(() => {
     const url = item.previewUrl || item.thumbnailLink;
-    if (url && (url.startsWith('data:image') || url.includes('googleusercontent.com') || url.includes('thumbnail'))) {
+    if (url && typeof url === 'string' && !url.startsWith('blob:') && (url.startsWith('data:image') || url.includes('googleusercontent.com') || url.includes('thumbnail'))) {
       return url;
     }
     // If valid Drive ID, use direct Drive thumbnail URL
@@ -30,6 +30,7 @@ export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({ item, className 
 
   useEffect(() => {
     let isMounted = true;
+    let activeCreatedBlobUrl: string | null = null;
 
     const loadVideoFrame = async () => {
       // If we already have a working imgSrc and no error, we don't need blob loading
@@ -53,11 +54,14 @@ export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({ item, className 
             return;
           }
           
-          const blobUrl = URL.createObjectURL(localBlob);
-          setVideoBlobUrl(blobUrl);
-          setIsVideoError(false);
-          setIsLoading(false);
-          return;
+          if (isMounted) {
+            const blobUrl = URL.createObjectURL(localBlob);
+            activeCreatedBlobUrl = blobUrl;
+            setVideoBlobUrl(blobUrl);
+            setIsVideoError(false);
+            setIsLoading(false);
+            return;
+          }
         }
 
         // 2. Try downloadFileBlob from API
@@ -72,11 +76,14 @@ export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({ item, className 
             return;
           }
 
-          const blobUrl = URL.createObjectURL(remoteBlob);
-          setVideoBlobUrl(blobUrl);
-          setIsVideoError(false);
-          setIsLoading(false);
-          return;
+          if (isMounted) {
+            const blobUrl = URL.createObjectURL(remoteBlob);
+            activeCreatedBlobUrl = blobUrl;
+            setVideoBlobUrl(blobUrl);
+            setIsVideoError(false);
+            setIsLoading(false);
+            return;
+          }
         }
       } catch (e) {
       } finally {
@@ -88,6 +95,9 @@ export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({ item, className 
 
     return () => {
       isMounted = false;
+      if (activeCreatedBlobUrl) {
+        URL.revokeObjectURL(activeCreatedBlobUrl);
+      }
     };
   }, [item.id, item.name, isImgError, imgSrc]);
 

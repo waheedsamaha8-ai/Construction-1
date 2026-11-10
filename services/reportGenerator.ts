@@ -446,6 +446,35 @@ export interface ReportMetadata {
     showFooter?: boolean;
 }
 
+export const wrapTablesInHtml = (html: string): string => {
+    if (!html) return '';
+    try {
+        if (typeof window !== 'undefined' && window.DOMParser) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const tables = doc.querySelectorAll('table');
+            tables.forEach((table) => {
+                const parent = table.parentElement;
+                if (!parent || !parent.classList.contains('table-responsive-wrapper')) {
+                    const wrapper = doc.createElement('div');
+                    wrapper.className = 'table-responsive-wrapper';
+                    if (parent) {
+                        parent.insertBefore(wrapper, table);
+                    } else {
+                        doc.body.appendChild(wrapper);
+                    }
+                    wrapper.appendChild(table);
+                }
+            });
+            return doc.body.innerHTML;
+        }
+    } catch (e) {}
+    // Fallback regex wrapping any table not already in table-responsive-wrapper
+    return html.replace(/(<table[\s\S]*?<\/table>)/gi, (match) => {
+        return `<div class="table-responsive-wrapper">${match}</div>`;
+    });
+};
+
 export const ReportGenerator = {
     getHeaderHTML: (title: string, ref: string, date: string, subtitle: string, labels: { date: string, ref: string }, flags: {showHeader?: boolean, showTitle?: boolean, showSubtitle?: boolean, showDate?: boolean, showRef?: boolean}) => {
         const { showHeader = true, showTitle = true, showSubtitle = true, showDate = true, showRef = true } = flags;
@@ -501,10 +530,7 @@ export const ReportGenerator = {
             ? `padding: ${metadata.margins.y} ${metadata.margins.x} !important;` 
             : 'padding: 0 4px !important;';
 
-        let processedBody = bodyHTML || '';
-        if (processedBody && !processedBody.includes('table-responsive-wrapper')) {
-            processedBody = processedBody.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
-        }
+        const processedBody = wrapTablesInHtml(bodyHTML || '');
 
         return `
             <!DOCTYPE html>

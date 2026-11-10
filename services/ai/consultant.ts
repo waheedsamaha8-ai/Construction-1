@@ -625,20 +625,39 @@ export const consultantService = {
             }
             parts.push({ text: prompt });
 
-            const result = await safeGenerateContent(MODEL_COMPLEX, {
-                contents: { parts },
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: [{ role: 'user', parts }],
                 config: { 
                     systemInstruction,
                     temperature: 0.3
                 }
             });
             return result.text + getAiFooter(result.usedModel);
-        } catch (e) {
+        } catch (e: any) {
+            console.warn("Instant Expert AI call failed, providing code-based consultation:", e);
             return `
-                <div class="warning-box editable-box">
-                    <strong>عذراً، الخبير مشغول حالياً</strong><br>
-                    يرجى المحاولة لاحقاً.
+                <div class="info-box editable-box">
+                    <strong><i class="fa-solid fa-user-graduate"></i> استشارة هندسية استرشادية (طبقاً للأكواد والمواصفات المصرية):</strong><br/>
+                    بخصوص استفسارك: <strong>${prompt || 'الاستشارة الهندسية'}</strong>
                 </div>
+                <div class="prose text-slate-800 leading-relaxed">
+                    <h3>أصول الصناعة والاشتراطات الفنية المعتمدة:</h3>
+                    <p>1. <strong>الكود المصري لميكانيكا التربة وتصميم الأساسات (ECP 202):</strong> يُلزم بمطابقة تقارير الجسات وأخذ عينات دورية والتأكد من منسوب المياه الجوفية وتأثيرها على الأساسات وسحب المياه بحرص لتجنب هبوط المباني المجاورة.</p>
+                    <p>2. <strong>الكود المصري لتصميم وتنفيذ المنشآت الخرسانية (ECP 203):</strong> يحدد الغطاء الخرساني (Concrete Cover) بحد أدنى 2.5 سم للبلاطات والكمرات و5 سم للعناصر الملامسة للتربة والمعزولة، و7.5 سم للعناصر الملامسة للتربة مباشرة بدون عزل.</p>
+                    <p>3. <strong>قانون البناء الموحد رقم 119 ولائحته التنفيذية:</strong> يوجب إشراف مهندس نقابي معتمد وتوثيق دفاتر الموقع اليومية واعتماد استلام حديد التسليح والخرسانة المسلحة بمحاضر استلام رسمية.</p>
+                </div>
+                <div class="success-box editable-box">
+                    <strong><i class="fa-solid fa-check-circle"></i> التوصيات التنفيذية:</strong>
+                    <ul>
+                        <li>مراجعة بنود المقايسة والمواصفات الفنية المعتمدة قبل التوريد أو التنفيذ.</li>
+                        <li>إجراء اختبارات الجودة الموقعية (Slump Test واختبارات كسر المكعبات بعد 7 و 28 يوماً).</li>
+                        <li>توثيق أي تغييرات في أوامر تعديل وتدوينها في دفاتر الموقع الفنية.</li>
+                    </ul>
+                </div>
+                <div class="warning-box editable-box">
+                    <strong>ملاحظة هامة:</strong> لتفعيل التحليل المباشر بالذكاء الاصطناعي، يرجى التأكد من إضافة مفتاح Gemini الخاص بك من صندوق مفاتيح Gemini بأعلى التطبيق.
+                </div>
+                ${getAiFooter('ECP-Consultant-Offline')}
             `;
         }
     },

@@ -74,6 +74,16 @@ const LetterEditor: React.FC = () => {
   };
   const savedSettings = getSavedSettings();
 
+  // Helper to ensure header subtitle is always 'تقرير استشاري' and never 'نظام المحفظة الشامل'
+  const sanitizeSubtitle = (text: any): string => {
+    if (!text || typeof text !== 'string') return "تقرير استشاري";
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.includes("المحفظة") || trimmed.includes("الشامل") || trimmed.includes("مدير") || trimmed.includes("Portfolio")) {
+      return "تقرير استشاري";
+    }
+    return trimmed;
+  };
+
   const [filename, setFilename] = useState('خطاب جديد');
   
   // PAGE DATA & VISIBILITY STATES (Initialized from LocalStorage for permanent persistence)
@@ -81,8 +91,7 @@ const LetterEditor: React.FC = () => {
   const [reportTitle, setReportTitle] = useState(savedSettings?.reportTitle ?? 'الموضوع: .......................................');
   const [showTitle, setShowTitle] = useState(savedSettings?.showTitle ?? true);
 
-  const rawSavedSub = savedSettings?.headerSubtitle;
-  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل")) ? "تقرير استشاري" : rawSavedSub;
+  const initialSubtitle = sanitizeSubtitle(savedSettings?.headerSubtitle);
   const [headerSubtitle, setHeaderSubtitle] = useState(initialSubtitle);
   const [showSubtitle, setShowSubtitle] = useState(savedSettings?.showSubtitle ?? true);
 
@@ -102,13 +111,11 @@ const LetterEditor: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   
-  // Scaling State
-  const [scale, setScale] = useState(1);
+  // Scaling & Size State
   const [visualWidth, setVisualWidth] = useState(794);
-  const [visualHeight, setVisualHeight] = useState(1123);
   const [contentHeight, setContentHeight] = useState(1123);
-  // Default isMobileZoom to TRUE on small screens (<768px) for full-width mobile experience
-  const [isMobileZoom, setIsMobileZoom] = useState(window.innerWidth < 768);
+  // Default isMobileZoom to false so users get natural centered A4 paper view on all screens
+  const [isMobileZoom, setIsMobileZoom] = useState(false);
   
   // MARGIN STATE (Inner Padding) - DEFAULT SET TO 0.5cm
   const [marginConfig, setMarginConfig] = useState(savedSettings?.marginConfig ?? { x: '0.5cm', y: '0cm' });
@@ -121,7 +128,7 @@ const LetterEditor: React.FC = () => {
     try {
       const settingsToSave = {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
-        reportTitle, headerSubtitle, refLabel, dateLabel, footerText,
+        reportTitle, headerSubtitle: sanitizeSubtitle(headerSubtitle), refLabel, dateLabel, footerText,
         marginConfig, printPageMargin
       };
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settingsToSave));
@@ -162,30 +169,8 @@ const LetterEditor: React.FC = () => {
         if (!containerRef.current) return;
         const containerW = containerRef.current.clientWidth || window.innerWidth;
         if (containerW === 0) return;
-        
-        if (isMobileZoom) {
-            // Fluid Mobile View
-            setScale(1);
-            setVisualWidth(0); // 100% width
-            setVisualHeight(0);
-        } else {
-            // Exact Print Preview Scale (A4)
-            // On mobile, paper should span nicely across the screen width (~95% width)
-            const gutter = containerW < 500 ? 8 : 32;
-            let targetWidth = Math.max(containerW - gutter, 280);
-            if (containerW >= 850) {
-                targetWidth = A4_WIDTH_PX;
-            }
-            let newScale = targetWidth / A4_WIDTH_PX;
-            
-            // Limit scale on desktop monitors
-            if (newScale > 1.2) newScale = 1.2; 
-            
-            setScale(newScale);
-            setVisualWidth(targetWidth);
-            setVisualHeight(contentHeight * newScale);
-        }
-  }, [isMobileZoom, contentHeight]);
+        setVisualWidth(Math.min(containerW, A4_WIDTH_PX));
+  }, []);
 
   useEffect(() => {
     calculateSize();
@@ -210,15 +195,6 @@ const LetterEditor: React.FC = () => {
     };
   }, [calculateSize, contentHeight]);
 
-  useEffect(() => {
-      if (!isMobileZoom) {
-          const vW = A4_WIDTH_PX * scale;
-          const vH = contentHeight * scale;
-          setVisualWidth(vW);
-          setVisualHeight(vH);
-      }
-  }, [scale, contentHeight, isMobileZoom]);
-
   // Sanitize REPORT_CSS to allow editing (remove !important from fonts and scope global styles)
   const sanitizedCSS = useMemo(() => {
       let css = REPORT_CSS;
@@ -229,10 +205,7 @@ const LetterEditor: React.FC = () => {
       // 3. Remove !important from font-size and font-weight to allow user editing
       css = css.replace(/font-size:\s*[^;]+!important;/g, (match) => match.replace('!important', ''));
       css = css.replace(/font-weight:\s*[^;]+!important;/g, (match) => match.replace('!important', ''));
-      // 4. Remove forced width: 100% !important on .report-container so print preview A4 scale isn't crushed
-      css = css.replace(/width:\s*100%\s*!important;/g, '');
-      css = css.replace(/max-width:\s*100%\s*!important;/g, '');
-      // 5. Force natural Arabic reading flow without excessive word spacing
+      // 4. Force natural Arabic reading flow without excessive word spacing
       css += `
         .report-body, .report-body * {
             text-align: right;
@@ -247,14 +220,30 @@ const LetterEditor: React.FC = () => {
                 line-height: 1.7 !important;
             }
         }
-        #paper-container.is-print-preview .report-container {
-            width: 794px !important;
-            min-width: 794px !important;
+        #paper-container.is-print-preview {
+            width: 100% !important;
             max-width: 794px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+        #paper-container.is-print-preview .report-container {
+            width: 100% !important;
+            max-width: 794px !important;
+            min-height: 1123px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            box-shadow: 0 10px 40px -5px rgba(0, 0, 0, 0.15) !important;
+        }
+        #paper-container.is-mobile-zoom {
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
         }
         #paper-container.is-mobile-zoom .report-container {
             width: 100% !important;
             max-width: 100% !important;
+            margin: 0 !important;
+            box-shadow: none !important;
         }
       `;
       return css;
@@ -755,7 +744,7 @@ const LetterEditor: React.FC = () => {
                   setShowRef(savedConfig.showRef ?? true);
                   setShowFooter(savedConfig.showFooter ?? false);
                   if (savedConfig.reportTitle) setReportTitle(savedConfig.reportTitle);
-                  if (savedConfig.headerSubtitle) setHeaderSubtitle(savedConfig.headerSubtitle);
+                  if (savedConfig.headerSubtitle) setHeaderSubtitle(sanitizeSubtitle(savedConfig.headerSubtitle));
                   if (savedConfig.footerText) setFooterText(savedConfig.footerText);
                   if (savedConfig.metaDate) setMetaDate(savedConfig.metaDate);
                   if (savedConfig.metaRef) setMetaRef(savedConfig.metaRef);
@@ -791,7 +780,7 @@ const LetterEditor: React.FC = () => {
               if (reportTitleEl) setReportTitle(reportTitleEl.textContent || "الموضوع: .......................................");
 
               const subtitleEl = doc.querySelector('.report-header-subtitle');
-              if (subtitleEl) setHeaderSubtitle(subtitleEl.textContent || "");
+              if (subtitleEl) setHeaderSubtitle(sanitizeSubtitle(subtitleEl.textContent));
 
               const footerEl = doc.querySelector('.report-footer');
               if (footerEl) setFooterText(footerEl.textContent?.trim() || "");
@@ -941,14 +930,15 @@ const LetterEditor: React.FC = () => {
   const wrapperStyle: React.CSSProperties = isMobileZoom
     ? { width: '100%', maxWidth: 'none', minHeight: '60vh', margin: '0', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }
     : { 
-        width: `${visualWidth}px`, 
-        height: `${visualHeight}px`, 
+        width: '100%', 
+        maxWidth: '794px', 
+        minHeight: '1123px', 
         margin: '0 auto', 
         position: 'relative', 
         display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'flex-start',
-        overflow: 'visible',
+        flexDirection: 'column',
+        alignItems: 'center',
+        boxSizing: 'border-box',
         transition: 'width 0.2s, height 0.2s' 
       };
 
@@ -956,14 +946,13 @@ const LetterEditor: React.FC = () => {
   const paperStyle: React.CSSProperties = isMobileZoom
     ? { width: '100%', flex: 1, backgroundColor: 'white', boxShadow: 'none', borderRadius: '0', outline: 'none', direction: 'rtl', fontFamily: "'Cairo', sans-serif", display: 'flex', flexDirection: 'column', overflow: 'hidden' }
     : { 
-        width: `${A4_WIDTH_PX}px`, 
+        width: '100%', 
+        maxWidth: '794px',
         minHeight: '1123px', 
         backgroundColor: 'white', 
         boxShadow: '0 10px 40px -5px rgba(0, 0, 0, 0.15)', 
         position: 'relative', 
         margin: '0 auto', 
-        transform: `scale(${scale})`, 
-        transformOrigin: 'top center', 
         outline: 'none', 
         direction: 'rtl', 
         fontFamily: "'Cairo', sans-serif", 
@@ -1429,7 +1418,7 @@ const LetterEditor: React.FC = () => {
 
 
         <div 
-            className={`flex-1 bg-slate-50 ${isMobileZoom ? 'pt-0' : 'pt-2'} pb-6 relative w-full overflow-x-hidden ${isMobileZoom ? '' : 'flex justify-center items-start'}`} 
+            className={`flex-1 bg-slate-200/90 ${isMobileZoom ? 'p-0' : 'p-2 sm:p-4 md:p-6'} pb-8 relative w-full overflow-y-auto overflow-x-auto flex flex-col items-center justify-start min-h-0`} 
             style={{ overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}
             ref={containerRef} 
             onClick={() => {setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowSpacingTools(false); setShowQuoteTools(false); setShowMarginTools(false);}}
@@ -1441,7 +1430,15 @@ const LetterEditor: React.FC = () => {
                  </div>
              )}
              
-             <div id="paper-container" className={`shadow-2xl relative transition-all duration-300 ${isMobileZoom ? 'is-mobile-zoom' : 'is-print-preview'}`} style={wrapperStyle}>
+             <div 
+                id="paper-container" 
+                className={`transition-all duration-200 ${
+                    isMobileZoom 
+                        ? 'is-mobile-zoom w-full' 
+                        : 'is-print-preview w-[98%] sm:w-[94%] md:w-[794px] max-w-[794px] mx-auto shadow-2xl rounded-none sm:rounded-sm'
+                }`} 
+                style={wrapperStyle}
+             >
                 <div 
                     style={{
                         ...paperStyle,
@@ -1454,7 +1451,7 @@ const LetterEditor: React.FC = () => {
                      <div className={`report-header ${!showHeader ? 'hidden-element' : (!showTitle && !showSubtitle && !showDate && !showRef ? 'hidden-element' : '')}`}>
                         <div className="report-header-title">
                             {showTitle && <h1 contentEditable suppressContentEditableWarning onInput={(e) => setReportTitle(e.currentTarget.innerText)} dir="auto">{reportTitle}</h1>}
-                            {showSubtitle && <p className="report-header-subtitle" contentEditable suppressContentEditableWarning onInput={(e) => setHeaderSubtitle(e.currentTarget.innerText)} dir="auto">{headerSubtitle?.includes("المحفظة") ? "تقرير استشاري" : headerSubtitle}</p>}
+                            {showSubtitle && <p className="report-header-subtitle" contentEditable suppressContentEditableWarning onInput={(e) => setHeaderSubtitle(sanitizeSubtitle(e.currentTarget.innerText))} dir="auto">{sanitizeSubtitle(headerSubtitle)}</p>}
                         </div>
                         <div className="report-header-meta">
                             {(showDate || showRef) && (
