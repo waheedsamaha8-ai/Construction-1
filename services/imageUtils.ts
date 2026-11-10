@@ -354,9 +354,12 @@ export const imageUtils = {
                   canvasStream.addTrack(audioTrack);
               }
 
-              // Setup Recorder
-              let mimeType = 'video/webm;codecs=vp9';
-              if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/mp4';
+              // Setup Recorder (Prefer MP4 first for universal mobile iOS/Android compatibility)
+              let mimeType = 'video/mp4';
+              if (!MediaRecorder.isTypeSupported(mimeType)) {
+                  mimeType = 'video/webm;codecs=vp9';
+                  if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
+              }
               
               try { 
                   // High bitrate for clarity
@@ -422,14 +425,27 @@ export const imageUtils = {
       });
   },
 
-  generateVideoThumbnail: async (file: File): Promise<string> => {
+  generateVideoThumbnail: async (file: File | Blob): Promise<string> => {
       return new Promise((resolve) => {
           try {
               const video = document.createElement('video');
+              // Attach hidden video to DOM so mobile browsers (iOS Safari / Android Chrome) decode frames reliably
+              video.style.position = 'fixed';
+              video.style.top = '-9999px';
+              video.style.left = '-9999px';
+              video.style.width = '64px';
+              video.style.height = '64px';
+              video.style.opacity = '0.001';
+              video.style.pointerEvents = 'none';
+              video.style.zIndex = '-100';
               video.preload = 'auto';
               video.muted = true;
               video.playsInline = true;
+              video.setAttribute('playsinline', 'true');
+              video.setAttribute('webkit-playsinline', 'true');
+              video.setAttribute('muted', 'true');
               video.crossOrigin = 'anonymous';
+              document.body.appendChild(video);
 
               const url = URL.createObjectURL(file);
               video.src = url;
@@ -440,13 +456,16 @@ export const imageUtils = {
               const cleanup = () => {
                   if (isCleanedUp) return;
                   isCleanedUp = true;
+                  try { video.pause(); } catch(e) {}
+                  video.removeAttribute('src');
+                  try { video.load(); } catch(e) {}
                   URL.revokeObjectURL(url);
+                  if (video.parentNode) video.parentNode.removeChild(video);
                   video.onloadeddata = null;
                   video.onloadedmetadata = null;
                   video.onseeked = null;
                   video.ontimeupdate = null;
                   video.onerror = null;
-                  try { video.pause(); } catch(e) {}
               };
 
               const tryCaptureFrame = () => {
@@ -454,7 +473,7 @@ export const imageUtils = {
                   try {
                       if (!video.videoWidth || !video.videoHeight) return;
                       const canvas = document.createElement('canvas');
-                      const maxDim = 400;
+                      const maxDim = 360;
                       let w = video.videoWidth;
                       let h = video.videoHeight;
                       if (w > maxDim || h > maxDim) {
@@ -484,24 +503,35 @@ export const imageUtils = {
 
                           // If average luminance is > 8, or we tried 3 times, accept this frame
                           if (avgLum > 8 || attempts >= 3 || video.currentTime >= 1.5) {
-                              const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                              cleanup();
-                              resolve(dataUrl);
-                              return;
-                          } else {
-                              // Frame is solid black, seek forward
-                              attempts++;
-                              video.currentTime = Math.min((video.duration || 3) * 0.25, 0.4 + attempts * 0.5);
+                              const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+                              if (dataUrl && dataUrl.length > 1000) {
+                                  cleanup();
+                                  resolve(dataUrl);
+                                  return;
+                              }
                           }
+                          // Frame is solid black, seek forward or play briefly
+                          attempts++;
+                          const nextTime = Math.min((video.duration || 3) * 0.25, 0.3 + attempts * 0.4);
+                          try { video.currentTime = nextTime; } catch (e) {}
                       }
                   } catch (e) {}
               };
 
               video.onloadedmetadata = () => {
-                  const targetTime = (video.duration && video.duration > 1) 
-                      ? Math.min(1.0, video.duration / 3) 
-                      : 0.3;
+                  const targetTime = (video.duration && Number.isFinite(video.duration) && video.duration > 1) 
+                      ? Math.min(0.8, video.duration / 3) 
+                      : 0.2;
                   try { video.currentTime = targetTime; } catch(e) {}
+                  // On mobile browsers, briefly playing muted forces hardware frame decoding
+                  video.play().then(() => {
+                      setTimeout(() => {
+                          if (!isCleanedUp) {
+                              try { video.pause(); } catch(e) {}
+                              tryCaptureFrame();
+                          }
+                      }, 120);
+                  }).catch(() => {});
               };
 
               video.onseeked = () => {
@@ -510,7 +540,7 @@ export const imageUtils = {
 
               video.onloadeddata = () => {
                   if (video.currentTime === 0) {
-                      try { video.currentTime = 0.5; } catch(e) {}
+                      try { video.currentTime = 0.3; } catch(e) { tryCaptureFrame(); }
                   } else {
                       tryCaptureFrame();
                   }
@@ -521,14 +551,14 @@ export const imageUtils = {
                   resolve('');
               };
 
-              // Safety timeout: 3000ms
+              // Safety timeout: 3500ms
               setTimeout(() => {
                   if (!isCleanedUp) {
                       tryCaptureFrame();
                       cleanup();
                       resolve('');
                   }
-              }, 3000);
+              }, 3500);
           } catch(e) {
               resolve('');
           }

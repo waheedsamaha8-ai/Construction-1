@@ -134,8 +134,11 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   
   const isOffice = isWord || isExcel || isPowerPoint || isGoogleNative;
 
+  const [useCloudVideoPlayer, setUseCloudVideoPlayer] = useState(false);
+  const [isFallbackDownloading, setIsFallbackDownloading] = useState(false);
+
   const isImage = mime.startsWith('image/'); 
-  const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');
+  const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi') || name.endsWith('.webm') || name.endsWith('.mkv') || name.endsWith('.3gp');
   const isAudio = mime.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav') || name.endsWith('.m4a') || name.endsWith('.ogg');
   const isPdf = mime.includes('pdf');
   const isDwg = name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg'); 
@@ -175,6 +178,8 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       setPdfRenderError(false);
       setIsEditing(false);
       setIsSharing(false);
+      setUseCloudVideoPlayer(false);
+      setIsFallbackDownloading(false);
   }, [currentItem.id]);
 
   useEffect(() => {
@@ -249,29 +254,59 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             }
         }
         else if (isVideo || isAudio) {
+             const ensureTypedMediaBlob = (rawBlob: Blob) => {
+                 if (rawBlob.type && (rawBlob.type.startsWith('video/') || rawBlob.type.startsWith('audio/'))) {
+                     return rawBlob;
+                 }
+                 let inferredType = isAudio ? 'audio/mp3' : 'video/mp4';
+                 if (mime.startsWith('video/') || mime.startsWith('audio/')) inferredType = mime;
+                 else if (name.endsWith('.webm')) inferredType = 'video/webm';
+                 else if (name.endsWith('.mov')) inferredType = 'video/quicktime';
+                 return new Blob([rawBlob], { type: inferredType });
+             };
+
              // 1. Check local IndexedDB blob first (0ms for locally recorded or cached media)
              try {
                  const localBlob = await dbService.getBlob(currentItem.id);
-                 if (localBlob && active) {
-                     setDisplayUrl(URL.createObjectURL(localBlob));
+                 if (localBlob && localBlob.size > 0 && active) {
+                     const typedBlob = ensureTypedMediaBlob(localBlob);
+                     setDisplayUrl(URL.createObjectURL(typedBlob));
                      return;
                  }
              } catch (e) {}
 
-             // 2. Stream directly via HTTP Range without competing full-file XHR download
+             // 2. Set direct stream URL immediately (NEVER use previewUrl because previewUrl is an image thumbnail!)
              const token = api.getAccessToken ? api.getAccessToken() : '';
-             const streamUrl = token && !currentItem.id.startsWith('temp_')
+             const streamUrl = token && currentItem.id && !currentItem.id.startsWith('temp_')
                  ? `https://www.googleapis.com/drive/v3/files/${currentItem.id}?alt=media&access_token=${token}` 
-                 : (currentItem.webContentLink || currentItem.previewUrl);
+                 : (currentItem.webContentLink || '');
              
              if (streamUrl && active) {
                  setDisplayUrl(streamUrl);
+                 // Pre-cache blob in background so mobile browsers that reject direct range streams can switch to local Blob seamlessly
+                 api.downloadFileBlob(currentItem.id, (p) => { if (active) setDownloadProgress(p); }, true)
+                    .then((blob) => {
+                        if (active && blob && blob.size > 0) {
+                            const typed = ensureTypedMediaBlob(blob);
+                            // Keep cached in IndexedDB; if stream errored out, switch immediately
+                            setDisplayUrl((prev) => (!prev ? URL.createObjectURL(typed) : prev));
+                        }
+                    })
+                    .catch(() => {});
              } else {
                  try {
                      const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
-                     if (active) setDisplayUrl(URL.createObjectURL(blob));
+                     if (active && blob) {
+                         setDisplayUrl(URL.createObjectURL(ensureTypedMediaBlob(blob)));
+                     }
                  } catch(e) {
-                     if (active) setLoadError(true);
+                     if (active) {
+                         if (isVideo && !api.isGuest() && currentItem.id && !currentItem.id.startsWith('temp_')) {
+                             setUseCloudVideoPlayer(true);
+                         } else {
+                             setLoadError(true);
+                         }
+                     }
                  }
              }
         }
@@ -407,19 +442,91 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
           {siblings.length > 1 && scale === 1 && (<> {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>} {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>} </>)}
       </div>;
       
-      // FIX: Ensure Video is perfectly centered
-      if (isVideo) return <div className="w-full h-full flex items-center justify-center bg-black relative"> 
-        {displayUrl ? 
-            <video 
-                controls 
-                autoPlay 
-                playsInline 
-                preload="metadata" 
-                className="max-w-full max-h-full shadow-2xl m-auto block object-contain" 
-                src={displayUrl}
-            ></video> 
-        : <div className="absolute inset-0 flex flex-col items-center justify-center text-white"><div className="relative w-16 h-16 flex items-center justify-center mb-3"><div className="absolute inset-0 border-4 border-white/30 rounded-full"></div><div className="absolute inset-0 border-4 border-white border-t-transparent rounded-full animate-spin"></div><span className="text-xs font-bold text-white relative z-10">{downloadProgress}%</span></div><p className="font-bold">جاري تحميل الفيديو...</p></div>} 
-      </div>;
+      // FIX: Ensure Video is perfectly centered & 100% mobile compatible with automatic fallbacks
+      if (isVideo) {
+          let videoPoster: string | undefined = undefined;
+          try {
+              const savedThumb = localStorage.getItem(`vthumb_${currentItem.id}`);
+              if (savedThumb && savedThumb.startsWith('data:image')) videoPoster = savedThumb;
+              else if (currentItem.previewUrl && currentItem.previewUrl.startsWith('data:image')) videoPoster = currentItem.previewUrl;
+          } catch (e) {}
+
+          if (useCloudVideoPlayer && embedUrl && !api.isGuest()) {
+              return (
+                  <div className="w-full h-full flex flex-col bg-black relative">
+                      <iframe
+                          src={embedUrl}
+                          className="w-full h-full border-0 flex-1"
+                          allow="autoplay; fullscreen"
+                          allowFullScreen
+                          title={currentItem.name}
+                      />
+                  </div>
+              );
+          }
+
+          return (
+              <div className="w-full h-full flex items-center justify-center bg-black relative"> 
+                  {displayUrl && !isFallbackDownloading ? (
+                      <video 
+                          key={displayUrl}
+                          controls 
+                          autoPlay 
+                          playsInline 
+                          webkit-playsinline="true"
+                          preload="auto" 
+                          poster={videoPoster}
+                          className="max-w-full max-h-full w-full h-full shadow-2xl m-auto block object-contain" 
+                          src={displayUrl}
+                          onLoadedMetadata={(e) => {
+                              const vid = e.currentTarget;
+                              vid.play().catch(() => {
+                                  // If mobile browser blocks unmuted autoplay, user can tap play or we play muted first
+                              });
+                          }}
+                          onError={async () => {
+                              // Stage 1 Fallback: If direct stream URL failed on mobile, download as typed local Blob
+                              if (displayUrl && !displayUrl.startsWith('blob:')) {
+                                  setIsFallbackDownloading(true);
+                                  try {
+                                      const blob = await api.downloadFileBlob(currentItem.id, (p) => setDownloadProgress(p));
+                                      if (blob && blob.size > 0) {
+                                          let inferredType = 'video/mp4';
+                                          if (mime.startsWith('video/')) inferredType = mime;
+                                          else if (name.endsWith('.webm')) inferredType = 'video/webm';
+                                          const typedBlob = new Blob([blob], { type: inferredType });
+                                          setDisplayUrl(URL.createObjectURL(typedBlob));
+                                          setIsFallbackDownloading(false);
+                                          return;
+                                      }
+                                  } catch (err) {}
+                                  setIsFallbackDownloading(false);
+                              }
+                              // Stage 2 Fallback: Use Google Drive's universal mobile transcoded player
+                              if (!api.isGuest() && currentItem.id && !currentItem.id.startsWith('temp_')) {
+                                  setUseCloudVideoPlayer(true);
+                              } else {
+                                  setLoadError(true);
+                              }
+                          }}
+                      />
+                  ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black/90 z-20">
+                          {videoPoster && (
+                              <img src={videoPoster} alt="" className="absolute inset-0 w-full h-full object-contain opacity-35 blur-xs pointer-events-none" />
+                          )}
+                          <div className="relative w-16 h-16 flex items-center justify-center mb-3 z-10">
+                              <div className="absolute inset-0 border-4 border-white/30 rounded-full"></div>
+                              <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                              <span className="text-xs font-bold text-white relative z-10">{downloadProgress > 0 ? `${downloadProgress}%` : ''}</span>
+                          </div>
+                          <p className="font-bold text-sm z-10">جاري فتح الفيديو...</p>
+                      </div>
+                  )}
+                  {siblings.length > 1 && (<> {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>} {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>} </>)}
+              </div>
+          );
+      }
       
       if (isAudio) return <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 relative">
         <div className="relative mb-8">

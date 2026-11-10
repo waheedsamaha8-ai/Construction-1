@@ -100,6 +100,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // Data State
     const [masterData, setMasterData] = useState<{ 
+        projectName: string;
+        projectContractor: string;
         fullDescription: string; 
         logs: ProjectLog[]; 
         payments: ProjectPayment[]; 
@@ -117,6 +119,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         checklists: Checklist[];
         ncrs: NCR[];
     }>({ 
+        projectName: seedProject?.name || initialProjectData?.name || '',
+        projectContractor: seedProject?.contractor || initialProjectData?.contractor || '',
         fullDescription: seedProject?.fullDescription || '', 
         logs: sortLogs(seedProject?.executionLogs || []),
         payments: normalizePaymentsList(seedProject?.payments || []), 
@@ -420,6 +424,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
             return {
                 ...prev,
+                projectName: proj.name || prev.projectName || '',
+                projectContractor: proj.contractor || prev.projectContractor || '',
                 fullDescription: proj.fullDescription || prev.fullDescription || '',
                 logs: mergedLogs,
                 payments: mergedPayments,
@@ -713,11 +719,42 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             const canvas = await html2canvas(element, {
                 useCORS: true,
                 scale: 4, // Ultra High Quality
-                backgroundColor: '#ffffff'
+                backgroundColor: '#ffffff',
+                onclone: (clonedDoc) => {
+                    const clonedEl = clonedDoc.getElementById(elementId);
+                    if (!clonedEl) return;
+
+                    // 1. Prevent html2canvas from clipping bottom of Arabic characters inside badges/containers
+                    const truncatedEls = clonedEl.querySelectorAll('.truncate');
+                    truncatedEls.forEach((el) => {
+                        const htmlEl = el as HTMLElement;
+                        htmlEl.style.overflow = 'visible';
+                        htmlEl.style.textOverflow = 'clip';
+                        htmlEl.style.whiteSpace = 'normal';
+                    });
+
+                    // 2. Lift all Arabic text & date text upward to compensate for html2canvas baseline shift
+                    const liftEls = clonedEl.querySelectorAll('.share-text-lift');
+                    liftEls.forEach((el) => {
+                        const htmlEl = el as HTMLElement;
+                        htmlEl.style.transform = 'translateY(-6px)';
+                        htmlEl.style.display = 'inline-block';
+                    });
+
+                    const boqBadge = clonedEl.querySelector('.log-boq-badge') as HTMLElement | null;
+                    if (boqBadge) {
+                        boqBadge.style.paddingTop = '6px';
+                        boqBadge.style.paddingBottom = '10px';
+                        boqBadge.style.overflow = 'visible';
+                    }
+                }
             });
             
             if (actionsDiv) actionsDiv.classList.remove('hidden');
             if (projectNameHeader) projectNameHeader.classList.add('hidden');
+
+            const projTitle = masterData.projectName || seedProject?.name || initialProjectData?.name || '';
+            const contractorTitle = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || '';
 
             canvas.toBlob(async (blob) => {
                 if (!blob) return;
@@ -728,8 +765,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 if (navigator.canShare && navigator.canShare({ files: [file] })) {
                     try {
                         await navigator.share({
-                            title: `يومية مشروع: ${initialProjectData?.name || ''}`,
-                            text: `يومية مشروع: ${initialProjectData?.name || ''}\nالتاريخ: ${log.date}`,
+                            title: `يومية مشروع: ${projTitle}`,
+                            text: `يومية مشروع: ${projTitle}${contractorTitle ? `\nالمقاول: ${contractorTitle}` : ''}\nالتاريخ: ${log.date}`,
                             files: [file]
                         });
                         return;
@@ -752,7 +789,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 alert('تم حفظ صورة اليومية في جهازك. سيتم فتح الواتساب الآن لمشاركتها.');
                 
                 // Optional: Open WhatsApp with text (user still needs to attach the downloaded image)
-                const text = `*يومية مشروع: ${initialProjectData?.name || ''}*\n*التاريخ:* ${log.date}\n*البيان:* ${log.content}`;
+                const text = `*يومية مشروع: ${projTitle}*${contractorTitle ? `\n*المقاول:* ${contractorTitle}` : ''}\n*التاريخ:* ${log.date}\n*البيان:* ${log.content}`;
                 window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
                 
             }, 'image/png');
@@ -2128,13 +2165,22 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         ) : (
                                             <div id={`log-card-${log.id}`} className={`p-3 rounded-2xl shadow-sm border-4 hover:shadow-md transition relative flex flex-col gap-2 ${getCardColor(idx)}`}>
-                                                {/* Hidden project name for sharing */}
-                                                <div className="hidden share-only-project-name flex items-center gap-2 mb-2 pb-3 border-b-2 border-black/10 mt-[-5px]">
-                                                    <i className="fa-solid fa-building text-blue-600 text-lg"></i>
-                                                    <span className="text-lg font-bold text-slate-800 leading-none mt-[-6px]">مشروع: {initialProjectData?.name || 'بدون اسم'}</span>
+                                                {/* Hidden project name & contractor for sharing */}
+                                                <div className="hidden share-only-project-name flex items-start gap-2.5 mb-1.5 pb-2.5 border-b-2 border-black/10">
+                                                    <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 flex items-center justify-center shrink-0 mt-0.5">
+                                                        <i className="fa-solid fa-building text-base"></i>
+                                                    </div>
+                                                    <div className="flex flex-col flex-1 min-w-0">
+                                                        <span className="share-text-lift text-base font-extrabold text-slate-800 leading-snug block">
+                                                            مشروع: {masterData.projectName || seedProject?.name || initialProjectData?.name || 'بدون اسم'}
+                                                        </span>
+                                                        <span className="share-text-lift text-[11px] font-bold text-slate-500 leading-snug block mt-0.5">
+                                                            المقاول: {masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام'}
+                                                        </span>
+                                                    </div>
                                                 </div>
                                                 <div className="flex justify-between items-center border-b border-black/5 pb-2">
-                                                    <div className="flex items-center gap-2 mt-[-2px]"><div className="w-8 h-8 rounded-full bg-white/50 text-slate-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-calendar-day text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none pb-1.5">{log.date}</span></div>
+                                                    <div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-white/50 text-slate-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-calendar-day text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none"><span className="share-text-lift">{log.date}</span></span></div>
                                                     <div className="flex gap-1 log-actions-container">
                                                         <button onClick={() => shareLogToWhatsApp(log)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-green-600 transition flex items-center justify-center" title="مشاركة واتساب"><i className="fa-brands fa-whatsapp text-[12px]"></i></button>
                                                         <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogBoqItemId(log.boqItemId || ''); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
@@ -2150,17 +2196,17 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 setActiveTab('boq');
                                                             }
                                                         }}
-                                                        className="bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-300 text-indigo-950 px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-between gap-2"
+                                                        className="log-boq-badge bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-300 text-indigo-950 px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-between gap-2"
                                                     >
-                                                        <div className="flex items-center gap-1.5 truncate">
-                                                            <i className="fa-solid fa-link text-indigo-600 text-[10px]"></i>
-                                                            <span className="font-mono text-indigo-800 shrink-0">بند ({log.boqItemCode || matchedBoqItem?.itemCode || '-'}):</span>
-                                                            <span className="truncate">{log.boqItemDescription || matchedBoqItem?.description || ''}</span>
+                                                        <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
+                                                            <i className="fa-solid fa-link text-indigo-600 text-[10px] shrink-0"></i>
+                                                            <span className="share-text-lift font-mono text-indigo-800 shrink-0">بند ({log.boqItemCode || matchedBoqItem?.itemCode || '-'}):</span>
+                                                            <span className="share-text-lift truncate">{log.boqItemDescription || matchedBoqItem?.description || ''}</span>
                                                         </div>
                                                         <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-indigo-600 shrink-0"></i>
                                                     </div>
                                                 )}
-                                                <p className="text-slate-900 text-lg leading-normal font-bold whitespace-pre-wrap mt-[-4px]">{log.content}</p>
+                                                <p className="share-text-lift text-slate-900 text-lg leading-relaxed font-bold whitespace-pre-wrap mb-0.5">{log.content}</p>
                                                 {/* OPTIMIZED IMAGES: Loading Eager for top 2 logs for instant feel */}
                                                 {log.images && log.images.length > 0 && (
                                                     <div className={`grid gap-1 mt-1 ${

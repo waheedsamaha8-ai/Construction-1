@@ -7,6 +7,7 @@ import { triggerLoadingStart, triggerLoadingStop, triggerLoadingProgress } from 
 import { dbService } from './db'; 
 import { autoSync } from './backgroundSync'; 
 import { marketService } from './ai/market';
+import { imageUtils } from './imageUtils';
 import appletConfig from '../firebase-applet-config.json';
 
 declare const google: any;
@@ -1740,21 +1741,37 @@ export const api = {
           const fields = 'files(id, name, mimeType, createdTime, webViewLink, webContentLink, thumbnailLink, size)'; 
           const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=folder,createdTime desc`); 
           
-          const data: FileItem[] = (result.files || []).map((f: any) => ({ 
-              id: f.id, 
-              parentId: targetId, 
-              name: f.name, 
-              type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, 
-              mimeType: f.mimeType, 
-              createdTime: f.createdTime, 
-              webViewLink: f.webViewLink, 
-              previewUrl: f.thumbnailLink, 
-              thumbnailLink: f.thumbnailLink,
-              webContentLink: f.webContentLink, 
-              fileCount: 0, 
-              folderCount: 0, 
-              size: f.size ? parseInt(f.size) : 0 
-          })); 
+          const localPreviewMap = new Map<string, string>();
+          localChildren.forEach(lc => {
+              if (lc.previewUrl && lc.previewUrl.startsWith('data:image')) {
+                  localPreviewMap.set(lc.id, lc.previewUrl);
+              }
+          });
+
+          const data: FileItem[] = (result.files || []).map((f: any) => {
+              let savedThumb = localPreviewMap.get(f.id) || '';
+              if (!savedThumb) {
+                  try {
+                      const lsThumb = localStorage.getItem(`vthumb_${f.id}`);
+                      if (lsThumb && lsThumb.startsWith('data:image')) savedThumb = lsThumb;
+                  } catch (e) {}
+              }
+              return { 
+                  id: f.id, 
+                  parentId: targetId, 
+                  name: f.name, 
+                  type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, 
+                  mimeType: f.mimeType, 
+                  createdTime: f.createdTime, 
+                  webViewLink: f.webViewLink, 
+                  previewUrl: savedThumb || f.thumbnailLink, 
+                  thumbnailLink: f.thumbnailLink,
+                  webContentLink: f.webContentLink, 
+                  fileCount: 0, 
+                  folderCount: 0, 
+                  size: f.size ? parseInt(f.size) : 0 
+              };
+          }); 
           
           for (const item of data) { dbService.putItem('files', item).catch(() => {}); } 
           updateCache(targetId, data); 
@@ -1851,14 +1868,25 @@ export const api = {
   async uploadFile(parentId: string, file: File, onProgress?: (percent: number) => void): Promise<any> { 
       if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED"); 
       triggerLoadingStart(); 
+      const isVid = (file.type || '').startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp)$/i.test(file.name || '');
+      let generatedThumb = '';
+      if (isVid) {
+          try {
+              generatedThumb = await imageUtils.generateVideoThumbnail(file);
+          } catch (e) {}
+      }
       if (!navigator.onLine || authService.isGuest()) {
           const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           try { await dbService.putBlob(tempId, file); } catch(e) { triggerLoadingStop(); throw new Error("Failed to save file offline"); }
+          if (generatedThumb) {
+              try { localStorage.setItem(`vthumb_${tempId}`, generatedThumb); } catch (e) {}
+              try { await dbService.putBlob(`vthumb_${tempId}`, new Blob([generatedThumb], { type: 'text/plain' })); } catch (e) {}
+          }
           // Queue for later if authenticated
           if (!authService.isGuest()) {
               await syncService.addToQueue(SyncActionType.UPLOAD_FILE, { parentId, tempId, name: file.name, mimeType: file.type });
           }
-          const fakeItem: FileItem = { id: tempId, parentId, name: file.name, mimeType: file.type, type: ItemType.FILE, createdTime: new Date().toISOString(), size: file.size };
+          const fakeItem: FileItem = { id: tempId, parentId, name: file.name, mimeType: file.type, type: ItemType.FILE, createdTime: new Date().toISOString(), size: file.size, previewUrl: generatedThumb || undefined };
           await dbService.putItem('files', fakeItem);
           triggerLoadingStop();
           if (onProgress) onProgress(100);
@@ -1868,6 +1896,17 @@ export const api = {
       if (file.size > 4 * 1024 * 1024) result = await uploadFileResumable(parentId, file, onProgress);
       else result = await uploadFileDirect(parentId, file, onProgress);
       try { await dbService.putBlob(result.id, file); } catch(e){}
+      if (generatedThumb && result?.id) {
+          result.previewUrl = generatedThumb;
+          try { localStorage.setItem(`vthumb_${result.id}`, generatedThumb); } catch (e) {}
+          try { await dbService.putBlob(`vthumb_${result.id}`, new Blob([generatedThumb], { type: 'text/plain' })); } catch (e) {}
+          try {
+              const existingItem = await dbService.getItem<FileItem>('files', result.id);
+              if (existingItem) {
+                  await dbService.putItem('files', { ...existingItem, previewUrl: generatedThumb });
+              }
+          } catch (e) {}
+      }
       triggerLoadingStop();
       return result;
   },
