@@ -249,6 +249,17 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [editingPaymentItemIndex, setEditingPaymentItemIndex] = useState<{paymentId: string, itemIndex: number} | null>(null);
     const [tempPaymentItem, setTempPaymentItem] = useState<PaymentItem | null>(null);
 
+    // NEW: Smart IPC / Automatic Payment Generator State
+    const [showSmartPaymentModal, setShowSmartPaymentModal] = useState(false);
+    const [smartIpcInvoiceNumber, setSmartIpcInvoiceNumber] = useState('');
+    const [smartIpcDate, setSmartIpcDate] = useState(new Date().toISOString().split('T')[0]);
+    const [smartIpcNote, setSmartIpcNote] = useState('');
+    const [smartIpcShowAllBoq, setSmartIpcShowAllBoq] = useState(false);
+    const [smartIpcRetentionPercent, setSmartIpcRetentionPercent] = useState<number>(5);
+    const [smartIpcAdvancePercent, setSmartIpcAdvancePercent] = useState<number>(0);
+    const [smartIpcTaxesPercent, setSmartIpcTaxesPercent] = useState<number>(0);
+    const [smartIpcDraftItems, setSmartIpcDraftItems] = useState<PaymentItem[]>([]);
+
     // Specific States (BOQ)
     const [isAnalyzingBOQ, setIsAnalyzingBOQ] = useState(false);
     const [editingBoqItem, setEditingBoqItem] = useState<BOQItem | null>(null);
@@ -1063,6 +1074,373 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         return 'bg-white';
     };
 
+    // Calculated Previous Payment Total for Cumulative Logic
+    const previousTotalPayments = useMemo(() => {
+        if (masterData.payments.length === 0) return 0;
+        return Math.max(...masterData.payments.map(p => p.cumulativeAmount || 0), 0);
+    }, [masterData.payments]);
+
+    // Map each BOQ item ID to its linked daily logs
+    const logsByBoqItemId = useMemo(() => {
+        const map = new Map<string, ProjectLog[]>();
+        masterData.logs.forEach(log => {
+            if (log.boqItemId) {
+                const list = map.get(log.boqItemId) || [];
+                list.push(log);
+                map.set(log.boqItemId, list);
+            }
+        });
+        return map;
+    }, [masterData.logs]);
+
+    // Filterable BOQ items that can be linked to logs (non-note items)
+    const linkableBoqItems = useMemo(() => {
+        return masterData.boqItems.filter(item => Boolean(item.quantity || item.unitPrice));
+    }, [masterData.boqItems]);
+
+    // --- SMART IPC / AUTOMATIC PAYMENT GENERATOR LOGIC ---
+    const openSmartPaymentGenerator = () => {
+        if (linkableBoqItems.length === 0) {
+            alert("لا توجد بنود مقايسة مسجلة في هذا المشروع حتى الآن. يرجى إضافة أو تحليل المقايسة أولاً من تبويب (مقايسة).");
+            setActiveTab('boq');
+            return;
+        }
+
+        const nextInvoiceNum = String(masterData.payments.length + 1);
+        const latestPayment = masterData.payments.length > 0 ? masterData.payments[0] : null;
+
+        // Build lookup map of previous quantities from the latest payment
+        const prevQtyByBoqId = new Map<string, number>();
+        const prevQtyByCode = new Map<string, number>();
+        if (latestPayment && Array.isArray(latestPayment.items)) {
+            latestPayment.items.forEach(pItem => {
+                const pq = Number(pItem.totalQuantity) || 0;
+                if (pItem.boqItemId) prevQtyByBoqId.set(pItem.boqItemId, pq);
+                if (pItem.itemCode) prevQtyByCode.set(`${String(pItem.itemCode).trim()}_${(pItem.description || '').slice(0, 25)}`, pq);
+            });
+        }
+
+        const draftItems: PaymentItem[] = linkableBoqItems.map(bItem => {
+            const codeKey = `${String(bItem.itemCode).trim()}_${(bItem.description || '').slice(0, 25)}`;
+            const prevQty = prevQtyByBoqId.has(bItem.id)
+                ? prevQtyByBoqId.get(bItem.id)!
+                : (prevQtyByCode.get(codeKey) || 0);
+            const boqExecQty = Number(bItem.executedQuantity) || 0;
+            const totalQty = Math.max(boqExecQty, prevQty);
+            const currQty = Math.max(0, Number((totalQty - prevQty).toFixed(3)));
+            const price = Number(bItem.unitPrice) || 0;
+            const ratio = 100;
+            const totalVal = Math.round(totalQty * price * (ratio / 100));
+
+            return {
+                boqItemId: bItem.id,
+                batchName: bItem.batchName || '',
+                itemCode: bItem.itemCode,
+                description: bItem.description,
+                unit: bItem.unit || 'م',
+                contractQuantity: Number(bItem.quantity) || 0,
+                prevQuantity: prevQty,
+                currQuantity: currQty,
+                totalQuantity: totalQty,
+                unitPrice: price,
+                completionRatio: ratio,
+                totalValue: totalVal
+            };
+        });
+
+        const hasActiveOrLinkedItems = draftItems.some(
+            d => (d.totalQuantity || 0) > 0 || (d.currQuantity || 0) > 0 || (d.boqItemId && (logsByBoqItemId.get(d.boqItemId)?.length || 0) > 0)
+        );
+
+        setSmartIpcDraftItems(draftItems);
+        setSmartIpcShowAllBoq(!hasActiveOrLinkedItems);
+        setSmartIpcInvoiceNumber(nextInvoiceNum);
+        setSmartIpcDate(new Date().toISOString().split('T')[0]);
+        setSmartIpcNote(`مستخلص جاري رقم (${nextInvoiceNum}) - مولد تلقائياً من المقايسة واليوميات`);
+        setShowSmartPaymentModal(true);
+    };
+
+    const handleSmartDraftItemChange = (index: number, field: 'currQuantity' | 'totalQuantity' | 'completionRatio' | 'prevQuantity', rawVal: any) => {
+        setSmartIpcDraftItems(prev => {
+            const next = [...prev];
+            const item = { ...next[index] };
+            const numVal = Math.max(0, parseFloat(String(rawVal || '0')) || 0);
+
+            let prevQ = Number(item.prevQuantity) || 0;
+            let currQ = Number(item.currQuantity) || 0;
+            let totalQ = Number(item.totalQuantity) || 0;
+            let ratio = Number(item.completionRatio) || 100;
+            const price = Number(item.unitPrice) || 0;
+
+            if (field === 'prevQuantity') {
+                prevQ = numVal;
+                totalQ = Number((prevQ + currQ).toFixed(3));
+            } else if (field === 'currQuantity') {
+                currQ = numVal;
+                totalQ = Number((prevQ + currQ).toFixed(3));
+            } else if (field === 'totalQuantity') {
+                totalQ = numVal;
+                currQ = Math.max(0, Number((totalQ - prevQ).toFixed(3)));
+            } else if (field === 'completionRatio') {
+                ratio = Math.min(100, Math.max(0, numVal));
+            }
+
+            item.prevQuantity = prevQ;
+            item.currQuantity = currQ;
+            item.totalQuantity = totalQ;
+            item.completionRatio = ratio;
+            item.totalValue = Math.round(totalQ * price * (ratio / 100));
+
+            next[index] = item;
+            return next;
+        });
+    };
+
+    const smartIpcCalculations = useMemo(() => {
+        const itemsCumulativeValue = smartIpcDraftItems.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0);
+        const itemsCurrentPeriodValue = smartIpcDraftItems.reduce((sum, item) => {
+            const currQ = Number(item.currQuantity) || 0;
+            const price = Number(item.unitPrice) || 0;
+            const ratio = Number(item.completionRatio) || 100;
+            return sum + Math.round(currQ * price * (ratio / 100));
+        }, 0);
+
+        const cumulativeAmount = Math.max(itemsCumulativeValue, previousTotalPayments + itemsCurrentPeriodValue);
+        const grossCurrentWork = itemsCurrentPeriodValue > 0
+            ? itemsCurrentPeriodValue
+            : Math.max(0, cumulativeAmount - previousTotalPayments);
+
+        const retentionAmount = Math.round(grossCurrentWork * ((Number(smartIpcRetentionPercent) || 0) / 100));
+        const advanceDeductionAmount = Math.round(grossCurrentWork * ((Number(smartIpcAdvancePercent) || 0) / 100));
+        const taxesAndOtherAmount = Math.round(grossCurrentWork * ((Number(smartIpcTaxesPercent) || 0) / 100));
+        const totalDeductions = retentionAmount + advanceDeductionAmount + taxesAndOtherAmount;
+        const netPayableAfterDeductions = Math.max(0, grossCurrentWork - totalDeductions);
+
+        const activeItemsCount = smartIpcDraftItems.filter(i => (i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0).length;
+        const linkedLogsCount = smartIpcDraftItems.reduce((acc, i) => {
+            if ((i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0) {
+                return acc + (i.boqItemId ? (logsByBoqItemId.get(i.boqItemId)?.length || 0) : 0);
+            }
+            return acc;
+        }, 0);
+
+        return {
+            cumulativeAmount,
+            grossCurrentWork,
+            retentionAmount,
+            advanceDeductionAmount,
+            taxesAndOtherAmount,
+            totalDeductions,
+            netPayableAfterDeductions,
+            activeItemsCount,
+            linkedLogsCount
+        };
+    }, [smartIpcDraftItems, previousTotalPayments, smartIpcRetentionPercent, smartIpcAdvancePercent, smartIpcTaxesPercent, logsByBoqItemId]);
+
+    const handlePrintPaymentIPC = (pay: ProjectPayment) => {
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+        const itemsList = (pay.items || []).filter(i => (i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0);
+        const grossWork = pay.grossCurrentWork ?? pay.netAmount ?? 0;
+        const retAmt = pay.retentionAmount || 0;
+        const advAmt = pay.advanceDeductionAmount || 0;
+        const taxAmt = pay.taxesAndOtherAmount || 0;
+        const netPayable = pay.netPayableAfterDeductions ?? pay.netAmount ?? 0;
+
+        // Collect linked daily logs for items included in this payment
+        const relatedLogs: { itemCode: string; log: ProjectLog }[] = [];
+        itemsList.forEach(it => {
+            if (it.boqItemId) {
+                const lList = logsByBoqItemId.get(it.boqItemId) || [];
+                lList.forEach(l => relatedLogs.push({ itemCode: it.itemCode || '-', log: l }));
+            }
+        });
+
+        const rowsHtml = itemsList.length > 0 ? itemsList.map((it, idx) => `
+            <tr>
+                <td>${idx + 1}</td>
+                <td style="font-family: monospace;">${it.itemCode || '-'}</td>
+                <td style="text-align: right;">${it.description || ''}</td>
+                <td>${it.unit || '-'}</td>
+                <td>${(it.contractQuantity || 0).toLocaleString()}</td>
+                <td>${(it.prevQuantity || 0).toLocaleString()}</td>
+                <td style="background:#f0fdf4; color:#166534;">${(it.currQuantity || 0).toLocaleString()}</td>
+                <td style="background:#eff6ff; color:#1e40af;">${(it.totalQuantity || 0).toLocaleString()}</td>
+                <td>${(it.unitPrice || 0).toLocaleString()}</td>
+                <td>${it.completionRatio || 100}%</td>
+                <td style="font-weight:900;">${(it.totalValue || 0).toLocaleString()}</td>
+            </tr>
+        `).join('') : `<tr><td colspan="11">مستخلص إجمالي بدون تفصيل بنود</td></tr>`;
+
+        const logsEvidenceHtml = relatedLogs.length > 0 ? `
+            <h3 style="margin-top: 24px;">📸 بيان توثيق الأعمال من سجل اليوميات المرتبطة ببنود المستخلص (${relatedLogs.length} يومية)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 15%;">رقم البند</th>
+                        <th style="width: 18%;">تاريخ اليومية</th>
+                        <th>بيان الأعمال المنفذة بالموقع</th>
+                        <th style="width: 15%;">المرفقات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${relatedLogs.slice(0, 20).map(r => `
+                        <tr>
+                            <td>بند (${r.itemCode})</td>
+                            <td>${r.log.date}</td>
+                            <td style="text-align: right;">${r.log.content}</td>
+                            <td>${r.log.images?.length ? `${r.log.images.length} صورة موقع` : 'سجل نصي'}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        ` : '';
+
+        const bodyHtml = `
+            <div class="info-box" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+                <div>
+                    <div><strong>اسم المشروع:</strong> ${projName}</div>
+                    <div><strong>المقاول المنفذ:</strong> ${contractorName}</div>
+                </div>
+                <div>
+                    <div><strong>رقم المستخلص:</strong> مستخلص جاري رقم (${pay.invoiceNumber || '-'})</div>
+                    <div><strong>تاريخ المستخلص:</strong> ${pay.date}</div>
+                </div>
+            </div>
+
+            <h3>1. جدول حصر كميات وقيم البنود المنفذة</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>م</th>
+                        <th>رقم البند</th>
+                        <th>بيان الأعمال</th>
+                        <th>الوحدة</th>
+                        <th>التعاقدية</th>
+                        <th>السابقة</th>
+                        <th>الحالية</th>
+                        <th>الإجمالية</th>
+                        <th>الفئة (ج.م)</th>
+                        <th>نسبة الصرف</th>
+                        <th>إجمالي القيمة (ج.م)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rowsHtml}
+                </tbody>
+            </table>
+
+            <h3>2. الملخص المالي وحساب الاستقطاعات والصافي المستحق</h3>
+            <table>
+                <tbody>
+                    <tr>
+                        <td style="text-align:right; width:60%; background:#f8fafc;"><strong>إجمالي قيمة الأعمال التراكمية حتى تاريخه</strong></td>
+                        <td style="font-size:20px;"><strong>${(pay.cumulativeAmount || 0).toLocaleString()} ج.م</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="text-align:right; background:#f8fafc;"><strong>إجمالي أعمال المستخلص الجاري (قبل الاستقطاعات)</strong></td>
+                        <td style="font-size:20px; color:#1e40af;"><strong>${grossWork.toLocaleString()} ج.م</strong></td>
+                    </tr>
+                    ${retAmt > 0 ? `
+                    <tr>
+                        <td style="text-align:right; color:#991b1b;">(-) خصم تأمين ضمان أعمال (${pay.retentionPercent || 0}%)</td>
+                        <td style="color:#991b1b;">- ${retAmt.toLocaleString()} ج.م</td>
+                    </tr>` : ''}
+                    ${advAmt > 0 ? `
+                    <tr>
+                        <td style="text-align:right; color:#991b1b;">(-) استرداد دفعة مقدمة (${pay.advanceDeductionPercent || 0}%)</td>
+                        <td style="color:#991b1b;">- ${advAmt.toLocaleString()} ج.م</td>
+                    </tr>` : ''}
+                    ${taxAmt > 0 ? `
+                    <tr>
+                        <td style="text-align:right; color:#991b1b;">(-) ضرائب ودمغات واستقطاعات أخرى (${pay.taxesAndOtherPercent || 0}%)</td>
+                        <td style="color:#991b1b;">- ${taxAmt.toLocaleString()} ج.م</td>
+                    </tr>` : ''}
+                    <tr style="background:#dcfce7;">
+                        <td style="text-align:right; font-size:22px; color:#14532d;"><strong>صافي المستحق للصرف للمقاول في هذا المستخلص</strong></td>
+                        <td style="font-size:24px; font-weight:900; color:#14532d;"><strong>${netPayable.toLocaleString()} ج.م</strong></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            ${pay.note ? `<div class="highlight-box"><strong>ملاحظات المستخلص:</strong> ${pay.note}</div>` : ''}
+            ${logsEvidenceHtml}
+
+            <div style="margin-top:40px; display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; text-align:center; page-break-inside:avoid;">
+                <div style="border-top:2px solid #000; padding-top:10px;"><strong>المقاول المنفذ</strong><br/><span style="font-size:14px;">${contractorName}</span></div>
+                <div style="border-top:2px solid #000; padding-top:10px;"><strong>مهندس التنفيذ / الحصر</strong></div>
+                <div style="border-top:2px solid #000; padding-top:10px;"><strong>المكتب الفني / المراجعة</strong></div>
+                <div style="border-top:2px solid #000; padding-top:10px;"><strong>اعتماد الاستشاري / المدير</strong></div>
+            </div>
+        `;
+
+        printService.printReport(
+            bodyHtml,
+            `مستخلص جاري رقم (${pay.invoiceNumber || '-'})`,
+            `IPC-${pay.invoiceNumber || '1'}-${pay.date}`,
+            { subtitle: `مشروع: ${projName} | المقاول: ${contractorName}` }
+        );
+    };
+
+    const saveSmartGeneratedPayment = (andPrint: boolean = false) => {
+        const activeItems = smartIpcDraftItems.filter(i => (i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0);
+        if (activeItems.length === 0 && smartIpcCalculations.cumulativeAmount <= 0) {
+            alert("يرجى إدخال الكمية المنفذة لبند واحد على الأقل لتوليد المستخلص.");
+            return;
+        }
+
+        const newPay: ProjectPayment = {
+            id: `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            invoiceNumber: smartIpcInvoiceNumber.trim() || String(masterData.payments.length + 1),
+            date: smartIpcDate || new Date().toISOString().split('T')[0],
+            cumulativeAmount: smartIpcCalculations.cumulativeAmount,
+            grossCurrentWork: smartIpcCalculations.grossCurrentWork,
+            retentionPercent: Number(smartIpcRetentionPercent) || 0,
+            retentionAmount: smartIpcCalculations.retentionAmount,
+            advanceDeductionPercent: Number(smartIpcAdvancePercent) || 0,
+            advanceDeductionAmount: smartIpcCalculations.advanceDeductionAmount,
+            taxesAndOtherPercent: Number(smartIpcTaxesPercent) || 0,
+            taxesAndOtherAmount: smartIpcCalculations.taxesAndOtherAmount,
+            netPayableAfterDeductions: smartIpcCalculations.netPayableAfterDeductions,
+            netAmount: smartIpcCalculations.netPayableAfterDeductions,
+            note: smartIpcNote.trim() || `مستخلص جاري رقم (${smartIpcInvoiceNumber || (masterData.payments.length + 1)})`,
+            items: activeItems,
+            isAutoGenerated: true
+        };
+
+        // Sync updated totalQuantity back to masterData.boqItems so BOQ executed quantities are always up-to-date
+        const draftQtyByBoqId = new Map<string, number>();
+        activeItems.forEach(item => {
+            if (item.boqItemId && (item.totalQuantity || 0) > 0) {
+                draftQtyByBoqId.set(item.boqItemId, Number(item.totalQuantity));
+            }
+        });
+
+        const updatedBoqItems = masterData.boqItems.map(b => {
+            if (draftQtyByBoqId.has(b.id)) {
+                const newExec = Math.max(Number(b.executedQuantity) || 0, draftQtyByBoqId.get(b.id)!);
+                return { ...b, executedQuantity: newExec };
+            }
+            return b;
+        });
+
+        const updatedPayments = [newPay, ...masterData.payments].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const newData = {
+            ...masterData,
+            payments: updatedPayments,
+            boqItems: updatedBoqItems
+        };
+
+        setMasterData(newData);
+        setShowSmartPaymentModal(false);
+        setExpandedPaymentId(newPay.id);
+        triggerAutoSave(newData);
+
+        if (andPrint) {
+            setTimeout(() => handlePrintPaymentIPC(newPay), 150);
+        }
+    };
+
     // BOQ Logic
     const analyzeBoqFile = async (file: File, filename?: string) => { 
         setIsAnalyzingBOQ(true); 
@@ -1792,33 +2170,6 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setVisibleLogsCount(prev => prev + 10);
     };
 
-    // Calculated Previous Payment Total for Cumulative Logic
-    const previousTotalPayments = useMemo(() => {
-        if (masterData.payments.length === 0) return 0;
-        // The cumulative of the last payment is the previous total
-        // Payments are sorted Descending date in state, so payments[0] is latest
-        // But for calculation of NEW payment, we look at the MAX existing cumulative
-        return Math.max(...masterData.payments.map(p => p.cumulativeAmount || 0), 0);
-    }, [masterData.payments]);
-
-    // Map each BOQ item ID to its linked daily logs
-    const logsByBoqItemId = useMemo(() => {
-        const map = new Map<string, ProjectLog[]>();
-        masterData.logs.forEach(log => {
-            if (log.boqItemId) {
-                const list = map.get(log.boqItemId) || [];
-                list.push(log);
-                map.set(log.boqItemId, list);
-            }
-        });
-        return map;
-    }, [masterData.logs]);
-
-    // Filterable BOQ items that can be linked to logs (non-note items)
-    const linkableBoqItems = useMemo(() => {
-        return masterData.boqItems.filter(item => Boolean(item.quantity || item.unitPrice));
-    }, [masterData.boqItems]);
-
     const renderBoqTable = () => { 
         const { groupedItems, batchOrder, grandTotalValue, grandExecutedValue } = boqDerivedData;
         return ( 
@@ -2256,6 +2607,33 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                     {activeTab === 'payments' && (
                         <div className="flex flex-col gap-2 pb-20">
+                            {/* Smart One-Click IPC Generator Banner */}
+                            <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-indigo-800 rounded-xl p-3 text-white shadow-md flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shrink-0 border border-emerald-500/30">
+                                <div className="flex items-start gap-2.5">
+                                    <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur-xs border border-white/25 flex items-center justify-center shrink-0 text-amber-300 shadow-inner">
+                                        <i className="fa-solid fa-wand-magic-sparkles text-lg"></i>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                            <h4 className="font-extrabold text-xs sm:text-sm text-white">مُنشئ المستخلص التلقائي الذكي (IPC)</h4>
+                                            <span className="bg-amber-400/20 text-amber-200 border border-amber-300/30 text-[9px] font-bold px-2 py-0.5 rounded-md">
+                                                من المقايسة واليوميات
+                                            </span>
+                                        </div>
+                                        <p className="text-[10px] text-emerald-100 font-bold mt-0.5 leading-snug">
+                                            يحسب تلقائياً الكميات السابقة والحالية والفئات والاستقطاعات ويربط البنود بإثباتات اليوميات المصورة
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={openSmartPaymentGenerator}
+                                    className="bg-white text-emerald-900 hover:bg-emerald-50 px-3.5 py-2 rounded-xl text-xs font-black shadow-md transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                                >
+                                    <i className="fa-solid fa-bolt text-amber-500"></i>
+                                    <span>توليد مستخلص ذكي الآن</span>
+                                </button>
+                            </div>
+
                             {/* Input Area */}
                             <div className="bg-white rounded-xl p-3 border border-green-100 shadow-sm shrink-0 flex flex-col gap-2">
                                 <div className="flex gap-2 items-center">
@@ -2286,7 +2664,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             </div>
                             
                             <div className="space-y-2 pb-10">
-                                {masterData.payments.map((pay, idx) => (
+                                {masterData.payments.map((pay, idx) => {
+                                    const hasDeductions = Boolean((pay.retentionAmount || 0) > 0 || (pay.advanceDeductionAmount || 0) > 0 || (pay.taxesAndOtherAmount || 0) > 0);
+                                    const totalDeductions = (pay.retentionAmount || 0) + (pay.advanceDeductionAmount || 0) + (pay.taxesAndOtherAmount || 0);
+                                    return (
                                     <div key={pay.id} className="relative group animate-scale-in">
                                         {editingPayId === pay.id ? (
                                             <div className="bg-green-50 p-4 rounded-xl border-2 border-green-300 shadow-md flex flex-col gap-2">
@@ -2310,27 +2691,59 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                         ) : (
                                             <div className={`p-3 rounded-2xl shadow-sm border-4 hover:shadow-md transition relative flex flex-col gap-2 ${getCardColor(idx)}`}>
                                                 <div className="flex justify-between items-center border-b border-black/5 pb-2">
-                                                    <div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-white/50 text-green-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-file-invoice text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none pt-1">{pay.date} | #{pay.invoiceNumber || '-'}</span></div>
-                                                    <div className="flex gap-1"><button onClick={() => { setEditingPayId(pay.id); setTempEditPayCumulative((pay.cumulativeAmount || pay.netAmount || (pay as any).amount || 0).toString()); setTempEditPayAmount((pay.netAmount || (pay as any).amount || pay.cumulativeAmount || 0).toString()); setTempEditPayNote(pay.note || ''); setTempEditPayDate(pay.date); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button><button onClick={() => setPaymentToDeleteId(pay.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button></div>
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                        <div className="w-8 h-8 rounded-full bg-white/50 text-green-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-file-invoice text-xs"></i></div>
+                                                        <span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none pt-1">{pay.date} | #{pay.invoiceNumber || '-'}</span>
+                                                        {pay.isAutoGenerated && (
+                                                            <span className="bg-emerald-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
+                                                                <i className="fa-solid fa-wand-magic-sparkles text-[8px] text-amber-300"></i>
+                                                                مستخلص ذكي
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex gap-1">
+                                                        <button onClick={() => handlePrintPaymentIPC(pay)} title="طباعة / تصدير المستخلص الرسمي" className="w-7 h-7 rounded-full bg-white/70 text-emerald-700 hover:bg-emerald-600 hover:text-white transition flex items-center justify-center shadow-xs"><i className="fa-solid fa-print text-[10px]"></i></button>
+                                                        <button onClick={() => { setEditingPayId(pay.id); setTempEditPayCumulative((pay.cumulativeAmount || pay.netAmount || (pay as any).amount || 0).toString()); setTempEditPayAmount((pay.netAmount || (pay as any).amount || pay.cumulativeAmount || 0).toString()); setTempEditPayNote(pay.note || ''); setTempEditPayDate(pay.date); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
+                                                        <button onClick={() => setPaymentToDeleteId(pay.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button>
+                                                    </div>
                                                 </div>
                                                 <div className="bg-white/40 p-2.5 rounded-lg border border-black/5 flex flex-col gap-1">
                                                     <div className="flex justify-between items-center border-b border-black/5 pb-1 mb-1">
-                                                        <span className="text-[10px] text-slate-500 font-bold">إجمالي الأعمال</span>
+                                                        <span className="text-[10px] text-slate-500 font-bold">إجمالي الأعمال التراكمي</span>
                                                         <span className="font-bold text-slate-900 font-mono text-base">{(pay.cumulativeAmount || 0).toLocaleString()} ج.م</span>
                                                     </div>
+                                                    {hasDeductions && (
+                                                        <div className="flex flex-col gap-0.5 border-b border-black/5 pb-1 mb-1 text-[10px]">
+                                                            <div className="flex justify-between items-center text-slate-600 font-bold">
+                                                                <span>أعمال الفترة الجارية (قبل الخصم):</span>
+                                                                <span className="font-mono">{(pay.grossCurrentWork || 0).toLocaleString()} ج.م</span>
+                                                            </div>
+                                                            <div className="flex justify-between items-center text-red-700 font-bold">
+                                                                <span>إجمالي الاستقطاعات ({[
+                                                                    pay.retentionPercent ? `ضمان ${pay.retentionPercent}%` : '',
+                                                                    pay.advanceDeductionPercent ? `دفعة مقدمة ${pay.advanceDeductionPercent}%` : '',
+                                                                    pay.taxesAndOtherPercent ? `ضرائب ${pay.taxesAndOtherPercent}%` : ''
+                                                                ].filter(Boolean).join(' + ')}):</span>
+                                                                <span className="font-mono">- {totalDeductions.toLocaleString()} ج.م</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                     <div className="flex justify-between items-center">
-                                                        <span className="text-[10px] text-slate-500 font-bold">صافي المستخلص</span>
-                                                        <span className="font-black text-green-800 font-mono text-lg">{(pay.netAmount || 0).toLocaleString()} ج.م</span>
+                                                        <span className="text-[10px] text-slate-500 font-bold">صافي المستحق للصرف</span>
+                                                        <span className="font-black text-green-800 font-mono text-lg">{(pay.netPayableAfterDeductions ?? pay.netAmount ?? 0).toLocaleString()} ج.م</span>
                                                     </div>
                                                     <p className="text-slate-900 text-sm leading-relaxed font-bold whitespace-pre-wrap mt-1 opacity-80">{pay.note}</p>
                                                 </div>
-                                                {pay.items && pay.items.length > 0 && <button onClick={() => setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id)} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : 'عرض البنود'}</button>}
+                                                {pay.items && pay.items.length > 0 && <button onClick={() => setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id)} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>}
                                                 {expandedPaymentId === pay.id && pay.items && (
                                                     <div className="mt-1 bg-white rounded-lg border border-slate-200 overflow-hidden p-1 space-y-2">
                                                         {pay.items.map((item, i) => {
                                                             const isEditingThisItem = editingPaymentItemIndex && editingPaymentItemIndex.paymentId === pay.id && editingPaymentItemIndex.itemIndex === i;
-                                                            // Determine Color
                                                             const quantityColorClass = getQuantityStatusColor(item.totalQuantity || 0, item.contractQuantity || 0);
+                                                            const matchedBoq = item.boqItemId
+                                                                ? masterData.boqItems.find(b => b.id === item.boqItemId)
+                                                                : masterData.boqItems.find(b => String(b.itemCode).trim() === String(item.itemCode).trim());
+                                                            const itemLinkedLogs = matchedBoq ? (logsByBoqItemId.get(matchedBoq.id) || []) : [];
                                                             
                                                             return (
                                                                 <div key={i} className={`rounded border p-2 text-[10px] transition ${isEditingThisItem ? 'bg-yellow-50 border-yellow-200 shadow-md' : 'bg-slate-50 border-slate-100'}`}>
@@ -2366,10 +2779,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                     ) : (
                                                                         <div onClick={() => handleStartEditItem(pay.id, item, i)} className="cursor-pointer hover:bg-blue-50 transition p-1 rounded">
                                                                             {/* Row 1: Code & Desc */}
-                                                                            <div className="flex gap-2 font-bold text-slate-800 mb-1">
-                                                                                <span className="bg-white px-1 rounded border border-slate-200 font-mono text-sm">{item.itemCode || '-'}</span>
-                                                                                <span className="truncate text-sm">{item.description}</span>
-                                                                                <i className="fa-solid fa-pen text-[8px] text-slate-300 mr-auto mt-1"></i>
+                                                                            <div className="flex gap-2 items-center font-bold text-slate-800 mb-1">
+                                                                                <span className="bg-white px-1 rounded border border-slate-200 font-mono text-sm shrink-0">{item.itemCode || '-'}</span>
+                                                                                <span className="truncate text-sm flex-1">{item.description}</span>
+                                                                                {matchedBoq && itemLinkedLogs.length > 0 && (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            setViewingBoqLogsItem(matchedBoq);
+                                                                                        }}
+                                                                                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded-md text-[9px] font-bold flex items-center gap-1 shrink-0"
+                                                                                        title="عرض يوميات وصور إثبات هذا البند"
+                                                                                    >
+                                                                                        <i className="fa-solid fa-camera text-[8px]"></i>
+                                                                                        <span>{itemLinkedLogs.length} يومية</span>
+                                                                                    </button>
+                                                                                )}
+                                                                                <i className="fa-solid fa-pen text-[8px] text-slate-300 shrink-0"></i>
                                                                             </div>
                                                                             {/* Row 2: Quantities */}
                                                                             <div className="grid grid-cols-4 gap-1 text-center bg-white rounded border border-slate-100 p-1 mb-1">
@@ -2379,10 +2806,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                                 <div className={`flex flex-col rounded ${quantityColorClass}`}><span className="text-[8px] text-slate-600 font-bold">الإجمالية</span><span className="font-mono font-bold text-sm">{item.totalQuantity || 0}</span></div>
                                                                             </div>
                                                                             {/* Row 3: Financials */}
-                                                                            <div className="flex justify-between items-center bg-blue-50/50 rounded p-1 px-2 border border-blue-100">
-                                                                                <div className="flex gap-1 items-center"><span className="text-slate-500 text-[9px]">الفئة:</span><span className="font-mono font-bold text-sm">{item.unitPrice?.toLocaleString()}</span></div>
-                                                                                <div className="flex gap-1 items-center"><span className="text-slate-500 text-[9px]">النسبة:</span><span className="font-mono font-bold text-sm">{item.completionRatio || 100}%</span></div>
-                                                                                <div className="flex gap-1 items-center"><span className="text-slate-500 text-[9px]">الإجمالي:</span><span className="font-mono font-black text-blue-800 text-sm">{item.totalValue?.toLocaleString()}</span></div>
+                                                                            <div className="grid grid-cols-3 gap-1 text-center bg-blue-50/50 rounded p-1.5 border border-blue-100">
+                                                                                <div className="flex flex-col items-center">
+                                                                                    <span className="text-slate-500 text-[9px] font-bold">الفئة</span>
+                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.unitPrice?.toLocaleString()}</span>
+                                                                                </div>
+                                                                                <div className="flex flex-col items-center border-x border-blue-100/80">
+                                                                                    <span className="text-slate-500 text-[9px] font-bold">النسبة</span>
+                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.completionRatio || 100}%</span>
+                                                                                </div>
+                                                                                <div className="flex flex-col items-center">
+                                                                                    <span className="text-blue-700 text-[9px] font-bold">الإجمالي</span>
+                                                                                    <span className="font-mono font-black text-blue-800 text-sm">{item.totalValue?.toLocaleString()}</span>
+                                                                                </div>
                                                                             </div>
                                                                         </div>
                                                                     )}
@@ -2394,7 +2830,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                )})}
                                 {masterData.payments.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">لا توجد مستخلصات.</div>}
                             </div>
                         </div>
@@ -2774,6 +3210,419 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     </div>
                 )}
 
+                {/* Smart IPC / Payment Generator Modal - Full Screen & Fully Scrollable */}
+                {showSmartPaymentModal && (
+                    <div className="fixed inset-0 z-[1720] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-0 animate-fade-in">
+                        <div className="bg-white w-full h-full flex flex-col overflow-hidden animate-scale-in">
+                            {/* Slim Fixed Modal Header */}
+                            <div className="bg-gradient-to-r from-emerald-800 via-teal-800 to-indigo-900 text-white px-4 py-3 flex justify-between items-center shrink-0 shadow-md">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center text-amber-300 border border-white/20 shrink-0">
+                                        <i className="fa-solid fa-wand-magic-sparkles text-base"></i>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <h3 className="font-black text-sm sm:text-base text-white truncate">
+                                            مُنشئ المستخلص التلقائي الذكي (Smart IPC)
+                                        </h3>
+                                        <p className="text-[10px] text-emerald-100 font-bold truncate">
+                                            ربط آلي بين الكميات المنفذة بالمقايسة، سجل اليوميات، وحساب الاستقطاعات
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowSmartPaymentModal(false)}
+                                    className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition shrink-0 mr-2"
+                                    title="إغلاق"
+                                >
+                                    <i className="fa-solid fa-times text-base"></i>
+                                </button>
+                            </div>
+
+                            {/* Unified Full-Screen Scrollable Body (Metadata + Items + Stacked Deductions + Totals + Buttons) */}
+                            <div
+                                className="flex-1 overflow-y-auto p-3 sm:p-5 space-y-4 bg-slate-100 pb-28 custom-scrollbar"
+                                style={{ WebkitOverflowScrolling: 'touch' }}
+                            >
+                                {/* 1. Metadata & Filter Controls Card */}
+                                <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex flex-col gap-3">
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                                        <div className="flex flex-col">
+                                            <label className="text-[10px] font-bold text-slate-600 mb-1">رقم المستخلص</label>
+                                            <input
+                                                type="text"
+                                                value={smartIpcInvoiceNumber}
+                                                onChange={(e) => setSmartIpcInvoiceNumber(e.target.value)}
+                                                className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-black text-slate-900 outline-none focus:border-emerald-600 focus:bg-white"
+                                                placeholder="1"
+                                            />
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <label className="text-[10px] font-bold text-slate-600 mb-1">تاريخ المستخلص</label>
+                                            <input
+                                                type="date"
+                                                value={smartIpcDate}
+                                                onChange={(e) => setSmartIpcDate(e.target.value)}
+                                                className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-emerald-600 focus:bg-white"
+                                            />
+                                        </div>
+                                        <div className="col-span-2 flex flex-col">
+                                            <label className="text-[10px] font-bold text-slate-600 mb-1">البيان / ملاحظات المستخلص</label>
+                                            <input
+                                                type="text"
+                                                value={smartIpcNote}
+                                                onChange={(e) => setSmartIpcNote(e.target.value)}
+                                                className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:border-emerald-600 focus:bg-white"
+                                                placeholder="مستخلص جاري..."
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                                        <div className="flex items-center gap-2 flex-wrap text-[11px] font-bold">
+                                            <span className="bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded-xl border border-emerald-200">
+                                                بنود ذات تنفيذ: <strong>{smartIpcCalculations.activeItemsCount}</strong> من {smartIpcDraftItems.length}
+                                            </span>
+                                            {smartIpcCalculations.linkedLogsCount > 0 && (
+                                                <span className="bg-indigo-50 text-indigo-800 px-2.5 py-1 rounded-xl border border-indigo-200 flex items-center gap-1">
+                                                    <i className="fa-solid fa-camera text-[10px]"></i>
+                                                    <span>موثق بـ <strong>{smartIpcCalculations.linkedLogsCount}</strong> يومية موقع</span>
+                                                </span>
+                                            )}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSmartIpcShowAllBoq(!smartIpcShowAllBoq)}
+                                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 shadow-2xs ${
+                                                smartIpcShowAllBoq
+                                                    ? 'bg-indigo-600 text-white border-indigo-600'
+                                                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                                            }`}
+                                        >
+                                            <i className="fa-solid fa-filter text-[10px]"></i>
+                                            <span>{smartIpcShowAllBoq ? 'عرض البنود المنفذة فقط' : `عرض جميع بنود المقايسة (${smartIpcDraftItems.length})`}</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* 2. BOQ Items List */}
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center justify-between px-1">
+                                        <h4 className="text-xs font-black text-slate-700 flex items-center gap-1.5">
+                                            <i className="fa-solid fa-list-check text-emerald-600"></i>
+                                            <span>بنود الأعمال والكميات المنفذة</span>
+                                        </h4>
+                                        <span className="text-[10px] font-bold text-slate-500">يمكنك تعديل الكمية الحالية أو الإجمالية لأي بند</span>
+                                    </div>
+
+                                    {smartIpcDraftItems.map((item, idx) => {
+                                        const itemLogs = item.boqItemId ? (logsByBoqItemId.get(item.boqItemId) || []) : [];
+                                        const isVisibleInFilter = smartIpcShowAllBoq || (item.totalQuantity || 0) > 0 || (item.currQuantity || 0) > 0 || itemLogs.length > 0;
+                                        if (!isVisibleInFilter) return null;
+
+                                        const matchedBoq = item.boqItemId ? masterData.boqItems.find(b => b.id === item.boqItemId) : undefined;
+                                        const isOverContract = (item.contractQuantity || 0) > 0 && (item.totalQuantity || 0) > (item.contractQuantity || 0);
+
+                                        return (
+                                            <div
+                                                key={item.boqItemId || idx}
+                                                className={`bg-white rounded-2xl p-3 border-2 transition shadow-xs ${
+                                                    (item.currQuantity || 0) > 0
+                                                        ? 'border-emerald-400 bg-emerald-50/15'
+                                                        : (item.totalQuantity || 0) > 0
+                                                        ? 'border-blue-200'
+                                                        : 'border-slate-200'
+                                                }`}
+                                            >
+                                                <div className="flex flex-col gap-2 mb-2.5 border-b border-slate-100 pb-2.5">
+                                                    {/* Row 1: Item Number & BOQ Name on one row + Quick Actions */}
+                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                            <span className="bg-slate-900 text-white font-mono font-bold text-[11px] px-2.5 py-1 rounded-lg shrink-0">
+                                                                بند {item.itemCode}
+                                                            </span>
+                                                            {item.batchName && (
+                                                                <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 truncate">
+                                                                    {item.batchName}
+                                                                </span>
+                                                            )}
+                                                        </div>
+
+                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                            {matchedBoq && itemLogs.length > 0 && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setViewingBoqLogsItem(matchedBoq)}
+                                                                    className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-900 border border-indigo-300 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                                                                >
+                                                                    <i className="fa-solid fa-camera text-indigo-600"></i>
+                                                                    <span>إثبات اليوميات ({itemLogs.length})</span>
+                                                                </button>
+                                                            )}
+                                                            {(item.contractQuantity || 0) > 0 && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleSmartDraftItemChange(idx, 'totalQuantity', item.contractQuantity)}
+                                                                    className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg text-[10px] font-bold transition"
+                                                                    title="تعيين الإجمالي التراكمي = 100% من الكمية التعاقدية"
+                                                                >
+                                                                    100% تنفيذ
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Row 2: Full Item Description (منطوق البند) in its own row */}
+                                                    <div className="w-full text-xs sm:text-sm font-bold text-slate-800 leading-relaxed bg-slate-50/80 px-3 py-2 rounded-xl border border-slate-100 break-words">
+                                                        {item.description}
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 items-center text-center">
+                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">التعاقدية ({item.unit})</span>
+                                                        <span className="font-mono font-bold text-xs text-slate-800">{(item.contractQuantity || 0).toLocaleString()}</span>
+                                                    </div>
+                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">السابقة</span>
+                                                        <input
+                                                            type="number"
+                                                            step="any"
+                                                            value={item.prevQuantity ?? 0}
+                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'prevQuantity', e.target.value)}
+                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-blue-500"
+                                                        />
+                                                    </div>
+                                                    <div className="bg-emerald-50 rounded-xl p-1.5 border border-emerald-300">
+                                                        <span className="text-[9px] font-black text-emerald-800 block mb-0.5">الحالية (الفترة)</span>
+                                                        <input
+                                                            type="number"
+                                                            step="any"
+                                                            value={item.currQuantity ?? 0}
+                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'currQuantity', e.target.value)}
+                                                            className="w-full bg-white border border-emerald-400 rounded-lg text-center font-mono font-black text-xs text-emerald-900 py-1 outline-none focus:ring-1 focus:ring-emerald-500"
+                                                        />
+                                                    </div>
+                                                    <div className={`rounded-xl p-1.5 border ${isOverContract ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
+                                                        <span className="text-[9px] font-black text-blue-800 block mb-0.5">الإجمالية التراكمية</span>
+                                                        <input
+                                                            type="number"
+                                                            step="any"
+                                                            value={item.totalQuantity ?? 0}
+                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'totalQuantity', e.target.value)}
+                                                            className="w-full bg-white border border-blue-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 py-1 outline-none focus:ring-1 focus:ring-blue-500"
+                                                        />
+                                                    </div>
+                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                        <span className="text-[9px] font-bold text-slate-600 block mb-0.5">نسبة الصرف %</span>
+                                                        <input
+                                                            type="number"
+                                                            min={0}
+                                                            max={100}
+                                                            value={item.completionRatio ?? 100}
+                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'completionRatio', e.target.value)}
+                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-indigo-500"
+                                                        />
+                                                    </div>
+                                                    <div className="bg-indigo-950 text-white rounded-xl p-1.5 border border-indigo-900 flex flex-col justify-center h-full">
+                                                        <span className="text-[8px] text-indigo-300 block mb-0.5">القيمة ({item.unitPrice?.toLocaleString()} ج)</span>
+                                                        <span className="font-mono font-black text-xs text-amber-300">{(item.totalValue || 0).toLocaleString()}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* 3. Stacked Deductions, Discounts & Taxes Section (توحيد التنسيق والشكل) */}
+                                <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs space-y-2.5">
+                                    <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                                        <i className="fa-solid fa-calculator text-rose-600"></i>
+                                        <span>حساب الخصومات والاستقطاعات والضرائب</span>
+                                    </h4>
+
+                                    <div className="flex flex-col gap-2.5">
+                                        {/* Row 1: Retention (تأمين ضمان أعمال) */}
+                                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col gap-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <label className="text-xs font-black text-slate-800">1. تأمين ضمان أعمال</label>
+                                                <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-100">
+                                                    <span className="text-[10px] font-bold text-red-400">قيمة الخصم:</span>
+                                                    <span className="text-xs font-mono font-black text-red-600">
+                                                        - {smartIpcCalculations.retentionAmount.toLocaleString()} ج.م
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-2 bg-white p-2 rounded-xl border border-slate-200">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    {[0, 5, 10].map(v => (
+                                                        <button
+                                                            key={v}
+                                                            type="button"
+                                                            onClick={() => setSmartIpcRetentionPercent(v)}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition ${
+                                                                smartIpcRetentionPercent === v
+                                                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                                                    : 'bg-slate-50 border border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                            }`}
+                                                        >
+                                                            {v}%
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={100}
+                                                        step="any"
+                                                        value={smartIpcRetentionPercent}
+                                                        onChange={(e) => setSmartIpcRetentionPercent(parseFloat(e.target.value) || 0)}
+                                                        className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
+                                                    />
+                                                    <span className="text-xs font-black text-slate-500">%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Row 2: Advance Payment Deduction (خصم دفعة مقدمة) */}
+                                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col gap-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <label className="text-xs font-black text-slate-800">2. خصم دفعة مقدمة</label>
+                                                <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-100">
+                                                    <span className="text-[10px] font-bold text-red-400">قيمة الخصم:</span>
+                                                    <span className="text-xs font-mono font-black text-red-600">
+                                                        - {smartIpcCalculations.advanceDeductionAmount.toLocaleString()} ج.م
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-2 bg-white p-2 rounded-xl border border-slate-200">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    {[0, 10, 20].map(v => (
+                                                        <button
+                                                            key={v}
+                                                            type="button"
+                                                            onClick={() => setSmartIpcAdvancePercent(v)}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition ${
+                                                                smartIpcAdvancePercent === v
+                                                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                                                    : 'bg-slate-50 border border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                            }`}
+                                                        >
+                                                            {v}%
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={100}
+                                                        step="any"
+                                                        value={smartIpcAdvancePercent}
+                                                        onChange={(e) => setSmartIpcAdvancePercent(parseFloat(e.target.value) || 0)}
+                                                        className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
+                                                    />
+                                                    <span className="text-xs font-black text-slate-500">%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Row 3: Taxes & Other Deductions (ضرائب واستقطاعات أخرى) */}
+                                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col gap-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <label className="text-xs font-black text-slate-800">3. ضرائب واستقطاعات أخرى</label>
+                                                <div className="flex items-center gap-1.5 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-100">
+                                                    <span className="text-[10px] font-bold text-red-400">قيمة الخصم:</span>
+                                                    <span className="text-xs font-mono font-black text-red-600">
+                                                        - {smartIpcCalculations.taxesAndOtherAmount.toLocaleString()} ج.م
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-2 bg-white p-2 rounded-xl border border-slate-200">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    {[0, 1, 3, 5].map(v => (
+                                                        <button
+                                                            key={v}
+                                                            type="button"
+                                                            onClick={() => setSmartIpcTaxesPercent(v)}
+                                                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition ${
+                                                                smartIpcTaxesPercent === v
+                                                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                                                    : 'bg-slate-50 border border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                            }`}
+                                                        >
+                                                            {v}%
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={100}
+                                                        step="any"
+                                                        value={smartIpcTaxesPercent}
+                                                        onChange={(e) => setSmartIpcTaxesPercent(parseFloat(e.target.value) || 0)}
+                                                        className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
+                                                    />
+                                                    <span className="text-xs font-black text-slate-500">%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 4. Financial Summary Cards */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
+                                    <div className="bg-white rounded-2xl p-3 border border-slate-200 shadow-2xs">
+                                        <span className="text-[10px] font-bold text-slate-500 block mb-1">إجمالي الأعمال التراكمي</span>
+                                        <span className="font-mono font-black text-base text-slate-900">{smartIpcCalculations.cumulativeAmount.toLocaleString()} ج.م</span>
+                                    </div>
+                                    <div className="bg-blue-50 rounded-2xl p-3 border border-blue-200 shadow-2xs">
+                                        <span className="text-[10px] font-bold text-blue-700 block mb-1">أعمال المستخلص الجاري</span>
+                                        <span className="font-mono font-black text-base text-blue-900">{smartIpcCalculations.grossCurrentWork.toLocaleString()} ج.م</span>
+                                    </div>
+                                    <div className="bg-red-50 rounded-2xl p-3 border border-red-200 shadow-2xs">
+                                        <span className="text-[10px] font-bold text-red-700 block mb-1">إجمالي الاستقطاعات</span>
+                                        <span className="font-mono font-black text-base text-red-700">- {smartIpcCalculations.totalDeductions.toLocaleString()} ج.م</span>
+                                    </div>
+                                    <div className="bg-emerald-600 text-white rounded-2xl p-3 shadow-md">
+                                        <span className="text-[10px] font-bold text-emerald-100 block mb-1">الصافي المستحق للصرف</span>
+                                        <span className="font-mono font-black text-lg text-white">{smartIpcCalculations.netPayableAfterDeductions.toLocaleString()} ج.م</span>
+                                    </div>
+                                </div>
+
+                                {/* 5. Action Buttons inside Scrollable Area */}
+                                <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => saveSmartGeneratedPayment(false)}
+                                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 px-5 rounded-2xl font-black text-sm shadow-lg transition flex items-center justify-center gap-2 cursor-pointer"
+                                    >
+                                        <i className="fa-solid fa-check-circle text-base"></i>
+                                        <span>اعتماد وحفظ المستخلص وتحديث المقايسة</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => saveSmartGeneratedPayment(true)}
+                                        className="bg-indigo-700 hover:bg-indigo-800 text-white py-3.5 px-5 rounded-2xl font-black text-sm shadow-lg transition flex items-center justify-center gap-2 cursor-pointer"
+                                    >
+                                        <i className="fa-solid fa-print text-base"></i>
+                                        <span>حفظ وطباعة المستخلص الرسمي</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowSmartPaymentModal(false)}
+                                        className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 py-3 px-5 rounded-2xl font-bold text-sm transition flex items-center justify-center gap-2 cursor-pointer"
+                                    >
+                                        <span>إلغاء</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* BOQ Item Linked Logs & Photos Modal */}
                 {viewingBoqLogsItem && (
                     <div className="fixed inset-0 z-[1750] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
@@ -2811,6 +3660,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     onClick={() => {
                                         const itemId = viewingBoqLogsItem.id;
                                         setViewingBoqLogsItem(null);
+                                        setShowSmartPaymentModal(false);
                                         setSelectedLogBoqItemId(itemId);
                                         setActiveTab('logs');
                                     }}
