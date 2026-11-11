@@ -314,5 +314,409 @@ export const calculatorService = {
         const pricing = await this.calculatePricing(input, marketPrices, materials);
         
         return { materials, pricing };
+    },
+
+    // --- COMPREHENSIVE BOQ ITEM PRICE & MATERIAL EXECUTION RATE ANALYZER (EGYPTIAN MARKET) ---
+    async analyzeBoqItemComprehensive(params: {
+        itemCode?: string;
+        batchName?: string;
+        description: string;
+        unit: string;
+        quantity: number;
+        contractUnitPrice?: number;
+        indirectCostPercent?: number;
+        profitPercent?: number;
+        marketPrices?: MarketItem[];
+    }) {
+        const qty = Math.max(0.01, cleanNumber(params.quantity) || 1);
+        const unit = (params.unit || 'وحدة').trim();
+        const desc = (params.description || '').trim();
+        const customIndirect = params.indirectCostPercent !== undefined ? cleanNumber(params.indirectCostPercent) : undefined;
+        const customProfit = params.profitPercent !== undefined ? cleanNumber(params.profitPercent) : undefined;
+        const marketList = params.marketPrices || [];
+
+        let marketContext = marketList
+            .slice(0, 120)
+            .map(m => `${m.name} (${m.category}): ${m.price} ج.م/${m.unit}`)
+            .join(' | ');
+
+        if (!marketContext || marketContext.length < 40) {
+            marketContext = BASELINE_MARKET_PRICES;
+        }
+
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                itemName: { type: Type.STRING },
+                unit: { type: Type.STRING },
+                engineeringBasis: { type: Type.STRING },
+                indirectCostPercent: { type: Type.NUMBER },
+                profitPercent: { type: Type.NUMBER },
+                breakdown: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            type: { type: Type.STRING, enum: ["Material", "Labor", "Equipment", "Tools"] },
+                            description: { type: Type.STRING },
+                            unit: { type: Type.STRING },
+                            consumption: { type: Type.NUMBER },
+                            rate: { type: Type.NUMBER },
+                            cost: { type: Type.NUMBER }
+                        }
+                    }
+                },
+                materials: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            materialName: { type: Type.STRING },
+                            unit: { type: Type.STRING },
+                            consumptionPerUnit: { type: Type.NUMBER },
+                            wastePercentage: { type: Type.NUMBER },
+                            marketUnitPrice: { type: Type.NUMBER }
+                        }
+                    }
+                }
+            },
+            required: ["itemName", "engineeringBasis", "breakdown", "materials"]
+        };
+
+        const prompt = `
+            **ROLE:** كبير مهندسي التسعير والمكتب الفني والحصر (Senior Cost Estimation & QS Consultant - Egypt).
+            **TASK:** قم بإجراء تحليل فني ومالي شامل لسعر البند التالي طبقاً لأسعار السوق المصري الحالية ومعدلات الفرد والاستهلاك القياسية بالكود المصري (ECP):
+            
+            - **رقم البند:** ${params.itemCode || 'غير محدد'}
+            - **اسم المقايسة:** ${params.batchName || 'المقايسة العامة'}
+            - **منطوق البند:** "${desc}"
+            - **وحدة القياس:** "${unit}"
+            - **كمية البند بالمقايسة:** ${qty} ${unit}
+            ${params.contractUnitPrice ? `- **فئة البند الحالية بالمقايسة:** ${params.contractUnitPrice} ج.م` : ''}
+            ${customIndirect !== undefined ? `- **نسبة المصاريف غير المباشرة المطلوبة:** ${customIndirect}%` : '- **نسبة المصاريف غير المباشرة القياسية:** 15%'}
+            ${customProfit !== undefined ? `- **نسبة الربح المطلوبة:** ${customProfit}%` : '- **نسبة الربح القياسية:** 15%'}
+
+            **مرجع أسعار السوق المصري الحالية (Egyptian Market Prices Reference):**
+            ${marketContext}
+
+            **القواعد الإلزامية للتحليل (MANDATORY RULES):**
+            1. **تحليل الفئة للوحدة الواحدة (breakdown):**
+               - حلل تكلفة تنفيذ (1 ${unit}) فقط من البند إلى: خامات أساسية ومساعدة (Material)، مصنعيات وعمالة (Labor)، معدات (Equipment)، عدد وأدوات ومستهلكات (Tools).
+               - لكل عنصر حدد: معدل الاستهلاك للوحدة الواحدة (consumption)، وسعر الوحدة بالسوق المصري (rate)، والتكلفة للوحدة الواحدة من البند (cost = consumption * rate).
+            2. **تحليل كميات المواد والخامات طبقاً لمعدلات التنفيذ (materials):**
+               - اذكر كافة المواد والخامات اللازمة لتنفيذ هذا البند مع وحدة قياس الشراء/التوريد في السوق المصري (مثل: طن، م3، ألف طوبة، شكارة، بستلة، م2، كجم، متر طولي).
+               - حدد بدقة: معدل استهلاك الخامة لكل (1 ${unit}) من البند (consumptionPerUnit)، ونسبة الهالك الهندسي الطبيعي بالموقع % (wastePercentage) طبقاً للكود المصري، وسعر وحدة الخامة في السوق المصري بالجنيه (marketUnitPrice).
+            3. **الأسس الهندسية والكود المصري (engineeringBasis):**
+               - اشرح بالتفصيل باللغة العربية معدلات الفرد والاستهلاك المستخدمة (مثل نسب الخلطة، سمك الطبقات، إنتاجية طاقم العمل اليومية، ومبررات نسب الهالك).
+
+            **OUTPUT:** JSON only in Arabic.
+        `;
+
+        let parsedData: any = null;
+        let usedModel = MODEL_COMPLEX;
+
+        try {
+            const response = await safeGenerateContent(MODEL_COMPLEX, {
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: schema,
+                }
+            });
+            usedModel = response.usedModel || MODEL_COMPLEX;
+            if (response.text && !response.text.includes('Emergency-Quota-Protection') && !response.text.includes('Emergency-Static-Brain')) {
+                const cleanedJson = response.text.replace(/```json|```/g, '').trim();
+                parsedData = JSON.parse(cleanedJson);
+            }
+        } catch (err) {
+            console.warn("AI comprehensive BOQ analysis fallback triggered:", err);
+        }
+
+        // Helper to find best market price from marketList
+        const findPriceInMarket = (name: string, defaultPrice: number): number => {
+            const lower = name.toLowerCase();
+            const found = marketList.find(m => lower.includes(m.name.toLowerCase()) || m.name.toLowerCase().includes(lower));
+            if (found && found.price > 0) return found.price;
+            if (lower.includes('حديد')) return 40500;
+            if (lower.includes('أسمنت') || lower.includes('اسمنت')) return 2950;
+            if (lower.includes('رمل')) return 210;
+            if (lower.includes('سن') || lower.includes('زلط')) return 440;
+            if (lower.includes('طوب أحمر') || lower.includes('طفلي')) return 1950;
+            if (lower.includes('طوب أسمنتي')) return 2400;
+            if (lower.includes('سيراميك')) return 340;
+            if (lower.includes('بورسلين')) return 680;
+            if (lower.includes('بلاستيك') || lower.includes('دهان')) return 1450;
+            if (lower.includes('سيلر')) return 850;
+            if (lower.includes('معجون')) return 45;
+            if (lower.includes('جبس بورد') || lower.includes('ألواح')) return 320;
+            return defaultPrice;
+        };
+
+        // Engineering Fallback if AI JSON was not returned
+        if (!parsedData || !Array.isArray(parsedData.materials) || parsedData.materials.length === 0) {
+            const lowerDesc = desc.toLowerCase();
+            let matchedSpec = ENGINEERING_SPECS['reinforced_concrete'];
+            let maxScore = 0;
+            for (const spec of Object.values(ENGINEERING_SPECS)) {
+                const score = spec.keywords.reduce((acc, kw) => lowerDesc.includes(kw) ? acc + 1 : acc, 0);
+                if (score > maxScore) {
+                    maxScore = score;
+                    matchedSpec = spec;
+                }
+            }
+
+            const fallbackMaterials = matchedSpec.materials.map(m => {
+                const marketUnitPrice = findPriceInMarket(m.name, 250);
+                return {
+                    materialName: m.name,
+                    unit: m.unit,
+                    consumptionPerUnit: m.rate,
+                    wastePercentage: m.waste,
+                    marketUnitPrice
+                };
+            });
+
+            const fallbackBreakdown: any[] = fallbackMaterials.map(m => {
+                const effConsumption = parseFloat((m.consumptionPerUnit * (1 + m.wastePercentage / 100)).toFixed(4));
+                return {
+                    type: 'Material',
+                    description: `${m.materialName} (شامل ${m.wastePercentage}% هالك)`,
+                    unit: m.unit,
+                    consumption: effConsumption,
+                    rate: m.marketUnitPrice,
+                    cost: Math.round(effConsumption * m.marketUnitPrice * 100) / 100
+                };
+            });
+
+            if (matchedSpec.labor) {
+                matchedSpec.labor.forEach(l => {
+                    const unitLaborCost = Math.round((l.dailyRate / Math.max(1, l.productivity)) * 100) / 100;
+                    fallbackBreakdown.push({
+                        type: 'Labor',
+                        description: `${l.description} (إنتاجية ${l.productivity} ${unit}/يوم)`,
+                        unit: 'يوم/وحدة',
+                        consumption: parseFloat((1 / Math.max(1, l.productivity)).toFixed(3)),
+                        rate: l.dailyRate,
+                        cost: unitLaborCost
+                    });
+                });
+            }
+
+            if (matchedSpec.equipment) {
+                matchedSpec.equipment.forEach(eq => {
+                    fallbackBreakdown.push({
+                        type: 'Equipment',
+                        description: eq.description,
+                        unit: unit,
+                        consumption: 1,
+                        rate: eq.rate,
+                        cost: eq.rate
+                    });
+                });
+            }
+
+            parsedData = {
+                itemName: desc,
+                unit,
+                engineeringBasis: matchedSpec.basis,
+                indirectCostPercent: customIndirect !== undefined ? customIndirect : 15,
+                profitPercent: customProfit !== undefined ? customProfit : 15,
+                breakdown: fallbackBreakdown,
+                materials: fallbackMaterials
+            };
+        }
+
+        // Normalize Materials Schedule for total BOQ quantity
+        const materialsSchedule = (parsedData.materials || []).map((m: any) => {
+            const consumptionPerUnit = cleanNumber(m.consumptionPerUnit) || 0;
+            const wastePercentage = cleanNumber(m.wastePercentage) || 0;
+            const marketUnitPrice = cleanNumber(m.marketUnitPrice) || findPriceInMarket(m.materialName || '', 100);
+            const netQuantity = parseFloat((consumptionPerUnit * qty).toFixed(3));
+            const totalQuantityWithWaste = parseFloat((netQuantity * (1 + wastePercentage / 100)).toFixed(3));
+            const unitCostWithWaste = parseFloat((consumptionPerUnit * (1 + wastePercentage / 100) * marketUnitPrice).toFixed(2));
+            const totalCost = Math.round(totalQuantityWithWaste * marketUnitPrice);
+
+            return {
+                materialName: m.materialName || 'خامة',
+                unit: m.unit || 'وحدة',
+                consumptionPerUnit,
+                netQuantity,
+                wastePercentage,
+                totalQuantityWithWaste,
+                marketUnitPrice,
+                unitCostWithWaste,
+                totalCost
+            };
+        });
+
+        // Normalize Unit Rate Breakdown (per 1 unit)
+        const breakdown = (parsedData.breakdown || []).map((b: any) => {
+            const consumption = cleanNumber(b.consumption) || 1;
+            const rate = cleanNumber(b.rate) || 0;
+            const cost = cleanNumber(b.cost) || Math.round(consumption * rate * 100) / 100;
+            return {
+                type: (['Material', 'Labor', 'Equipment', 'Tools'].includes(b.type) ? b.type : 'Material') as 'Material' | 'Labor' | 'Equipment' | 'Tools',
+                description: b.description || '',
+                unit: b.unit || unit,
+                consumption,
+                rate,
+                cost
+            };
+        });
+
+        const materialsCostPerUnit = breakdown
+            .filter((b: any) => b.type === 'Material')
+            .reduce((sum: number, b: any) => sum + b.cost, 0);
+        const laborCostPerUnit = breakdown
+            .filter((b: any) => b.type === 'Labor')
+            .reduce((sum: number, b: any) => sum + b.cost, 0);
+        const equipmentCostPerUnit = breakdown
+            .filter((b: any) => b.type === 'Equipment' || b.type === 'Tools')
+            .reduce((sum: number, b: any) => sum + b.cost, 0);
+
+        const directCost = Math.round((materialsCostPerUnit + laborCostPerUnit + equipmentCostPerUnit) * 100) / 100;
+        const indirectCostPercent = customIndirect !== undefined ? customIndirect : (cleanNumber(parsedData.indirectCostPercent) || 15);
+        const profitPercent = customProfit !== undefined ? customProfit : (cleanNumber(parsedData.profitPercent) || 15);
+
+        const indirectCostValue = Math.round(directCost * (indirectCostPercent / 100) * 100) / 100;
+        const profitValue = Math.round(directCost * (profitPercent / 100) * 100) / 100;
+        const finalUnitPrice = Math.round((directCost + indirectCostValue + profitValue) * 100) / 100;
+        const totalMarketValue = Math.round(finalUnitPrice * qty);
+        const totalMaterialsCostAllQty = materialsSchedule.reduce((s: number, m: any) => s + m.totalCost, 0);
+
+        const contractUnitPrice = cleanNumber(params.contractUnitPrice) || 0;
+        const priceDiffPerUnit = contractUnitPrice > 0 ? Math.round((finalUnitPrice - contractUnitPrice) * 100) / 100 : 0;
+        const priceDiffPercent = contractUnitPrice > 0 ? parseFloat((((finalUnitPrice - contractUnitPrice) / contractUnitPrice) * 100).toFixed(1)) : 0;
+
+        const typeLabels: Record<string, string> = {
+            Material: 'خامات ومواد',
+            Labor: 'مصنعيات وعمالة',
+            Equipment: 'معدات وآلات',
+            Tools: 'عدد وأدوات'
+        };
+
+        // Build printable / archivable HTML report
+        const reportHtml = `
+            <div dir="rtl" style="font-family: 'Cairo', sans-serif;">
+                <h2>تحليل فئة البند ومعدلات استهلاك الخامات طبقاً للسوق المصري</h2>
+                <div class="info-box editable-box">
+                    <strong>بيانات البند محل الدراسة:</strong><br/>
+                    • <strong>المقايسة:</strong> ${params.batchName || 'المقايسة العامة'} ${params.itemCode ? `| <strong>رقم البند:</strong> (${params.itemCode})` : ''}<br/>
+                    • <strong>منطوق البند:</strong> ${desc}<br/>
+                    • <strong>الكمية الإجمالية:</strong> ${qty.toLocaleString()} ${unit}
+                    ${contractUnitPrice > 0 ? ` | <strong>فئة المقايسة الحالية:</strong> ${contractUnitPrice.toLocaleString()} ج.م/${unit}` : ''}
+                </div>
+
+                <h3>أولاً: الملخص المالي لتحليل سعر الوحدة (${unit})</h3>
+                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: center;">
+                    <thead>
+                        <tr style="background-color: #0f172a; color: #ffffff;">
+                            <th>التكلفة المباشرة للوحدة</th>
+                            <th>مصاريف غير مباشرة (${indirectCostPercent}%)</th>
+                            <th>هامش الربح (${profitPercent}%)</th>
+                            <th>السعر العادل بالسوق المصري للوحدة</th>
+                            <th>إجمالي قيمة البند بسعر السوق (${qty} ${unit})</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>${directCost.toLocaleString()} ج.م</strong></td>
+                            <td>${indirectCostValue.toLocaleString()} ج.م</td>
+                            <td>${profitValue.toLocaleString()} ج.م</td>
+                            <td style="background-color: #ecfdf5; color: #047857; font-weight: bold;">${finalUnitPrice.toLocaleString()} ج.م / ${unit}</td>
+                            <td style="background-color: #eff6ff; color: #1d4ed8; font-weight: bold;">${totalMarketValue.toLocaleString()} ج.م</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>ثانياً: جدول تحليل الفئة التفصيلي للوحدة الواحدة (1 ${unit})</h3>
+                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: right;">
+                    <thead>
+                        <tr style="background-color: #1e293b; color: #ffffff;">
+                            <th>التصنيف</th>
+                            <th>البيان / العنصر</th>
+                            <th>الوحدة</th>
+                            <th>معدل الاستهلاك للوحدة</th>
+                            <th>سعر الوحدة بالسوق (ج.م)</th>
+                            <th>التكلفة للوحدة (ج.م)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${breakdown.map((b: any) => `
+                            <tr>
+                                <td>${typeLabels[b.type] || b.type}</td>
+                                <td><strong>${b.description}</strong></td>
+                                <td>${b.unit}</td>
+                                <td>${b.consumption}</td>
+                                <td>${b.rate.toLocaleString()}</td>
+                                <td><strong>${b.cost.toLocaleString()} ج.م</strong></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+
+                <h3>ثالثاً: حصر كميات المواد والخامات المطلوبة لتنفيذ (${qty.toLocaleString()} ${unit}) طبقاً لمعدلات التنفيذ</h3>
+                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: right;">
+                    <thead>
+                        <tr style="background-color: #065f46; color: #ffffff;">
+                            <th>الخامة / المادة</th>
+                            <th>وحدة التوريد</th>
+                            <th>معدل الفرد للوحدة (1 ${unit})</th>
+                            <th>الكمية الصافية</th>
+                            <th>نسبة الهالك (%)</th>
+                            <th>إجمالي الكمية المطلوبة شاملة الهالك</th>
+                            <th>سعر السوق المصري (ج.م)</th>
+                            <th>التكلفة الإجمالية للخامة (ج.م)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${materialsSchedule.map((m: any) => `
+                            <tr>
+                                <td><strong>${m.materialName}</strong></td>
+                                <td>${m.unit}</td>
+                                <td>${m.consumptionPerUnit}</td>
+                                <td>${m.netQuantity.toLocaleString()}</td>
+                                <td>${m.wastePercentage}%</td>
+                                <td style="background-color: #f0fdf4; font-weight: bold;">${m.totalQuantityWithWaste.toLocaleString()} ${m.unit}</td>
+                                <td>${m.marketUnitPrice.toLocaleString()}</td>
+                                <td><strong>${m.totalCost.toLocaleString()} ج.م</strong></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+
+                <div class="highlight-box editable-box" style="margin-top: 12px;">
+                    <strong>الأسس الهندسية ومعدلات الكود المصري (ECP Basis):</strong><br/>
+                    ${parsedData.engineeringBasis || 'تم التحليل طبقاً لمعدلات الفرد القياسية بالكود المصري وأسعار السوق السائدة.'}
+                </div>
+            </div>
+        `;
+
+        return {
+            itemName: parsedData.itemName || desc,
+            itemCode: params.itemCode || '',
+            batchName: params.batchName || '',
+            unit,
+            quantity: qty,
+            contractUnitPrice,
+            directCost,
+            materialsCostPerUnit: Math.round(materialsCostPerUnit * 100) / 100,
+            laborCostPerUnit: Math.round(laborCostPerUnit * 100) / 100,
+            equipmentCostPerUnit: Math.round(equipmentCostPerUnit * 100) / 100,
+            indirectCostPercent,
+            indirectCostValue,
+            profitPercent,
+            profitValue,
+            finalUnitPrice,
+            totalMarketValue,
+            totalMaterialsCostAllQty,
+            priceDiffPerUnit,
+            priceDiffPercent,
+            breakdown,
+            materialsSchedule,
+            engineeringBasis: parsedData.engineeringBasis || '',
+            usedModel,
+            reportHtml
+        };
     }
 };

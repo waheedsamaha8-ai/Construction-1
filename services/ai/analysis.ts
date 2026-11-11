@@ -1,6 +1,6 @@
 
 import { safeGenerateContent, MODEL_SMART, MODEL_COMPLEX, cleanNumber, fileToPart, getAiFooter, Type } from './core';
-import { Project, ProjectLog, BOQItem, ProjectPayment } from '../../types';
+import { Project, ProjectLog, BOQItem, ProjectPayment, BOQItemReportType } from '../../types';
 
 export const analysisService = {
     async parsePaymentDocument(file: File, projectBoq: BOQItem[] = []): Promise<any> {
@@ -605,30 +605,211 @@ export const analysisService = {
         } catch (e) { return "فشل توليد المستند."; }
     },
 
-    async analyzeDraftToLetter(file: Blob | File): Promise<string> {
+    async analyzeDraftToLetter(file: Blob | File): Promise<{ title?: string; bodyHtml: string }> {
         try {
             const filePart = await fileToPart(file, true);
             const prompt = `
-                **IDENTITY:** Expert Technical Office Engineer.
-                **TASK:** Analyze the attached draft (image or PDF) and convert it into a professional formal engineering letter.
-                **LANGUAGE:** Professional Arabic.
-                
-                **REQUIREMENTS:**
-                1. **Mobile Optimization:** The letter MUST be 100% width on mobile screens. No side margins.
-                2. **Output:** HTML Only.
-                3. **Content:** Refine the draft into a professional, formal, and technically sound letter.
-                4. **Structure:** Include proper salutations, body paragraphs, and formal closing.
-                5. **Styling:** 
-                   - Use clean HTML.
-                   - For any tables, use standard <table> tags with \`width="100%"\`.
-                   - For any highlighted boxes or sections, use <div class="editable-box info-box">...</div>.
-                   - Ensure all generated elements are compatible with a standard rich text editor.
+                أنت مدير مكتب فني واستشاري عقود ومراسلات هندسية محترف في مصر.
+                المهمة: قراءة وتحليل صورة أو ملف المسودة المرفقة (سواء كانت مكتوبة بخط اليد أو مطبوعة أو ملاحظات سريعة) وتحويلها إلى **خطاب هندسي رسمي كامل ومنسق واحترافي جداً** باللغة العربية الفصحى الرصينة.
+
+                المتطلبات:
+                1. استخرج عنوان أو موضوع الخطاب بدقة وضعه في الحقل "title" (مثال: "الموضوع: طلب استلام أعمال حدادة سقف الدور الأول...").
+                2. صِغ نص الخطاب الكامل في الحقل "bodyHtml" بصيغة HTML متوافقة تماماً مع المحرر، بحيث يشمل:
+                   - التوجيه الرسمي (السيد المهندس / ................. المحترم، الجهة / .................).
+                   - تحية طيبة وبعد،،،
+                   - فقرات الخطاب مصاغة بأسلوب هندسي وتعاقدي قوي وواضح ومرتب، مع تصحيح أي أخطاء إملائية أو صياغية في المسودة واستكمال الديباجة الرسمية المناسبة.
+                   - إذا كانت المسودة تحتوي على بنود أو كميات أو نقاط متعددة، نظمها في قائمة منسقة (<ul><li>...</li></ul>) أو جدول احترافي (<div class="table-responsive-wrapper"><table style="width:100%; border-collapse: collapse;">...</table></div>) أو مربع مميز (<div class="editable-box info-box">...</div>) عند الحاجة.
+                   - الخاتمة الرسمية وجدول التوقيعات (مقدمه لسيادتكم / التوقيع والاعتماد).
+                3. أخرج النتيجة بصيغة JSON صالحة فقط كالتالي:
+                {
+                  "title": "الموضوع: ...",
+                  "bodyHtml": "<p><strong>السيد / ...</strong></p>..."
+                }
             `;
-            const result = await safeGenerateContent(MODEL_COMPLEX, {
-                contents: { parts: [filePart, { text: prompt }] }
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: { parts: [filePart, { text: prompt }] },
+                config: { responseMimeType: "application/json" }
             });
-            let text = result.text.replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '').trim();
-            return text;
-        } catch (e) { return "فشل تحليل المسودة."; }
+            const raw = (result.text || '').trim();
+            try {
+                const parsed = JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
+                if (parsed && parsed.bodyHtml) {
+                    return {
+                        title: parsed.title || undefined,
+                        bodyHtml: parsed.bodyHtml
+                    };
+                }
+            } catch (_) {}
+            const cleanHtml = raw.replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '').trim();
+            return { bodyHtml: cleanHtml || "فشل تحليل المسودة." };
+        } catch (e) {
+            return { bodyHtml: "فشل تحليل المسودة." };
+        }
+    },
+
+    async refineSelectedLetterText(selectedText: string, surroundingContext: string = '', customInstruction: string = ''): Promise<string> {
+        const cleanText = selectedText.trim();
+        if (!cleanText) return selectedText;
+
+        const instructionBlock = customInstruction.trim()
+            ? `المطلوب تنفيذه على النص المحدد بناءً على توجيه المستخدم:\n"${customInstruction.trim()}"\nمع الالتزام بأسلوب هندسي ورسمي رصين باللغة العربية الفصحى.`
+            : `المطلوب: إعادة صياغة وتنقيح النص المحدد ليصبح بأسلوب هندسي ورسمي رصين وأكثر احترافية ودقة وبلاغة تعاقدية وهندسية، مع تصحيح أي أخطاء لغوية أو إملائية والحفاظ على المعنى المقصود.`;
+
+        const prompt = `
+            أنت خبير صياغة خطابات وتقارير ومراسلات هندسية وتعاقدية ورسمية باللغة العربية.
+            ${instructionBlock}
+            - إذا كان النص المحدد كلمة واحدة أو مصطلحاً قصيراً وطلب تنقيحه: استبدله بالمصطلح الهندسي/الرسمي الأدق والأقوى في نفس السياق.
+            - إذا كان النص المحدد جملة أو عبارة أو سطراً: نفذ المطلوب وأعد صياغته بأسلوب رسمي رصين ومباشر مناسب للخطابات والتقارير الهندسية.
+            - مهم جداً: أرجع النص الجديد المنقح فقط بدون أي مقدمات أو علامات تنصيص أو شرح إضافي.
+
+            النص المحدد:
+            "${cleanText}"
+
+            ${surroundingContext ? `سياق الخطاب للاسترشاد:\n${surroundingContext.slice(0, 600)}` : ''}
+        `;
+
+        try {
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: prompt
+            });
+            const refined = (result.text || '')
+                .replace(/^```[a-z]*\n?/i, '')
+                .replace(/```$/i, '')
+                .replace(/^["«]|["»]$/g, '')
+                .trim();
+            return refined || selectedText;
+        } catch (e) {
+            return selectedText;
+        }
+    },
+
+    async generateBOQItemSubReport(
+        reportType: BOQItemReportType,
+        item: BOQItem,
+        projectContext?: { projectName?: string; contractor?: string; location?: string }
+    ): Promise<string> {
+        const contractQty = Number(item.quantity) || 0;
+        const execQty = Number(item.executedQuantity) || 0;
+        const remainingQty = Math.max(0, contractQty - execQty);
+        const unitPrice = Number(item.unitPrice) || 0;
+
+        const itemHeaderSummaryHtml = `
+            <div class="info-box editable-box" style="background:#f8fafc; border:1px solid #cbd5e1; border-right:5px solid #1e3a8a; padding:14px 18px; border-radius:14px; margin-bottom:18px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+                    <div style="font-weight:900; color:#1e3a8a; font-size:15px;">
+                        📋 بيانات البند التعاقدية (بند ${item.itemCode || '-'}) - ${item.batchName || 'المقايسة العامة'}
+                    </div>
+                    <div style="font-size:12px; background:#e0e7ff; color:#3730a3; padding:4px 10px; border-radius:8px; font-weight:700;">
+                        الوحدة: ${item.unit || '-'} | الفئة: ${unitPrice.toLocaleString()} ج.م
+                    </div>
+                </div>
+                <div style="font-size:13.5px; color:#1e293b; line-height:1.7; margin-bottom:12px; background:#ffffff; padding:10px 14px; border-radius:10px; border:1px solid #e2e8f0;">
+                    <strong style="color:#0f172a;">بيان الأعمال:</strong> ${item.description || '-'}
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; text-align:center;">
+                    <div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:8px 10px;">
+                        <div style="font-size:11px; color:#64748b; font-weight:700; margin-bottom:2px;">الكمية التعاقدية</div>
+                        <div style="font-size:15px; font-weight:900; color:#0f172a;">${contractQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#64748b;">${item.unit || ''}</span></div>
+                    </div>
+                    <div style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:8px 10px;">
+                        <div style="font-size:11px; color:#15803d; font-weight:700; margin-bottom:2px;">الكمية المنفذة</div>
+                        <div style="font-size:15px; font-weight:900; color:#166534;">${execQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#15803d;">${item.unit || ''}</span></div>
+                    </div>
+                    <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:10px; padding:8px 10px;">
+                        <div style="font-size:11px; color:#b45309; font-weight:700; margin-bottom:2px;">الكمية المتبقية</div>
+                        <div style="font-size:15px; font-weight:900; color:#92400e;">${remainingQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#b45309;">${item.unit || ''}</span></div>
+                    </div>
+                    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:8px 10px;">
+                        <div style="font-size:11px; color:#1d4ed8; font-weight:700; margin-bottom:2px;">إجمالي القيمة</div>
+                        <div style="font-size:15px; font-weight:900; color:#1e40af;">${(contractQty * unitPrice).toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#1d4ed8;">ج.م</span></div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        let specificInstructions = '';
+        if (reportType === 'materials') {
+            specificInstructions = `
+                المطلوب إعداد: **تقرير تحليل الخامات والمواد التفصيلي للبند (Materials & Raw Materials Breakdown Report)**
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول دقيقة:
+                1. **جدول معدلات استهلاك الخامات لكل (1 ${item.unit || 'وحدة'}) ولإجمالي الكمية التعاقدية (${contractQty} ${item.unit || ''}) والكمية المنفذة (${execQty} ${item.unit || ''}) والكمية المتبقية (${remainingQty} ${item.unit || ''}):**
+                   - الأعمدة: (م | اسم الخامة / المادة | وحدة القياس | المعدل لكل 1 ${item.unit || 'وحدة'} | نسبة الهالك القياسية % | الكمية المطلوبة للتعاقدي شاملة الهالك | الكمية المستهلكة للمنفذ | الكمية المطلوبة للمتبقي).
+                2. **المواصفات الفنية للخامات والمواد الموردة للموقع (وفق الكود المصري ECP):**
+                   - اشتراطات القبول والفحص الظاهري والمعملية لكل خامة داخلة في البند.
+                3. **اشتراطات التشوين والتخزين السليم في الموقع:**
+                   - كيفية حفظ الخامات لتجنب التلف أو الهالك الزائد.
+            `;
+        } else if (reportType === 'method_specs') {
+            specificInstructions = `
+                المطلوب إعداد: **تقرير طريقة تنفيذ البند والمواصفات الفنية (Method Statement & Technical Specifications)**
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي:
+                1. **التوصيف الفني والاشتراطات المرجعية للبند (طبقاً للكود المصري ECP وأصول الصناعة):**
+                   - المتطلبات الفنية الدقيقة ومواصفات المواد والمصنعية.
+                2. **التحضيرات والتجهيزات المسبقة قبل البدء (Pre-Execution Requirements):**
+                   - تجهيز الموقع، الاعتمادات، المساحة، الشدات أو المناسيب، والمعدات اللازمة.
+                3. **خطوات وطريقة التنفيذ التفصيلية (Step-by-Step Execution Procedure):**
+                   - خطوات مرتبة ومرقمة بوضوح من البداية حتى نهو البند بالكامل.
+                4. **أعمال الحماية والمعالجة (Curing & Protection) والأخطاء الشائعة التي يجب تلافيها في الموقع.**
+            `;
+        } else if (reportType === 'productivity_labor') {
+            specificInstructions = `
+                المطلوب إعداد: **تقرير تحليل معدلات الإنتاج والعمالة والمعدات للبند (Productivity, Labor & Equipment Analysis)**
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول واضحة:
+                1. **تشكيل طاقم العمل القياسي (Standard Crew Composition) ومعدل الإنتاج اليومي:**
+                   - جدول يوضح: (المهنة / التخصص | العدد بالطاقم | المهام الأساسية | إنتاجية الطاقم في اليوم بالوحدة ${item.unit || ''}).
+                2. **تحليل المعدات والآلات والأدوات المطلوبة للبند:**
+                   - جدول يوضح: (المعدة / الآلة | القدرة / المواصفة | معدل الإنتاج اليومي | ملاحظات التشغيل).
+                3. **حساب المدة الزمنية واليوميات المطلوبة لإنجاز البند:**
+                   - جدول يحسب عدد أيام العمل (لطاقم واحد، أو لطاقمين، أو 3 أطقم) لإنهاء الكمية التعاقدية (${contractQty} ${item.unit || ''}) والكمية المتبقية (${remainingQty} ${item.unit || ''}).
+                4. **توصيات رفع كفاءة الإنتاج وتقليل الفاقد الزمني في الموقع.**
+            `;
+        } else if (reportType === 'inspection_quality') {
+            specificInstructions = `
+                المطلوب إعداد: **نموذج فحص واستلام واشتراطات الجودة للبند (Inspection Request / ITP & QC Checklist)**
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML رسمي قابل للطباعة والتوقيع:
+                1. **جدول قائمة الفحص والاستلام الموقعي (Site Inspection Checklist):**
+                   - الأعمدة: (م | عنصر الفحص والاشتراط الفني طبقاً للكود المصري | التفاوت المسموح به (Tolerance) | طريقة الفحص / القياس | النتيجة: مطابق / غير مطابق / ملاحظات).
+                   - يشمل الفحص قبل التنفيذ (التحضير والخامات)، والفحص أثناء التنفيذ، والفحص النهائي عند الاستلام.
+                2. **الاختبارات المعملية والموقعية المطلوبة لاعتماد البند (Required Tests & Sampling):**
+                   - نوع الاختبار، معدل أخذ العينات، وحدود القبول والرفض الكودية.
+                3. **محضر الاستلام والتوقيعات الرسمية:**
+                   - جدول توقيعات رسمي في نهاية النموذج (مهندس التنفيذ - المقاول | مهندس ضبط الجودة QC | مهندس الاستشاري المشرف | قرار الاستلام والاعتماد).
+            `;
+        }
+
+        const prompt = `
+            أنت استشاري هندسي ومدير مكتب فني وضبط جودة (30+ سنة خبرة في المشروعات الهندسية والكود المصري ECP).
+            المشروع: ${projectContext?.projectName || 'المشروع الهندسي'}
+            المقاول: ${projectContext?.contractor || '-'}
+            رقم البند: ${item.itemCode || '-'}
+            الحزمة / المقايسة: ${item.batchName || '-'}
+            بيان الأعمال: "${item.description}"
+            الوحدة: ${item.unit} | الكمية التعاقدية: ${contractQty} | الكمية المنفذة: ${execQty} | الكمية المتبقية: ${remainingQty} | الفئة: ${unitPrice} ج.م
+
+            ${specificInstructions}
+
+            قواعد التنسيق الهامة جداً (إلزامية لمنع تشويه الجداول):
+            - أخرج كود HTML نظيف فقط (بدون \`\`\`html أو \`\`\`).
+            - لا تُكرر جدول بيانات البند التعاقدي أبداً ولا تضع بيان الأعمال الطويل للبند داخل عمود جدول؛ فبيانات البند وترويسته معروضة تلقائياً في أعلى التقرير.
+            - تناسب عروض أعمدة الجداول (هام جداً جداً لمنع أن يكون الجدول طويلاً ومشوشاً):
+              * يجب أن تتناسب عروض الأعمدة مع حجم محتواها بدقة لمنع التواء الكلمات حرفياً على أسطر مفردة.
+              * الأعمدة الرقمية والقصيرة (مثل: م، الوحدة، الكمية، الفئة، النسبة، التفاوت، النتيجة) اجعلها ضيقة في المنتصف (width: 50px إلى 80px مع white-space: nowrap).
+              * الأعمدة النصية والتوصيفية (مثل: اسم الخامة والمواصفة، المهام، خطوات وطريقة التنفيذ، عنصر الفحص والاشتراط) يجب أن تأخذ المساحة الأكبر والعرض الكافي المريح (min-width: 250px).
+              * ضع كل جدول دائماً داخل حاوية سكرول متجاوبة: <div class="table-responsive-wrapper" style="width:100%; overflow-x:auto; margin:14px 0;"><table style="min-width:650px; width:100%; border-collapse:collapse;">...</table></div>
+            - استخدم صناديق تنبيه وملاحظات أنيقة (<div class="info-box editable-box">, <div class="success-box editable-box">, <div class="warning-box editable-box">).
+            - اجعل الأرقام والحسابات واقعية ومبنية على بيان الأعمال الفعلي والكميات الحقيقية المذكورة أعلاه.
+        `;
+
+        try {
+            const result = await safeGenerateContent(MODEL_SMART, { contents: prompt });
+            const cleanBody = (result.text || '')
+                .replace(/^```html/i, '')
+                .replace(/^```/i, '')
+                .replace(/```$/i, '')
+                .trim();
+            return `${itemHeaderSummaryHtml}\n${cleanBody}\n${getAiFooter(result.usedModel)}`;
+        } catch (e) {
+            return `${itemHeaderSummaryHtml}<div class="warning-box editable-box">تعذر توليد التقرير حالياً، يرجى المحاولة مرة أخرى.</div>`;
+        }
     }
 };

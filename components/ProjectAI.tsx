@@ -6,7 +6,8 @@ import { api } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { imageUtils } from '../services/imageUtils'; 
-import { wrapTablesInHtml } from '../services/reportGenerator';
+import { wrapTablesInHtml, ReportGenerator } from '../services/reportGenerator';
+import ProjectReportModal from './ProjectReportModal';
 import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult, PricingCalculationResult, FileItem, ItemType } from '../types';
 
 interface ProjectAIProps {
@@ -96,6 +97,10 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
   const [archiveTitle, setArchiveTitle] = useState('');
   const [targetMessageIndex, setTargetMessageIndex] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Smart Report Modal State
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   // Chat Attachment State
   const chatFileRef = useRef<HTMLInputElement>(null);
@@ -195,27 +200,87 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
   const handlePrintResponse = (content: string, type: string) => { printService.printReport(content, "تقرير استشاري", "PROJ-AI"); };
   const handleCopyText = (content: string) => { const tempDiv = document.createElement("div"); tempDiv.innerHTML = content; navigator.clipboard.writeText(tempDiv.textContent || ""); alert("تم النسخ"); };
 
+  const handleGenerateReport = async (startDate: string, endDate: string, reportType: string, title: string) => {
+      setIsGeneratingReport(true);
+      try {
+          const fullProject = fullProjectData || await api.getProjectById(projectId);
+          const logs = fullProject?.executionLogs || [];
+          const filteredLogs = logs.filter(log => {
+              const logDate = new Date(log.date);
+              const start = new Date(startDate);
+              const end = new Date(endDate);
+              logDate.setHours(0, 0, 0, 0);
+              start.setHours(0, 0, 0, 0);
+              end.setHours(23, 59, 59, 999);
+              return logDate >= start && logDate <= end;
+          });
+
+          const aiSummaryHtml = await aiHelper.generateCustomProjectReport(
+              fullProject,
+              filteredLogs,
+              title,
+              startDate,
+              endDate
+          );
+
+          const finalReportHtml = ReportGenerator.buildPhotoReport(
+              title,
+              aiSummaryHtml,
+              filteredLogs,
+              fullProject,
+              { start: startDate, end: endDate }
+          );
+
+          setShowReportModal(false);
+          onClose();
+          navigate(`/editor/${projectId}/${folderId || projectId}`, {
+              state: {
+                  initialContent: finalReportHtml,
+                  filename: `${title.replace(/ /g, '_')}_${endDate}`,
+                  returnToMasterData: true
+              }
+          });
+      } catch (error) {
+          console.error(error);
+          alert("حدث خطأ أثناء إنشاء التقرير.");
+      } finally {
+          setIsGeneratingReport(false);
+      }
+  };
+
   return (
     <div className="fixed inset-0 z-[2000] bg-slate-50 flex flex-col animate-fade-in no-print">
         <div className="w-full h-full bg-slate-50 flex flex-col relative overflow-hidden">
-            <div className="bg-slate-900 p-4 text-white flex justify-between items-center shrink-0 shadow-lg z-10">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg border-2 border-slate-700"><i className="fa-solid fa-brain text-white"></i></div>
-                    <div><h3 className="font-bold text-lg">المركز الاستشاري الموحد (AI Pro)</h3><p className="text-[10px] text-slate-400">Gemini 3 Powered | Data Engine</p></div>
+            <div className="bg-slate-900 px-3 py-3 text-white flex justify-between items-center shrink-0 shadow-lg z-10 gap-2">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg border-2 border-slate-700 shrink-0"><i className="fa-solid fa-brain text-white text-sm"></i></div>
+                    <div className="min-w-0">
+                        <h3 className="font-bold text-xs sm:text-base whitespace-nowrap compact-title-single-line truncate">المركز الاستشاري الموحد (AI Pro)</h3>
+                        <p className="text-[10px] text-slate-400 whitespace-nowrap compact-single-line">Gemini Powered | Data Engine</p>
+                    </div>
                 </div>
-                <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"><i className="fa-solid fa-times"></i></button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                        onClick={() => setShowReportModal(true)}
+                        className="w-9 h-9 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg hover:bg-rose-700 transition transform active:scale-90 shrink-0"
+                        title="إنشاء تقرير ذكي"
+                    >
+                        <i className="fa-solid fa-file-invoice text-sm"></i>
+                    </button>
+                    <button onClick={onClose} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition shrink-0"><i className="fa-solid fa-times"></i></button>
+                </div>
             </div>
 
             {!activeAgent ? (
                 <div className="flex-1 overflow-y-auto p-4 bg-slate-100">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {Object.entries(AGENT_CONFIG).map(([key, config]) => (
-                            <div key={key} onClick={() => handleAgentSelect(key as AgentType)} className={`bg-white p-5 rounded-2xl shadow-sm border border-slate-200 cursor-pointer hover:shadow-xl hover:-translate-y-1 transition flex items-start gap-4 group`}>
-                                <div className={`w-14 h-14 bg-${config.color}-100 text-${config.color}-600 rounded-2xl flex items-center justify-center text-2xl shrink-0 group-hover:scale-110 transition`}><i className={`fa-solid ${config.icon}`}></i></div>
-                                <div className="flex-1">
-                                    <div className="flex justify-between items-center mb-1">
-                                        <h3 className="font-bold text-slate-900 text-base">{config.title}</h3>
-                                        <i className="fa-solid fa-arrow-left text-slate-300 group-hover:text-blue-500 transition -rotate-45 group-hover:rotate-0"></i>
+                            <div key={key} onClick={() => handleAgentSelect(key as AgentType)} className={`bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200 cursor-pointer hover:shadow-xl hover:-translate-y-1 transition flex items-start gap-3 sm:gap-4 group`}>
+                                <div className={`w-12 h-12 sm:w-14 sm:h-14 bg-${config.color}-100 text-${config.color}-600 rounded-2xl flex items-center justify-center text-xl sm:text-2xl shrink-0 group-hover:scale-110 transition`}><i className={`fa-solid ${config.icon}`}></i></div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex justify-between items-center gap-1 mb-1">
+                                        <h3 className="font-bold text-slate-900 text-xs sm:text-base whitespace-nowrap compact-title-single-line truncate">{config.title}</h3>
+                                        <i className="fa-solid fa-arrow-left text-slate-300 group-hover:text-blue-500 transition -rotate-45 group-hover:rotate-0 shrink-0 text-xs"></i>
                                     </div>
                                     <p className="text-[11px] text-slate-500 leading-relaxed font-medium">{config.desc}</p>
                                 </div>
@@ -268,6 +333,14 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
                                         </div>
                                     );
                                 })}
+                                {isLoading && (
+                                    <div className="w-full flex justify-center py-6 px-4">
+                                        <div className="bg-white px-5 py-3 rounded-2xl shadow-md border border-indigo-100 flex items-center gap-3">
+                                            <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                                            <span className="text-xs font-bold text-indigo-900">جاري فحص سجل المشروع وتحليل البيانات عبر مفاتيح الذكاء الاصطناعي...</span>
+                                        </div>
+                                    </div>
+                                )}
                                 <div ref={messagesEndRef} />
                             </div>
                         )}
@@ -359,6 +432,15 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
                 </div>
             </div>
         )}
+
+        {/* Smart Report Generator Modal */}
+        <ProjectReportModal
+            isOpen={showReportModal}
+            onClose={() => setShowReportModal(false)}
+            project={fullProjectData}
+            onGenerate={handleGenerateReport}
+            isGenerating={isGeneratingReport}
+        />
     </div>
   );
 };

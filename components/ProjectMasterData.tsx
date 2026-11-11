@@ -9,7 +9,7 @@ import { printService } from '../services/printService';
 import ConfirmModal from './ConfirmModal'; 
 import ProjectReportModal from './ProjectReportModal';
 import { ReportGenerator } from '../services/reportGenerator';
-import { Project, ProjectLog, ProjectPayment, BOQItem, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
+import { Project, ProjectLog, ProjectPayment, BOQItem, BOQItemReportType, BOQItemSavedReport, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
 import html2canvas from 'html2canvas';
 
 interface ProjectMasterDataProps {
@@ -55,6 +55,61 @@ const normalizePaymentsList = (payments: any[] = []): ProjectPayment[] => {
             note: p.note !== undefined ? p.note : (p.notes || '')
         };
     });
+};
+
+const enhanceReportHtml = (rawHtml: string): string => {
+    if (!rawHtml) return '';
+    try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(rawHtml, 'text/html');
+        const tables = doc.querySelectorAll('table');
+        tables.forEach((table) => {
+            table.style.minWidth = '680px';
+            table.style.width = '100%';
+            table.style.borderCollapse = 'collapse';
+
+            // Wrap table in responsive wrapper if not already wrapped
+            if (!table.parentElement?.classList.contains('table-responsive-wrapper')) {
+                const wrapper = doc.createElement('div');
+                wrapper.className = 'table-responsive-wrapper';
+                wrapper.style.width = '100%';
+                wrapper.style.overflowX = 'auto';
+                wrapper.style.webkitOverflowScrolling = 'touch';
+                wrapper.style.margin = '14px 0';
+                table.parentNode?.insertBefore(wrapper, table);
+                wrapper.appendChild(table);
+            }
+
+            const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+            if (headerRow) {
+                const cells = Array.from(headerRow.children) as HTMLElement[];
+                cells.forEach((cell) => {
+                    const text = cell.textContent?.trim() || '';
+                    if (!cell.style.width || cell.style.width === 'auto') {
+                        if (
+                            text.includes('بيان الأعمال') ||
+                            text.includes('الوصف') ||
+                            text.includes('المواصفات') ||
+                            text.includes('طريقة التنفيذ') ||
+                            text.includes('خطوات') ||
+                            text.includes('عنصر الفحص')
+                        ) {
+                            cell.style.width = '42%';
+                            cell.style.minWidth = '260px';
+                        } else if (text === 'م' || text === 'رقم' || text === '#' || text.includes('الوحدة')) {
+                            cell.style.width = '8%';
+                            cell.style.minWidth = '50px';
+                            cell.style.textAlign = 'center';
+                            cell.style.whiteSpace = 'nowrap';
+                        }
+                    }
+                });
+            }
+        });
+        return doc.body.innerHTML;
+    } catch (e) {
+        return rawHtml;
+    }
 };
 
 export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onProjectUpdated, onOpenAI }: ProjectMasterDataProps) {
@@ -264,6 +319,22 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [isAnalyzingBOQ, setIsAnalyzingBOQ] = useState(false);
     const [editingBoqItem, setEditingBoqItem] = useState<BOQItem | null>(null);
     const [showBoqDeleteConfirm, setShowBoqDeleteConfirm] = useState(false);
+    const [generatingBoqReportInfo, setGeneratingBoqReportInfo] = useState<{ itemId: string; type: BOQItemReportType } | null>(null);
+    const [viewingBoqReport, setViewingBoqReport] = useState<BOQItemSavedReport | null>(null);
+    const [viewingBoqReportItem, setViewingBoqReportItem] = useState<BOQItem | null>(null);
+    const [isBoqReportMenuOpen, setIsBoqReportMenuOpen] = useState(false);
+    const [isDirectEditingReport, setIsDirectEditingReport] = useState(false);
+    const [reportAutoSaveStatus, setReportAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+    const reportEditableContentRef = useRef<HTMLDivElement>(null);
+    const reportAutoSaveTimeoutRef = useRef<any>(null);
+    const [editingColumnModal, setEditingColumnModal] = useState<{
+        tableIndex: number;
+        columnIndex: number;
+        columnTitle: string;
+        currentPercent: number;
+    } | null>(null);
+    const [customPercentInput, setCustomPercentInput] = useState<number>(25);
+    const reportContainerRef = useRef<HTMLDivElement>(null);
     const [collapsedBatches, setCollapsedBatches] = useState<Set<string>>(new Set());
     const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
     const [newBatchName, setNewBatchName] = useState('');
@@ -326,7 +397,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     useEffect(() => {
         if (!initialProjectData) return;
         // Never overwrite active local edits in the modal
-        if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 20000)) {
+        if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 2000)) {
             setLoading(false);
             return;
         }
@@ -414,7 +485,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 remoteBoq.forEach(b => {
                     if (b) {
                         const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
-                        boqMap.set(key, b);
+                        const existing = boqMap.get(key);
+                        const mergedSavedReports = (existing?.savedReports || b.savedReports)
+                            ? { ...(existing?.savedReports || {}), ...(b.savedReports || {}) }
+                            : undefined;
+                        boqMap.set(key, mergedSavedReports ? { ...b, savedReports: mergedSavedReports } : b);
                     }
                 });
                 mergedBoq = Array.from(boqMap.values());
@@ -451,6 +526,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             };
         });
     };
+
+    useEffect(() => {
+        if (initialProjectData && isOpen) {
+            applyProjectDataToState(initialProjectData, false);
+        }
+    }, [initialProjectData?.updatedAt]);
 
     useEffect(() => {
         if (isOpen && projectId) {
@@ -498,7 +579,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
             if (!api.isGuest()) {
                 const unsubscribe = api.subscribeToProject(projectId, (updatedProject) => {
-                    if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 20000)) {
+                    if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 2000)) {
                         return;
                     }
                     if (updatedProject) {
@@ -506,9 +587,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         if (onProjectUpdated) onProjectUpdated(updatedProject);
                     }
                 });
+
+                // Listen to BroadcastChannel for instant cross-tab / cross-component sync
+                let bc: BroadcastChannel | null = null;
+                if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+                    bc = new BroadcastChannel('construction_app_sync_channel');
+                    bc.onmessage = (ev) => {
+                        if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 2000)) return;
+                        if (ev.data?.type === 'PROJECTS_UPDATED' && Array.isArray(ev.data.projects)) {
+                            const matched = ev.data.projects.find((p: Project) => p.id === projectId);
+                            if (matched) {
+                                applyProjectDataToState(matched, false);
+                                if (onProjectUpdated) onProjectUpdated(matched);
+                            }
+                        }
+                    };
+                }
+
                 return () => {
                     isCancelled = true;
                     unsubscribe();
+                    if (bc) bc.close();
                 };
             }
             return () => { isCancelled = true; };
@@ -541,19 +640,22 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 updatedAt: now,
                 ...(flags || {})
             });
+            // Immediately flush sync queue for instant cloud synchronization
+            api.sync.processQueue().catch(() => {});
             if (savedProject && onProjectUpdated) {
                 onProjectUpdated(savedProject);
             }
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1200);
+            setTimeout(() => setAutoSaveStatus('idle'), 1500);
         } catch (e) {
             console.error("Auto save failed", e);
+            api.sync.processQueue().catch(() => {});
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1200);
+            setTimeout(() => setAutoSaveStatus('idle'), 1500);
         } finally {
             setTimeout(() => {
                 isSavingRef.current = false;
-            }, 2500);
+            }, 800);
         }
     };
 
@@ -713,6 +815,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setTimeout(() => setAutoSaveStatus('idle'), 2000);
     };
 
+    const getShortBoqText = (desc?: string, maxLen: number = 72): string => {
+        if (!desc) return '';
+        const clean = desc.replace(/\s+/g, ' ').trim();
+        if (clean.length <= maxLen) return clean;
+        const sliced = clean.slice(0, maxLen);
+        const lastSpace = sliced.lastIndexOf(' ');
+        return (lastSpace > 35 ? sliced.slice(0, lastSpace) : sliced).trim() + '...';
+    };
+
     const shareLogToWhatsApp = async (log: ProjectLog) => {
         const elementId = `log-card-${log.id}`;
         const element = document.getElementById(elementId);
@@ -736,12 +847,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     if (!clonedEl) return;
 
                     // 1. Prevent html2canvas from clipping bottom of Arabic characters inside badges/containers
-                    const truncatedEls = clonedEl.querySelectorAll('.truncate');
+                    const truncatedEls = clonedEl.querySelectorAll('.truncate, .line-clamp-2');
                     truncatedEls.forEach((el) => {
                         const htmlEl = el as HTMLElement;
                         htmlEl.style.overflow = 'visible';
                         htmlEl.style.textOverflow = 'clip';
                         htmlEl.style.whiteSpace = 'normal';
+                        htmlEl.style.webkitLineClamp = 'unset';
                     });
 
                     // 2. Lift all Arabic text & date text upward to compensate for html2canvas baseline shift
@@ -749,12 +861,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     liftEls.forEach((el) => {
                         const htmlEl = el as HTMLElement;
                         htmlEl.style.transform = 'translateY(-6px)';
-                        htmlEl.style.display = 'inline-block';
+                        if (htmlEl.tagName.toLowerCase() === 'span') {
+                            htmlEl.style.display = 'inline-block';
+                        }
+                    });
+
+                    const shareHideIcons = clonedEl.querySelectorAll('.share-hide-icon');
+                    shareHideIcons.forEach((el) => {
+                        (el as HTMLElement).style.display = 'none';
                     });
 
                     const boqBadge = clonedEl.querySelector('.log-boq-badge') as HTMLElement | null;
                     if (boqBadge) {
-                        boqBadge.style.paddingTop = '6px';
+                        boqBadge.style.paddingTop = '8px';
                         boqBadge.style.paddingBottom = '10px';
                         boqBadge.style.overflow = 'visible';
                     }
@@ -812,35 +931,29 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     const confirmDeleteLog = async () => { 
         if (logToDeleteId) { 
-            // FIXED: Immediate Optimistic Delete
-            // Create new array WITHOUT the deleted item
             const newLogs = masterData.logs.filter(l => l.id !== logToDeleteId);
+            const newData = { ...masterData, logs: newLogs };
             
-            // Update State Immediately
-            setMasterData(prev => ({ 
-                ...prev, 
-                logs: newLogs 
-            })); 
+            setMasterData(newData); 
             
             const idToDelete = logToDeleteId;
-            setLogToDeleteId(null); // Clear modal
+            setLogToDeleteId(null);
             
             setAutoSaveStatus('saving');
-            isSavingRef.current = true; // Block subscription updates momentarily
+            isSavingRef.current = true;
 
             try {
                 await api.deleteProjectLog(projectId, idToDelete);
+                await triggerAutoSave(newData, { _allowEmptyLogs: true });
                 setAutoSaveStatus('saved');
             } catch(e) {
                 console.error("Failed to delete log", e);
-                setAutoSaveStatus('idle');
-                // Revert if API fails (optional but good practice)
-                // For now, we trust eventual consistency or user refresh
+                await triggerAutoSave(newData, { _allowEmptyLogs: true });
             } finally {
                 setTimeout(() => {
                     isSavingRef.current = false;
                     setAutoSaveStatus('idle');
-                }, 2000);
+                }, 800);
             }
         } 
     };
@@ -1043,25 +1156,43 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         newItems[itemIndex] = tempPaymentItem;
         payment.items = newItems;
         
-        // 2. Recalculate Payment Totals (Cumulative)
-        // Cumulative = Sum of all item Total Values
+        // 2. Recalculate Payment Totals (Cumulative & Gross Current Work)
         const newCumulative = newItems.reduce((sum, item) => sum + (item.totalValue || 0), 0);
         payment.cumulativeAmount = newCumulative;
         
-        // 3. Recalculate Payment Net
-        const newNet = newItems.reduce((sum, item) => {
+        const newGrossCurrent = newItems.reduce((sum, item) => {
             const currVal = (item.currQuantity || 0) * (item.unitPrice || 0) * ((item.completionRatio || 100) / 100);
-            return sum + currVal;
+            return sum + Math.round(currVal);
         }, 0);
         
-        payment.netAmount = newNet;
+        payment.grossCurrentWork = newGrossCurrent;
+        const retAmt = Math.round(newGrossCurrent * ((payment.retentionPercent || 0) / 100));
+        const advAmt = Math.round(newGrossCurrent * ((payment.advanceDeductionPercent || 0) / 100));
+        const taxAmt = Math.round(newGrossCurrent * ((payment.taxesAndOtherPercent || 0) / 100));
+        const totalDed = retAmt + advAmt + taxAmt;
+        const netAfterDed = Math.max(0, newGrossCurrent - totalDed);
+
+        payment.retentionAmount = retAmt;
+        payment.advanceDeductionAmount = advAmt;
+        payment.taxesAndOtherAmount = taxAmt;
+        payment.netPayableAfterDeductions = netAfterDed;
+        payment.netAmount = netAfterDed;
         
         updatedPayments[targetPaymentIndex] = payment;
+
+        // Also sync executedQuantity to BOQ if linked
+        const updatedBoqItems = masterData.boqItems.map(b => {
+            if (tempPaymentItem.boqItemId && b.id === tempPaymentItem.boqItemId) {
+                return { ...b, executedQuantity: Math.max(Number(b.executedQuantity) || 0, Number(tempPaymentItem.totalQuantity) || 0) };
+            }
+            return b;
+        });
         
-        setMasterData(prev => ({ ...prev, payments: updatedPayments }));
+        const newData = { ...masterData, payments: updatedPayments, boqItems: updatedBoqItems };
+        setMasterData(newData);
         setEditingPaymentItemIndex(null);
         setTempPaymentItem(null);
-        triggerAutoSave({ ...masterData, payments: updatedPayments });
+        triggerAutoSave(newData);
     };
 
     // --- QUANTITY VALIDATION COLOR HELPER ---
@@ -1256,21 +1387,48 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             }
         });
 
-        const rowsHtml = itemsList.length > 0 ? itemsList.map((it, idx) => `
-            <tr>
-                <td>${idx + 1}</td>
-                <td style="font-family: monospace;">${it.itemCode || '-'}</td>
-                <td style="text-align: right;">${it.description || ''}</td>
-                <td>${it.unit || '-'}</td>
-                <td>${(it.contractQuantity || 0).toLocaleString()}</td>
-                <td>${(it.prevQuantity || 0).toLocaleString()}</td>
-                <td style="background:#f0fdf4; color:#166534;">${(it.currQuantity || 0).toLocaleString()}</td>
-                <td style="background:#eff6ff; color:#1e40af;">${(it.totalQuantity || 0).toLocaleString()}</td>
-                <td>${(it.unitPrice || 0).toLocaleString()}</td>
-                <td>${it.completionRatio || 100}%</td>
-                <td style="font-weight:900;">${(it.totalValue || 0).toLocaleString()}</td>
-            </tr>
-        `).join('') : `<tr><td colspan="11">مستخلص إجمالي بدون تفصيل بنود</td></tr>`;
+        // Group items by BOQ (طبقا للمقايسات) for official print
+        const groupedForPrint = new Map<string, PaymentItem[]>();
+        itemsList.forEach(it => {
+            const matchedBoq = it.boqItemId
+                ? masterData.boqItems.find(b => b.id === it.boqItemId)
+                : masterData.boqItems.find(b => String(b.itemCode).trim() === String(it.itemCode).trim());
+            const bName = (it.batchName || matchedBoq?.batchName || (matchedBoq as any)?.category || 'المقايسة الأساسية').trim() || 'المقايسة الأساسية';
+            const arr = groupedForPrint.get(bName) || [];
+            arr.push(it);
+            groupedForPrint.set(bName, arr);
+        });
+
+        let serialCounter = 1;
+        const rowsHtml = itemsList.length > 0 ? Array.from(groupedForPrint.entries()).map(([batchName, groupItems]) => {
+            const groupSubtotal = groupItems.reduce((s, i) => s + (Number(i.totalValue) || 0), 0);
+            const groupHeaderRow = `
+                <tr style="background:#eef2ff; color:#1e1b4b; font-weight:900;">
+                    <td colspan="8" style="text-align:right; padding:8px 12px; font-size:14px;">
+                        📂 ${batchName} (${groupItems.length} بند)
+                    </td>
+                    <td colspan="3" style="text-align:left; padding:8px 12px; font-size:13px;">
+                        إجمالي المقايسة: ${groupSubtotal.toLocaleString()} ج.م
+                    </td>
+                </tr>
+            `;
+            const itemRows = groupItems.map((it) => `
+                <tr>
+                    <td>${serialCounter++}</td>
+                    <td style="font-family: monospace;">${it.itemCode || '-'}</td>
+                    <td style="text-align: right;">${it.description || ''}</td>
+                    <td>${it.unit || '-'}</td>
+                    <td>${(it.contractQuantity || 0).toLocaleString()}</td>
+                    <td>${(it.prevQuantity || 0).toLocaleString()}</td>
+                    <td style="background:#f0fdf4; color:#166534;">${(it.currQuantity || 0).toLocaleString()}</td>
+                    <td style="background:#eff6ff; color:#1e40af;">${(it.totalQuantity || 0).toLocaleString()}</td>
+                    <td>${(it.unitPrice || 0).toLocaleString()}</td>
+                    <td>${it.completionRatio || 100}%</td>
+                    <td style="font-weight:900;">${(it.totalValue || 0).toLocaleString()}</td>
+                </tr>
+            `).join('');
+            return groupHeaderRow + itemRows;
+        }).join('') : `<tr><td colspan="11">مستخلص إجمالي بدون تفصيل بنود</td></tr>`;
 
         const logsEvidenceHtml = relatedLogs.length > 0 ? `
             <h3 style="margin-top: 24px;">📸 بيان توثيق الأعمال من سجل اليوميات المرتبطة ببنود المستخلص (${relatedLogs.length} يومية)</h3>
@@ -1553,6 +1711,343 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setMasterData(newData);
         setEditingBoqItem(newItem);
         triggerAutoSave(newData);
+    };
+
+    const BOQ_ITEM_REPORT_BUTTONS: {
+        type: BOQItemReportType;
+        label: string;
+        reportTitle: string;
+        icon: string;
+        activeBg: string;
+        defaultBg: string;
+    }[] = [
+        {
+            type: 'materials',
+            label: 'تحليل خامات ومواد البند',
+            reportTitle: 'تقرير تحليل خامات ومواد البند',
+            icon: 'fa-cubes-stacked',
+            activeBg: 'bg-indigo-100 border-indigo-400 text-indigo-900 ring-2 ring-indigo-200',
+            defaultBg: 'bg-slate-50 hover:bg-indigo-50 border-slate-200 hover:border-indigo-300 text-slate-600 hover:text-indigo-700'
+        },
+        {
+            type: 'method_specs',
+            label: 'طريقة تنفيذ البند والمواصفات الفنية',
+            reportTitle: 'تقرير طريقة تنفيذ البند والمواصفات الفنية',
+            icon: 'fa-compass-drafting',
+            activeBg: 'bg-teal-100 border-teal-400 text-teal-900 ring-2 ring-teal-200',
+            defaultBg: 'bg-slate-50 hover:bg-teal-50 border-slate-200 hover:border-teal-300 text-slate-600 hover:text-teal-700'
+        },
+        {
+            type: 'productivity_labor',
+            label: 'تحليل معدلات الإنتاج والعمالة والمعدات',
+            reportTitle: 'تقرير تحليل معدلات الإنتاج والعمالة والمعدات للبند',
+            icon: 'fa-users-gear',
+            activeBg: 'bg-amber-100 border-amber-400 text-amber-900 ring-2 ring-amber-200',
+            defaultBg: 'bg-slate-50 hover:bg-amber-50 border-slate-200 hover:border-amber-300 text-slate-600 hover:text-amber-700'
+        },
+        {
+            type: 'inspection_quality',
+            label: 'نموذج فحص واستلام واشتراطات الجودة',
+            reportTitle: 'نموذج فحص واستلام واشتراطات الجودة للبند',
+            icon: 'fa-clipboard-check',
+            activeBg: 'bg-purple-100 border-purple-400 text-purple-900 ring-2 ring-purple-200',
+            defaultBg: 'bg-slate-50 hover:bg-purple-50 border-slate-200 hover:border-purple-300 text-slate-600 hover:text-purple-700'
+        }
+    ];
+
+    const handleBoqItemReportButtonClick = async (targetItem: BOQItem, reportType: BOQItemReportType, forceRegenerate: boolean = false) => {
+        if (!targetItem || generatingBoqReportInfo) return;
+
+        const existingSaved = targetItem.savedReports?.[reportType];
+        if (existingSaved && existingSaved.content && !forceRegenerate) {
+            setViewingBoqReportItem(targetItem);
+            setViewingBoqReport(existingSaved);
+            return;
+        }
+
+        const btnMeta = BOQ_ITEM_REPORT_BUTTONS.find(b => b.type === reportType);
+        const fullTitle = `${btnMeta?.reportTitle || 'تقرير هندسي للبند'} - بند (${targetItem.itemCode || '-'})`;
+
+        setGeneratingBoqReportInfo({ itemId: targetItem.id, type: reportType });
+        try {
+            const htmlContent = await aiHelper.generateBOQItemSubReport(reportType, targetItem, {
+                projectName: masterData.projectName || initialProjectData?.name || '',
+                contractor: masterData.projectContractor || initialProjectData?.contractor || '',
+                location: initialProjectData?.location || ''
+            });
+
+            const savedReportObj: BOQItemSavedReport = {
+                type: reportType,
+                title: fullTitle,
+                content: htmlContent,
+                updatedAt: new Date().toISOString()
+            };
+
+            const updatedBoqItem: BOQItem = {
+                ...targetItem,
+                savedReports: {
+                    ...(targetItem.savedReports || {}),
+                    [reportType]: savedReportObj
+                }
+            };
+
+            setViewingBoqReportItem(updatedBoqItem);
+            setViewingBoqReport(savedReportObj);
+
+            if (editingBoqItem && editingBoqItem.id === targetItem.id) {
+                setEditingBoqItem(updatedBoqItem);
+            }
+
+            const newData = {
+                ...masterData,
+                boqItems: masterData.boqItems.map(item => item.id === updatedBoqItem.id ? updatedBoqItem : item)
+            };
+            setMasterData(newData);
+            triggerAutoSave(newData);
+        } catch (err) {
+            console.error("Failed to generate BOQ item report:", err);
+            alert("حدث خطأ أثناء توليد التقرير. يرجى المحاولة مرة أخرى.");
+        } finally {
+            setGeneratingBoqReportInfo(null);
+        }
+    };
+
+    const handleUpdateReportContent = (newHtml: string) => {
+        if (!viewingBoqReport) return;
+        const targetItem = viewingBoqReportItem || editingBoqItem;
+        if (!targetItem) return;
+
+        const updatedReport: BOQItemSavedReport = {
+            ...viewingBoqReport,
+            content: newHtml,
+            updatedAt: new Date().toISOString()
+        };
+
+        const updatedItem: BOQItem = {
+            ...targetItem,
+            savedReports: {
+                ...(targetItem.savedReports || {}),
+                [viewingBoqReport.type]: updatedReport
+            }
+        };
+
+        setViewingBoqReport(updatedReport);
+        setViewingBoqReportItem(updatedItem);
+        if (editingBoqItem && editingBoqItem.id === targetItem.id) {
+            setEditingBoqItem(updatedItem);
+        }
+
+        const newData = {
+            ...masterData,
+            boqItems: masterData.boqItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+        };
+        setMasterData(newData);
+        triggerAutoSave(newData);
+    };
+
+    const applyColumnWidth = (tableIdx: number, colIdx: number, percent: number | 'auto') => {
+        if (!viewingBoqReport) return;
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(viewingBoqReport.content, 'text/html');
+            const tables = doc.querySelectorAll('table');
+            const targetTable = tables[tableIdx];
+            if (!targetTable) return;
+
+            const rows = targetTable.querySelectorAll('tr');
+            rows.forEach(row => {
+                const cells = row.children;
+                const targetCell = cells[colIdx] as HTMLElement;
+                if (targetCell) {
+                    if (percent === 'auto') {
+                        targetCell.style.width = 'auto';
+                        targetCell.style.minWidth = '';
+                    } else {
+                        targetCell.style.width = `${percent}%`;
+                        targetCell.style.minWidth = `${percent * 6}px`;
+                    }
+                }
+            });
+
+            const updatedHtml = doc.body.innerHTML;
+            handleUpdateReportContent(updatedHtml);
+            setEditingColumnModal(null);
+        } catch (e) {
+            console.error("Failed to apply column width:", e);
+        }
+    };
+
+    const handleReportContentClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (isDirectEditingReport) return;
+        const target = e.target as HTMLElement;
+        const th = target.closest('th');
+        if (!th) return;
+        const table = th.closest('table');
+        if (!table) return;
+
+        const row = th.parentElement;
+        if (!row) return;
+
+        const thElements = Array.from(row.children) as HTMLElement[];
+        const colIndex = thElements.indexOf(th);
+        if (colIndex === -1) return;
+
+        const container = reportContainerRef.current;
+        if (!container) return;
+        const allTables = Array.from(container.querySelectorAll('table'));
+        const tableIdx = allTables.indexOf(table);
+        if (tableIdx === -1) return;
+
+        let currentPercent = 25;
+        const styleWidth = th.style.width || '';
+        const match = styleWidth.match(/(\d+)%/);
+        if (match) {
+            currentPercent = parseInt(match[1], 10);
+        } else {
+            const tableRect = table.getBoundingClientRect();
+            const thRect = th.getBoundingClientRect();
+            if (tableRect.width > 0) {
+                currentPercent = Math.max(5, Math.min(80, Math.round((thRect.width / tableRect.width) * 100)));
+            }
+        }
+
+        setEditingColumnModal({
+            tableIndex: tableIdx,
+            columnIndex: colIndex,
+            columnTitle: th.innerText?.replace('⚙', '').trim() || `العمود ${colIndex + 1}`,
+            currentPercent
+        });
+        setCustomPercentInput(currentPercent);
+    };
+
+    const handleReportDirectInput = () => {
+        if (!reportEditableContentRef.current || !viewingBoqReport) return;
+        setReportAutoSaveStatus('saving');
+
+        if (reportAutoSaveTimeoutRef.current) {
+            clearTimeout(reportAutoSaveTimeoutRef.current);
+        }
+
+        reportAutoSaveTimeoutRef.current = setTimeout(() => {
+            const currentHtml = reportEditableContentRef.current?.innerHTML;
+            if (!currentHtml) return;
+
+            const targetItem = viewingBoqReportItem || editingBoqItem;
+            if (!targetItem) return;
+
+            const updatedReport: BOQItemSavedReport = {
+                ...viewingBoqReport,
+                content: currentHtml,
+                updatedAt: new Date().toISOString()
+            };
+
+            const updatedItem: BOQItem = {
+                ...targetItem,
+                savedReports: {
+                    ...(targetItem.savedReports || {}),
+                    [viewingBoqReport.type]: updatedReport
+                }
+            };
+
+            setViewingBoqReport(updatedReport);
+            setViewingBoqReportItem(updatedItem);
+            if (editingBoqItem && editingBoqItem.id === targetItem.id) {
+                setEditingBoqItem(updatedItem);
+            }
+
+            const newData = {
+                ...masterData,
+                boqItems: masterData.boqItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+            };
+            setMasterData(newData);
+            triggerAutoSave(newData);
+
+            setReportAutoSaveStatus('saved');
+            setTimeout(() => {
+                setReportAutoSaveStatus('idle');
+            }, 2500);
+        }, 600);
+    };
+
+    const handleReportDirectBlur = () => {
+        if (reportAutoSaveTimeoutRef.current) {
+            clearTimeout(reportAutoSaveTimeoutRef.current);
+        }
+        const currentHtml = reportEditableContentRef.current?.innerHTML;
+        if (!currentHtml || !viewingBoqReport) return;
+
+        const targetItem = viewingBoqReportItem || editingBoqItem;
+        if (!targetItem) return;
+
+        const updatedReport: BOQItemSavedReport = {
+            ...viewingBoqReport,
+            content: currentHtml,
+            updatedAt: new Date().toISOString()
+        };
+
+        const updatedItem: BOQItem = {
+            ...targetItem,
+            savedReports: {
+                ...(targetItem.savedReports || {}),
+                [viewingBoqReport.type]: updatedReport
+            }
+        };
+
+        setViewingBoqReport(updatedReport);
+        setViewingBoqReportItem(updatedItem);
+        if (editingBoqItem && editingBoqItem.id === targetItem.id) {
+            setEditingBoqItem(updatedItem);
+        }
+
+        const newData = {
+            ...masterData,
+            boqItems: masterData.boqItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+        };
+        setMasterData(newData);
+        triggerAutoSave(newData);
+
+        setReportAutoSaveStatus('saved');
+        setTimeout(() => {
+            setReportAutoSaveStatus('idle');
+        }, 2500);
+    };
+
+    const handlePrintBoqItemReport = (report: BOQItemSavedReport) => {
+        const item = viewingBoqReportItem || editingBoqItem;
+        if (!item) return;
+        const projName = masterData.projectName || initialProjectData?.name || 'المشروع';
+        const contractorName = masterData.projectContractor || initialProjectData?.contractor || '-';
+        printService.printReport(
+            report.content,
+            report.title,
+            `BOQ-${item.itemCode || '1'}-${report.type.toUpperCase()}`,
+            {
+                subtitle: `مشروع: ${projName} | المقاول: ${contractorName}`
+            }
+        );
+    };
+
+    const handleOpenBoqReportInLetterEditor = (report: BOQItemSavedReport) => {
+        const item = viewingBoqReportItem || editingBoqItem;
+        if (!item) return;
+        const projName = masterData.projectName || initialProjectData?.name || 'تقرير هندسي استشاري';
+        const fullHtml = ReportGenerator.buildReport(report.title, report.content, {
+            subtitle: `مشروع: ${projName} | بند رقم (${item.itemCode || '-'})`,
+            ref: `BOQ-${item.itemCode || '1'}-${report.type.toUpperCase()}`
+        });
+        setViewingBoqReport(null);
+        setViewingBoqReportItem(null);
+        setEditingBoqItem(null);
+        onClose();
+        navigate(`/editor/${projectId}/${projectId}`, {
+            state: {
+                initialContent: fullHtml,
+                filename: report.title.replace(/\s+/g, '_'),
+                boqItemId: item.id,
+                boqReportType: report.type,
+                returnToMasterData: true
+            }
+        });
     };
     
     const handleDeleteBatchClick = (batchId: string) => { setBatchToDeleteId(batchId); };
@@ -2283,6 +2778,39 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                   </div>
                                   {!isNote && (
                                       <>
+                                          {/* 4 AI Engineering Report Icon Buttons for BOQ Item */}
+                                          <div className="flex items-center gap-2 pt-1 pb-0.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                                              {BOQ_ITEM_REPORT_BUTTONS.map((btn) => {
+                                                  const isSaved = Boolean(item.savedReports?.[btn.type]?.content);
+                                                  const isGeneratingThis = generatingBoqReportInfo?.itemId === item.id && generatingBoqReportInfo?.type === btn.type;
+                                                  return (
+                                                      <button
+                                                          key={btn.type}
+                                                          type="button"
+                                                          disabled={Boolean(generatingBoqReportInfo)}
+                                                          onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              handleBoqItemReportButtonClick(item, btn.type, false);
+                                                          }}
+                                                          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center transition border shadow-xs relative ${
+                                                              isSaved ? btn.activeBg : btn.defaultBg
+                                                          } ${generatingBoqReportInfo && !isGeneratingThis ? 'opacity-50' : 'hover:scale-105 active:scale-95'}`}
+                                                          title={isSaved ? `${btn.label} (محفوظ - اضغط للعرض)` : `${btn.label} (اضغط لإنشاء التقرير بالذكاء الاصطناعي)`}
+                                                      >
+                                                          {isSaved && (
+                                                              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-600 text-white rounded-full flex items-center justify-center text-[8px] font-bold shadow-xs">
+                                                                  ✓
+                                                              </span>
+                                                          )}
+                                                          {isGeneratingThis ? (
+                                                              <i className="fa-solid fa-circle-notch fa-spin text-xs text-indigo-600"></i>
+                                                          ) : (
+                                                              <i className={`fa-solid ${btn.icon} text-sm ${isSaved ? 'text-current' : 'text-slate-600'}`}></i>
+                                                          )}
+                                                      </button>
+                                                  );
+                                              })}
+                                          </div>
                                           <div className="grid grid-cols-4 gap-1.5 sm:gap-2 text-center bg-slate-50 p-2 rounded-xl border border-slate-200 mt-1"> 
                                               <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الوحدة</span><span className="text-sm sm:text-base font-bold">{item.unit}</span></div> 
                                               <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الكمية</span><span className="text-sm sm:text-base font-bold font-mono">{item.quantity}</span></div> 
@@ -2391,20 +2919,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                 {/* Header */}
                 <div className="p-3 bg-slate-900 flex justify-between items-center text-white shrink-0 relative z-[1601]">
-                    <h3 className="font-bold flex items-center gap-2 text-xs"> <i className="fa-solid fa-clipboard-list text-yellow-400 text-sm"></i> سجل المشروع </h3>
-                    <div className="flex items-center gap-3">
-                        {/* Background Refresh Indicator (Subtle) */}
-                        {isRefreshing && !loading && (
-                            <span className="text-[9px] text-blue-300 font-bold animate-pulse flex items-center gap-1">
-                                <i className="fa-solid fa-circle-notch fa-spin"></i> جاري التحديث
-                            </span>
-                        )}
-                        
-                        {autoSaveStatus !== 'idle' && <span className={`text-[10px] font-bold px-2 py-0.5 rounded transition-all ${autoSaveStatus === 'saving' ? 'text-yellow-300 animate-pulse' : 'text-green-400'}`}>{autoSaveStatus === 'saving' ? 'جاري الحفظ...' : 'تم الحفظ ✔'}</span>}
+                    <div className="flex items-center gap-1.5">
+                        <h3 className="font-bold flex items-center gap-2 text-xs whitespace-nowrap">
+                            <i className="fa-solid fa-clipboard-list text-yellow-400 text-sm"></i>
+                            <span>سجل المشروع</span>
+                        </h3>
+                        <button
+                            type="button"
+                            onClick={() => triggerAutoSave(masterData)}
+                            className={`w-6 h-6 rounded-full border transition flex items-center justify-center shrink-0 ${
+                                autoSaveStatus === 'saving' || isRefreshing
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                                    : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30'
+                            }`}
+                            title={autoSaveStatus === 'saving' ? 'جاري الحفظ والمزامنة...' : 'حفظ ومزامنة فورية مفعلة'}
+                        >
+                            <i className={`fa-solid ${autoSaveStatus === 'saving' || isRefreshing ? 'fa-arrows-rotate fa-spin' : 'fa-check'} text-[10px]`}></i>
+                        </button>
+                    </div>
+                    <div className="flex items-center gap-2">
                         <div className="flex gap-2">
-                            <button onClick={() => setShowReportModal(true)} className="w-9 h-9 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg hover:bg-rose-700 transition transform active:scale-90" title="إنشاء تقرير ذكي"><i className="fa-solid fa-file-invoice text-sm"></i></button>
-                            <button onClick={onOpenAI} className="w-9 h-9 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-lg hover:shadow-indigo-500/50 transition transform active:scale-90" title="المركز الاستشاري الموحد"><i className="fa-solid fa-wand-magic-sparkles text-sm"></i></button>
-                            <button onClick={onClose} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition transform active:scale-90" title="إغلاق"><i className="fa-solid fa-times text-sm"></i></button>
+                            <button onClick={() => { triggerAutoSave(masterData); onClose(); }} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition transform active:scale-90" title="إغلاق وحفظ"><i className="fa-solid fa-times text-sm"></i></button>
                         </div>
                     </div>
                 </div>
@@ -2547,14 +3082,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 setActiveTab('boq');
                                                             }
                                                         }}
-                                                        className="log-boq-badge bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-300 text-indigo-950 px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-between gap-2"
+                                                        className="log-boq-badge bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-300 text-indigo-950 px-2.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition flex items-start justify-between gap-2"
                                                     >
-                                                        <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
-                                                            <i className="fa-solid fa-link text-indigo-600 text-[10px] shrink-0"></i>
-                                                            <span className="share-text-lift font-mono text-indigo-800 shrink-0">بند ({log.boqItemCode || matchedBoqItem?.itemCode || '-'}):</span>
-                                                            <span className="share-text-lift truncate">{log.boqItemDescription || matchedBoqItem?.description || ''}</span>
+                                                        <div className="flex items-start gap-1.5 flex-1 min-w-0 text-right">
+                                                            <i className="fa-solid fa-link text-indigo-600 text-[10px] shrink-0 mt-1"></i>
+                                                            <p className="share-text-lift text-xs font-bold text-indigo-950 leading-relaxed flex-1 min-w-0 line-clamp-2 break-words">
+                                                                <span className="font-mono font-extrabold text-indigo-800 ml-1">
+                                                                    بند ({log.boqItemCode || matchedBoqItem?.itemCode || '-'}):
+                                                                </span>
+                                                                <span>{getShortBoqText(log.boqItemDescription || matchedBoqItem?.description || '', 72)}</span>
+                                                            </p>
                                                         </div>
-                                                        <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-indigo-600 shrink-0"></i>
+                                                        <i className="share-hide-icon fa-solid fa-arrow-up-right-from-square text-[10px] text-indigo-600 shrink-0 mt-1"></i>
                                                     </div>
                                                 )}
                                                 <p className="share-text-lift text-slate-900 text-lg leading-relaxed font-bold whitespace-pre-wrap mb-0.5">{log.content}</p>
@@ -2735,98 +3274,153 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     <p className="text-slate-900 text-sm leading-relaxed font-bold whitespace-pre-wrap mt-1 opacity-80">{pay.note}</p>
                                                 </div>
                                                 {pay.items && pay.items.length > 0 && <button onClick={() => setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id)} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>}
-                                                {expandedPaymentId === pay.id && pay.items && (
-                                                    <div className="mt-1 bg-white rounded-lg border border-slate-200 overflow-hidden p-1 space-y-2">
-                                                        {pay.items.map((item, i) => {
-                                                            const isEditingThisItem = editingPaymentItemIndex && editingPaymentItemIndex.paymentId === pay.id && editingPaymentItemIndex.itemIndex === i;
-                                                            const quantityColorClass = getQuantityStatusColor(item.totalQuantity || 0, item.contractQuantity || 0);
-                                                            const matchedBoq = item.boqItemId
-                                                                ? masterData.boqItems.find(b => b.id === item.boqItemId)
-                                                                : masterData.boqItems.find(b => String(b.itemCode).trim() === String(item.itemCode).trim());
-                                                            const itemLinkedLogs = matchedBoq ? (logsByBoqItemId.get(matchedBoq.id) || []) : [];
-                                                            
-                                                            return (
-                                                                <div key={i} className={`rounded border p-2 text-[10px] transition ${isEditingThisItem ? 'bg-yellow-50 border-yellow-200 shadow-md' : 'bg-slate-50 border-slate-100'}`}>
-                                                                    {isEditingThisItem ? (
-                                                                        <div className="flex flex-col gap-2">
-                                                                            <div className="flex justify-between items-center bg-white p-1 rounded border border-yellow-100">
-                                                                                <span className="font-bold text-slate-700">تعديل البند</span>
-                                                                                <input type="text" className="w-20 p-1 border rounded font-mono text-center text-xs" value={tempPaymentItem.itemCode} onChange={(e) => handleTempItemChange('itemCode', e.target.value)} placeholder="الكود" />
-                                                                            </div>
-                                                                            <input type="text" className="w-full p-1 border rounded" value={tempPaymentItem.description} onChange={(e) => handleTempItemChange('description', e.target.value)} />
-                                                                            
-                                                                            <div className="grid grid-cols-2 gap-2 text-center bg-slate-100 p-1 rounded border border-slate-200 mb-1">
-                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">التعاقدية</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.contractQuantity} onChange={(e) => handleTempItemChange('contractQuantity', e.target.value)} /></div>
-                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">السابقة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.prevQuantity} onChange={(e) => handleTempItemChange('prevQuantity', e.target.value)} /></div>
-                                                                            </div>
+                                                {expandedPaymentId === pay.id && pay.items && (() => {
+                                                    // Group payment items by BOQ (تقسيم البنود في المستخلص طبقا للمقايسات)
+                                                    const groupedPaymentItems: {
+                                                        batchName: string;
+                                                        entries: { item: PaymentItem; index: number; matchedBoq?: BOQItem }[];
+                                                        subtotalValue: number;
+                                                    }[] = [];
+                                                    const groupIndexMap = new Map<string, number>();
 
-                                                                            <div className="grid grid-cols-3 gap-1 text-center">
-                                                                                <div className="flex flex-col"><label className="text-[8px] text-blue-600 font-bold">الإجمالية (تلقائي)</label><input type="number" className="w-full p-1 border rounded text-center font-black text-blue-700 border-blue-200 bg-blue-50" value={tempPaymentItem.totalQuantity} onChange={(e) => handleTempItemChange('totalQuantity', e.target.value)} /></div>
-                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">الفئة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.unitPrice} onChange={(e) => handleTempItemChange('unitPrice', e.target.value)} /></div>
-                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">نسبة %</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.completionRatio} onChange={(e) => handleTempItemChange('completionRatio', e.target.value)} /></div>
-                                                                            </div>
-                                                                            
-                                                                            <div className="flex justify-between items-center bg-white p-1 rounded border border-slate-200 mt-1">
-                                                                                <span className="text-[9px] text-slate-400">الحالية (ناتج): {tempPaymentItem.currQuantity?.toLocaleString()}</span>
-                                                                                <span className="font-black text-blue-800 font-mono">{(tempPaymentItem.totalValue || 0).toLocaleString()}</span>
-                                                                            </div>
+                                                    pay.items.forEach((item, i) => {
+                                                        const matchedBoq = item.boqItemId
+                                                            ? masterData.boqItems.find(b => b.id === item.boqItemId)
+                                                            : masterData.boqItems.find(b =>
+                                                                String(b.itemCode).trim() === String(item.itemCode).trim() &&
+                                                                (!item.description || (b.description || '').trim().slice(0, 20) === (item.description || '').trim().slice(0, 20))
+                                                              ) || masterData.boqItems.find(b => String(b.itemCode).trim() === String(item.itemCode).trim());
 
-                                                                            <div className="flex gap-2 mt-1">
-                                                                                <button onClick={saveItemEdit} className="flex-1 bg-green-600 text-white py-1.5 rounded font-bold hover:bg-green-700">حفظ</button>
-                                                                                <button onClick={() => { setEditingPaymentItemIndex(null); setTempPaymentItem(null); }} className="flex-1 bg-slate-200 text-slate-700 py-1.5 rounded font-bold hover:bg-slate-300">إلغاء</button>
+                                                        const batchName = (item.batchName || matchedBoq?.batchName || (matchedBoq as any)?.category || 'المقايسة الأساسية').trim() || 'المقايسة الأساسية';
+                                                        if (!groupIndexMap.has(batchName)) {
+                                                            groupIndexMap.set(batchName, groupedPaymentItems.length);
+                                                            groupedPaymentItems.push({
+                                                                batchName,
+                                                                entries: [],
+                                                                subtotalValue: 0
+                                                            });
+                                                        }
+                                                        const gIdx = groupIndexMap.get(batchName)!;
+                                                        groupedPaymentItems[gIdx].entries.push({ item, index: i, matchedBoq });
+                                                        groupedPaymentItems[gIdx].subtotalValue += Number(item.totalValue) || 0;
+                                                    });
+
+                                                    return (
+                                                        <div className="mt-2 space-y-3">
+                                                            {groupedPaymentItems.map((group, gIdx) => (
+                                                                <div key={gIdx} className="bg-white rounded-xl border-2 border-indigo-200/80 overflow-hidden shadow-xs">
+                                                                    {/* BOQ Group Header */}
+                                                                    <div className="bg-gradient-to-r from-indigo-50 via-blue-50 to-indigo-50 px-3 py-2 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-2">
+                                                                        <div className="flex items-center gap-2 min-w-0">
+                                                                            <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                                                                                <i className="fa-solid fa-layer-group text-[10px]"></i>
                                                                             </div>
+                                                                            <span className="font-black text-indigo-950 text-xs sm:text-sm truncate">
+                                                                                {group.batchName}
+                                                                            </span>
+                                                                            <span className="bg-indigo-100 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0">
+                                                                                {group.entries.length} بند
+                                                                            </span>
                                                                         </div>
-                                                                    ) : (
-                                                                        <div onClick={() => handleStartEditItem(pay.id, item, i)} className="cursor-pointer hover:bg-blue-50 transition p-1 rounded">
-                                                                            {/* Row 1: Code & Desc */}
-                                                                            <div className="flex gap-2 items-center font-bold text-slate-800 mb-1">
-                                                                                <span className="bg-white px-1 rounded border border-slate-200 font-mono text-sm shrink-0">{item.itemCode || '-'}</span>
-                                                                                <span className="truncate text-sm flex-1">{item.description}</span>
-                                                                                {matchedBoq && itemLinkedLogs.length > 0 && (
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={(e) => {
-                                                                                            e.stopPropagation();
-                                                                                            setViewingBoqLogsItem(matchedBoq);
-                                                                                        }}
-                                                                                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded-md text-[9px] font-bold flex items-center gap-1 shrink-0"
-                                                                                        title="عرض يوميات وصور إثبات هذا البند"
-                                                                                    >
-                                                                                        <i className="fa-solid fa-camera text-[8px]"></i>
-                                                                                        <span>{itemLinkedLogs.length} يومية</span>
-                                                                                    </button>
-                                                                                )}
-                                                                                <i className="fa-solid fa-pen text-[8px] text-slate-300 shrink-0"></i>
-                                                                            </div>
-                                                                            {/* Row 2: Quantities */}
-                                                                            <div className="grid grid-cols-4 gap-1 text-center bg-white rounded border border-slate-100 p-1 mb-1">
-                                                                                <div className="flex flex-col"><span className="text-[8px] text-slate-400">التعاقدية</span><span className="font-mono font-bold text-sm">{item.contractQuantity || 0}</span></div>
-                                                                                <div className="flex flex-col"><span className="text-[8px] text-slate-400">السابقة</span><span className="font-mono font-bold text-sm">{item.prevQuantity || 0}</span></div>
-                                                                                <div className="flex flex-col"><span className="text-[8px] text-green-600 font-bold">الحالية</span><span className="font-mono font-black text-green-700 text-sm">{item.currQuantity || 0}</span></div>
-                                                                                <div className={`flex flex-col rounded ${quantityColorClass}`}><span className="text-[8px] text-slate-600 font-bold">الإجمالية</span><span className="font-mono font-bold text-sm">{item.totalQuantity || 0}</span></div>
-                                                                            </div>
-                                                                            {/* Row 3: Financials */}
-                                                                            <div className="grid grid-cols-3 gap-1 text-center bg-blue-50/50 rounded p-1.5 border border-blue-100">
-                                                                                <div className="flex flex-col items-center">
-                                                                                    <span className="text-slate-500 text-[9px] font-bold">الفئة</span>
-                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.unitPrice?.toLocaleString()}</span>
-                                                                                </div>
-                                                                                <div className="flex flex-col items-center border-x border-blue-100/80">
-                                                                                    <span className="text-slate-500 text-[9px] font-bold">النسبة</span>
-                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.completionRatio || 100}%</span>
-                                                                                </div>
-                                                                                <div className="flex flex-col items-center">
-                                                                                    <span className="text-blue-700 text-[9px] font-bold">الإجمالي</span>
-                                                                                    <span className="font-mono font-black text-blue-800 text-sm">{item.totalValue?.toLocaleString()}</span>
-                                                                                </div>
-                                                                            </div>
+                                                                        <div className="bg-white px-2.5 py-1 rounded-lg border border-indigo-200 text-[10px] font-bold text-indigo-900 shadow-2xs shrink-0">
+                                                                            <span className="text-slate-500 ml-1">إجمالي المقايسة:</span>
+                                                                            <span className="font-mono font-black text-indigo-800">{group.subtotalValue.toLocaleString()} ج.م</span>
                                                                         </div>
-                                                                    )}
+                                                                    </div>
+
+                                                                    {/* Items in this BOQ Group */}
+                                                                    <div className="p-1.5 space-y-2 bg-slate-50/50">
+                                                                        {group.entries.map(({ item, index: i, matchedBoq }) => {
+                                                                            const isEditingThisItem = editingPaymentItemIndex && editingPaymentItemIndex.paymentId === pay.id && editingPaymentItemIndex.itemIndex === i;
+                                                                            const quantityColorClass = getQuantityStatusColor(item.totalQuantity || 0, item.contractQuantity || 0);
+                                                                            const itemLinkedLogs = matchedBoq ? (logsByBoqItemId.get(matchedBoq.id) || []) : [];
+
+                                                                            return (
+                                                                                <div key={i} className={`rounded-xl border p-2 text-[10px] transition ${isEditingThisItem ? 'bg-yellow-50 border-yellow-300 shadow-md' : 'bg-white border-slate-200 shadow-2xs'}`}>
+                                                                                    {isEditingThisItem ? (
+                                                                                        <div className="flex flex-col gap-2">
+                                                                                            <div className="flex justify-between items-center bg-white p-1.5 rounded-lg border border-yellow-200">
+                                                                                                <span className="font-bold text-slate-700">تعديل البند ({group.batchName})</span>
+                                                                                                <input type="text" className="w-20 p-1 border rounded font-mono text-center text-xs" value={tempPaymentItem.itemCode} onChange={(e) => handleTempItemChange('itemCode', e.target.value)} placeholder="الكود" />
+                                                                                            </div>
+                                                                                            <input type="text" className="w-full p-1.5 border rounded-lg" value={tempPaymentItem.description} onChange={(e) => handleTempItemChange('description', e.target.value)} />
+                                                                                            
+                                                                                            <div className="grid grid-cols-2 gap-2 text-center bg-slate-100 p-1.5 rounded-lg border border-slate-200 mb-1">
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">التعاقدية</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.contractQuantity} onChange={(e) => handleTempItemChange('contractQuantity', e.target.value)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">السابقة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.prevQuantity} onChange={(e) => handleTempItemChange('prevQuantity', e.target.value)} /></div>
+                                                                                            </div>
+
+                                                                                            <div className="grid grid-cols-3 gap-1 text-center">
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-blue-600 font-bold">الإجمالية (تلقائي)</label><input type="number" className="w-full p-1 border rounded text-center font-black text-blue-700 border-blue-200 bg-blue-50" value={tempPaymentItem.totalQuantity} onChange={(e) => handleTempItemChange('totalQuantity', e.target.value)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">الفئة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.unitPrice} onChange={(e) => handleTempItemChange('unitPrice', e.target.value)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">نسبة %</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.completionRatio} onChange={(e) => handleTempItemChange('completionRatio', e.target.value)} /></div>
+                                                                                            </div>
+                                                                                            
+                                                                                            <div className="flex justify-between items-center bg-white p-1.5 rounded-lg border border-slate-200 mt-1">
+                                                                                                <span className="text-[9px] text-slate-400">الحالية (ناتج): {tempPaymentItem.currQuantity?.toLocaleString()}</span>
+                                                                                                <span className="font-black text-blue-800 font-mono">{(tempPaymentItem.totalValue || 0).toLocaleString()}</span>
+                                                                                            </div>
+
+                                                                                            <div className="flex gap-2 mt-1">
+                                                                                                <button onClick={saveItemEdit} className="flex-1 bg-green-600 text-white py-1.5 rounded-lg font-bold hover:bg-green-700">حفظ فوري</button>
+                                                                                                <button onClick={() => { setEditingPaymentItemIndex(null); setTempPaymentItem(null); }} className="flex-1 bg-slate-200 text-slate-700 py-1.5 rounded-lg font-bold hover:bg-slate-300">إلغاء</button>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        <div onClick={() => handleStartEditItem(pay.id, item, i)} className="cursor-pointer hover:bg-blue-50/40 transition p-1 rounded-lg">
+                                                                                            {/* Row 1: Code & Desc */}
+                                                                                            <div className="flex gap-2 items-center font-bold text-slate-800 mb-1.5">
+                                                                                                <span className="bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200 font-mono text-sm shrink-0">{item.itemCode || '-'}</span>
+                                                                                                <span className="truncate text-sm flex-1">{item.description}</span>
+                                                                                                {matchedBoq && itemLinkedLogs.length > 0 && (
+                                                                                                    <button
+                                                                                                        type="button"
+                                                                                                        onClick={(e) => {
+                                                                                                            e.stopPropagation();
+                                                                                                            setViewingBoqLogsItem(matchedBoq);
+                                                                                                        }}
+                                                                                                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded-md text-[9px] font-bold flex items-center gap-1 shrink-0"
+                                                                                                        title="عرض يوميات وصور إثبات هذا البند"
+                                                                                                    >
+                                                                                                        <i className="fa-solid fa-camera text-[8px]"></i>
+                                                                                                        <span>{itemLinkedLogs.length} يومية</span>
+                                                                                                    </button>
+                                                                                                )}
+                                                                                                <i className="fa-solid fa-pen text-[8px] text-slate-300 shrink-0"></i>
+                                                                                            </div>
+                                                                                            {/* Row 2: Quantities */}
+                                                                                            <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 rounded-lg border border-slate-100 p-1.5 mb-1.5">
+                                                                                                <div className="flex flex-col"><span className="text-[8px] text-slate-400">التعاقدية</span><span className="font-mono font-bold text-sm">{item.contractQuantity || 0}</span></div>
+                                                                                                <div className="flex flex-col"><span className="text-[8px] text-slate-400">السابقة</span><span className="font-mono font-bold text-sm">{item.prevQuantity || 0}</span></div>
+                                                                                                <div className="flex flex-col"><span className="text-[8px] text-green-600 font-bold">الحالية</span><span className="font-mono font-black text-green-700 text-sm">{item.currQuantity || 0}</span></div>
+                                                                                                <div className={`flex flex-col rounded ${quantityColorClass}`}><span className="text-[8px] text-slate-600 font-bold">الإجمالية</span><span className="font-mono font-bold text-sm">{item.totalQuantity || 0}</span></div>
+                                                                                            </div>
+                                                                                            {/* Row 3: Financials */}
+                                                                                            <div className="grid grid-cols-3 gap-1 text-center bg-blue-50/50 rounded-lg p-1.5 border border-blue-100">
+                                                                                                <div className="flex flex-col items-center">
+                                                                                                    <span className="text-slate-500 text-[9px] font-bold">الفئة</span>
+                                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.unitPrice?.toLocaleString()}</span>
+                                                                                                </div>
+                                                                                                <div className="flex flex-col items-center border-x border-blue-100/80">
+                                                                                                    <span className="text-slate-500 text-[9px] font-bold">النسبة</span>
+                                                                                                    <span className="font-mono font-bold text-sm text-slate-800">{item.completionRatio || 100}%</span>
+                                                                                                </div>
+                                                                                                <div className="flex flex-col items-center">
+                                                                                                    <span className="text-blue-700 text-[9px] font-bold">الإجمالي</span>
+                                                                                                    <span className="font-mono font-black text-blue-800 text-sm">{item.totalValue?.toLocaleString()}</span>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
                                                                 </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                )}
+                                                            ))}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         )}
                                     </div>
@@ -2923,17 +3517,417 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             )}
                             {/* BOQ Edit Modal (Updated with FIXED positioning) */}
                             {editingBoqItem && (
-                                <div className="fixed inset-0 z-[1600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-                                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-scale-in relative">
+                                <div className="fixed inset-0 z-[1600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+                                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-scale-in relative max-h-[94vh] flex flex-col">
                                         {showBoqDeleteConfirm && <div className="absolute inset-0 z-[60] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-6 rounded-2xl"><div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-xs text-center"><h4 className="font-bold mb-2">حذف البند؟</h4><div className="flex gap-3"><button onClick={confirmDeleteBOQItem} className="flex-1 bg-red-600 text-white py-2 rounded-xl">حذف</button><button onClick={() => setShowBoqDeleteConfirm(false)} className="flex-1 bg-slate-100 text-slate-700 py-2 rounded-xl">إلغاء</button></div></div></div>}
-                                        <div className="bg-slate-900 text-white p-4 flex justify-between items-center"><h3 className="font-bold text-white">تعديل البند</h3><button onClick={() => setEditingBoqItem(null)} className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center"><i className="fa-solid fa-times"></i></button></div>
-                                        <div className="p-4 space-y-3">
+                                        <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0"><h3 className="font-bold text-white">تعديل البند</h3><button onClick={() => { setViewingBoqReport(null); setEditingBoqItem(null); }} className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center"><i className="fa-solid fa-times"></i></button></div>
+                                        <div className="p-4 space-y-3 overflow-y-auto flex-1">
                                             <div className="flex gap-2"><div className="w-24"><label className="block text-xs font-bold mb-1">رقم</label><input type="text" className="w-full p-2 border rounded-lg" value={editingBoqItem.itemCode} onChange={(e) => setEditingBoqItem({...editingBoqItem, itemCode: e.target.value})} /></div><div className="w-20"><label className="block text-xs font-bold mb-1">الوحدة</label><input type="text" className="w-full p-2 border rounded-lg" value={editingBoqItem.unit} onChange={(e) => setEditingBoqItem({...editingBoqItem, unit: e.target.value})} /></div><div className="flex-1"><label className="block text-xs font-bold mb-1">الفئة</label><input type="number" className="w-full p-2 border rounded-lg" value={editingBoqItem.unitPrice} onChange={(e) => setEditingBoqItem({...editingBoqItem, unitPrice: Number(e.target.value)})} /></div></div>
                                             <div><label className="block text-xs font-bold mb-1">بيان الأعمال</label><textarea className="w-full p-3 border rounded-lg h-24 resize-none text-sm" value={editingBoqItem.description} onChange={(e) => setEditingBoqItem({...editingBoqItem, description: e.target.value})}></textarea></div>
                                             <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-100"><div className="bg-slate-50 p-2 rounded-lg"><label className="block text-xs font-bold text-center">الكمية التعاقدية</label><input type="number" className="w-full p-2 border rounded-lg text-center" value={editingBoqItem.quantity} onChange={(e) => setEditingBoqItem({...editingBoqItem, quantity: Number(e.target.value)})} /></div><div className="bg-green-50 p-2 rounded-lg"><label className="block text-xs font-bold text-green-700 text-center">الكمية المنفذة</label><input type="number" className="w-full p-2 border rounded-lg text-center font-bold text-green-800" value={isNaN(Number(editingBoqItem.executedQuantity)) ? 0 : editingBoqItem.executedQuantity} onChange={(e) => setEditingBoqItem({...editingBoqItem, executedQuantity: Number(e.target.value)})} /></div></div>
                                         </div>
-                                        <div className="p-4 bg-slate-50 border-t flex justify-between gap-2"><button type="button" onClick={() => setShowBoqDeleteConfirm(true)} className="px-4 py-2 bg-red-100 text-red-600 rounded-xl font-bold"><i className="fa-solid fa-trash"></i></button><button type="button" onClick={addItemBelow} className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-xl font-bold"><i className="fa-solid fa-plus"></i> إضافة أسفل</button><button type="button" onClick={saveBOQItemEdit} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl font-bold">حفظ التعديلات</button></div>
+                                        <div className="p-4 bg-slate-50 border-t flex justify-between gap-2 shrink-0"><button type="button" onClick={() => setShowBoqDeleteConfirm(true)} className="px-4 py-2 bg-red-100 text-red-600 rounded-xl font-bold"><i className="fa-solid fa-trash"></i></button><button type="button" onClick={addItemBelow} className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-xl font-bold"><i className="fa-solid fa-plus"></i> إضافة أسفل</button><button type="button" onClick={saveBOQItemEdit} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl font-bold">حفظ التعديلات</button></div>
                                     </div>
+                                </div>
+                            )}
+
+                            {/* Saved BOQ Item Sub-Report Viewer Modal (FULL SCREEN + Interactive Column Widths) */}
+                            {viewingBoqReport && (viewingBoqReportItem || editingBoqItem) && (
+                                <div className="fixed inset-0 z-[1750] bg-slate-900 flex flex-col w-screen h-screen overflow-hidden animate-fade-in">
+                                    {/* Modal Header */}
+                                    <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between gap-2.5 shrink-0 relative border-b border-slate-800 shadow-lg">
+                                        {/* Right side: Title + Status */}
+                                        <div className="min-w-0 flex-1">
+                                            <h3 className="font-bold text-xs sm:text-base text-white truncate">{viewingBoqReport.title}</h3>
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                                                    <i className="fa-solid fa-cloud-arrow-up"></i> محفوظ في زر البند
+                                                </span>
+                                                {!isDirectEditingReport && (
+                                                    <span className="text-[10px] text-slate-400 hidden sm:inline-block">
+                                                        • انقر على رأس أي عمود لتعديل عرضه بالـ %
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Left side: Icon buttons (Auto-Save Status + Finish Edit + 3-dots + Close) */}
+                                        <div className="flex items-center gap-1.5 sm:gap-2 relative shrink-0">
+                                            {/* Auto-Save & Direct Edit Status Icon */}
+                                            {isDirectEditingReport && (
+                                                <>
+                                                    {reportAutoSaveStatus === 'saving' && (
+                                                        <div 
+                                                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-center shrink-0 transition"
+                                                            title="جاري الحفظ تلقائياً..."
+                                                        >
+                                                            <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                                        </div>
+                                                    )}
+                                                    {reportAutoSaveStatus === 'saved' && (
+                                                        <div 
+                                                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center shrink-0 transition"
+                                                            title="تم الحفظ تلقائياً ✓"
+                                                        >
+                                                            <i className="fa-solid fa-check-double text-xs"></i>
+                                                        </div>
+                                                    )}
+                                                    {reportAutoSaveStatus === 'idle' && (
+                                                        <div 
+                                                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 flex items-center justify-center shrink-0 transition"
+                                                            title="وضع التعديل المباشر مفعّل (انقر على أي نص أو خلية للتعديل)"
+                                                        >
+                                                            <i className="fa-solid fa-pen-ruler text-xs"></i>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Finish Edit Button (Icon Only) */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setIsDirectEditingReport(false); handleReportDirectBlur(); }}
+                                                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition border border-emerald-400 shadow-sm shrink-0"
+                                                        title="إنهاء وضع التعديل والعودة للقراءة"
+                                                    >
+                                                        <i className="fa-solid fa-check text-sm font-bold"></i>
+                                                    </button>
+                                                </>
+                                            )}
+
+                                            {/* 3-dots button */}
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsBoqReportMenuOpen(!isBoqReportMenuOpen)}
+                                                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition text-xs border ${
+                                                    isBoqReportMenuOpen 
+                                                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg ring-2 ring-indigo-400/50' 
+                                                        : isDirectEditingReport
+                                                            ? 'bg-indigo-500/30 border-indigo-400 text-indigo-200'
+                                                            : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
+                                                }`}
+                                                title="خيارات وإجراءات التقرير"
+                                            >
+                                                {generatingBoqReportInfo?.type === viewingBoqReport.type ? (
+                                                    <i className="fa-solid fa-circle-notch fa-spin text-xs text-yellow-300"></i>
+                                                ) : (
+                                                    <i className="fa-solid fa-ellipsis-vertical text-base"></i>
+                                                )}
+                                            </button>
+
+                                            {/* Close button */}
+                                            <button
+                                                type="button"
+                                                onClick={() => { 
+                                                    setViewingBoqReport(null); 
+                                                    setViewingBoqReportItem(null); 
+                                                    setIsBoqReportMenuOpen(false); 
+                                                    setEditingColumnModal(null); 
+                                                    setIsDirectEditingReport(false);
+                                                    setReportAutoSaveStatus('idle');
+                                                }}
+                                                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition text-xs border border-white/10 shrink-0"
+                                                title="إغلاق التقرير"
+                                            >
+                                                <i className="fa-solid fa-times text-sm"></i>
+                                            </button>
+
+                                            {/* Dropdown Menu */}
+                                            {isBoqReportMenuOpen && (
+                                                <>
+                                                    <div
+                                                        className="fixed inset-0 z-[1800]"
+                                                        onClick={() => setIsBoqReportMenuOpen(false)}
+                                                    ></div>
+                                                    <div className="absolute left-0 top-12 w-64 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[1850] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                                        <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                                            <span className="text-[10px] font-bold text-slate-400">خيارات التقرير</span>
+                                                            <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                                        </div>
+
+                                                        {/* Direct In-Place Edit Button */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsBoqReportMenuOpen(false);
+                                                                setIsDirectEditingReport(!isDirectEditingReport);
+                                                            }}
+                                                            disabled={Boolean(generatingBoqReportInfo)}
+                                                            className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right ${
+                                                                isDirectEditingReport 
+                                                                    ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400' 
+                                                                    : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                                            }`}
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                                                <i className={`fa-solid ${isDirectEditingReport ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                                            </div>
+                                                            <div className="flex-1 text-right">
+                                                                <div>{isDirectEditingReport ? 'إنهاء التعديل المباشر' : 'تعديل مباشر على التقرير والجداول'}</div>
+                                                                <div className="text-[10px] text-indigo-200 font-normal">
+                                                                    {isDirectEditingReport ? 'العودة لوضع القراءة' : 'تعديل فوري وحفظ تلقائي'}
+                                                                </div>
+                                                            </div>
+                                                        </button>
+
+                                                        {/* Print Button */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsBoqReportMenuOpen(false);
+                                                                handlePrintBoqItemReport(viewingBoqReport);
+                                                            }}
+                                                            disabled={Boolean(generatingBoqReportInfo)}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-print text-xs"></i>
+                                                            </div>
+                                                            <span>طباعة التقرير (PDF)</span>
+                                                        </button>
+
+                                                        {/* Open in Letter Editor */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsBoqReportMenuOpen(false);
+                                                                handleOpenBoqReportInLetterEditor(viewingBoqReport);
+                                                            }}
+                                                            disabled={Boolean(generatingBoqReportInfo)}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                                            </div>
+                                                            <span>تعديل في خطاب</span>
+                                                        </button>
+
+                                                        {/* Regenerate Button */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsBoqReportMenuOpen(false);
+                                                                const currentItem = viewingBoqReportItem || editingBoqItem;
+                                                                if (currentItem) handleBoqItemReportButtonClick(currentItem, viewingBoqReport.type, true);
+                                                            }}
+                                                            disabled={Boolean(generatingBoqReportInfo)}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-amber-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-300 flex items-center justify-center shrink-0">
+                                                                {generatingBoqReportInfo?.type === viewingBoqReport.type ? (
+                                                                    <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                                                ) : (
+                                                                    <i className="fa-solid fa-rotate text-xs"></i>
+                                                                )}
+                                                            </div>
+                                                            <span>إعادة توليد بالذكاء الاصطناعي</span>
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Modal Full-Screen Content */}
+                                    <div 
+                                        ref={reportContainerRef}
+                                        onClick={handleReportContentClick}
+                                        className="flex-1 overflow-y-auto p-3 sm:p-8 bg-slate-100 relative"
+                                    >
+                                        {generatingBoqReportInfo?.type === viewingBoqReport.type && (
+                                            <div className="absolute inset-0 z-20 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+                                                <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                                                <p className="text-xs font-bold text-slate-700">جاري إعادة توليد التقرير الهندسي وحفظه في البند...</p>
+                                            </div>
+                                        )}
+
+                                        {isDirectEditingReport && (
+                                            <div className="max-w-5xl mx-auto mb-3 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-indigo-500/10 border border-indigo-200 rounded-xl p-3 flex items-center justify-between gap-3 text-xs text-indigo-900 shadow-sm animate-fade-in">
+                                                <div className="flex items-center gap-2.5">
+                                                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping shrink-0"></span>
+                                                    <span className="font-bold">وضع التعديل المباشر مفعّل:</span>
+                                                    <span className="text-slate-700">انقر على أي نص، رقم، أو خلية داخل أي جدول لتعديلها بحرية، ويتم حفظ التعديلات تلقائياً.</span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setIsDirectEditingReport(false); handleReportDirectBlur(); }}
+                                                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shrink-0"
+                                                >
+                                                    إنهاء التعديل
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        <div 
+                                            ref={reportEditableContentRef}
+                                            contentEditable={isDirectEditingReport}
+                                            suppressContentEditableWarning={true}
+                                            onInput={handleReportDirectInput}
+                                            onBlur={handleReportDirectBlur}
+                                            className={`bg-white rounded-2xl shadow p-4 sm:p-10 max-w-5xl mx-auto prose prose-sm text-slate-800 leading-relaxed report-content transition-all ${
+                                                isDirectEditingReport 
+                                                    ? 'is-editable ring-4 ring-indigo-500/20 border-2 border-indigo-400 bg-white cursor-text' 
+                                                    : 'border border-slate-200'
+                                            }`}
+                                        >
+                                            <style>{`
+                                                .report-content { font-size: 13.5px !important; color: #1e293b !important; line-height: 1.7 !important; }
+                                                .report-content .table-responsive-wrapper { width: 100% !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; margin: 14px 0 !important; border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; }
+                                                .report-content table { min-width: 680px !important; width: 100% !important; border-collapse: collapse !important; margin: 8px 0 !important; font-size: 13px !important; table-layout: auto !important; }
+                                                .report-content th, .report-content td { border: 1px solid #cbd5e1 !important; padding: 10px 14px !important; line-height: 1.6 !important; vertical-align: middle !important; word-break: normal !important; }
+                                                .report-content th { background-color: #f1f5f9 !important; color: #1e3a8a !important; font-weight: 800 !important; text-align: center !important; cursor: pointer !important; position: relative !important; user-select: none !important; transition: all 0.15s ease !important; }
+                                                .report-content th:hover { background-color: #e0e7ff !important; color: #3730a3 !important; }
+                                                .report-content td { text-align: right; }
+                                                .report-content td:first-child, .report-content th:first-child { width: 50px !important; text-align: center !important; white-space: nowrap !important; }
+                                                .report-content h2, .report-content h3, .report-content h4 { color: #1e3a8a !important; font-weight: 800 !important; margin-top: 16px !important; margin-bottom: 8px !important; }
+                                                .report-content.is-editable td:focus,
+                                                .report-content.is-editable th:focus,
+                                                .report-content.is-editable p:focus,
+                                                .report-content.is-editable h2:focus,
+                                                .report-content.is-editable h3:focus,
+                                                .report-content.is-editable h4:focus,
+                                                .report-content.is-editable div:focus {
+                                                    outline: 2px dashed #6366f1 !important;
+                                                    background-color: #f5f3ff !important;
+                                                    border-radius: 4px;
+                                                }
+                                            `}</style>
+                                            <div dangerouslySetInnerHTML={{ __html: enhanceReportHtml(viewingBoqReport.content) }} />
+                                        </div>
+                                    </div>
+
+                                    {/* Modal to adjust column width percentage */}
+                                    {editingColumnModal && (
+                                        <div className="fixed inset-0 z-[1900] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                                            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-scale-in text-slate-800">
+                                                {/* Header */}
+                                                <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+                                                    <div className="flex items-center gap-2.5">
+                                                        <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                                                            <i className="fa-solid fa-table-columns text-sm"></i>
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="font-bold text-sm text-white">تعديل عرض العمود</h4>
+                                                            <p className="text-[11px] text-slate-400 truncate max-w-[220px]">
+                                                                العمود: <span className="text-amber-300 font-bold">{editingColumnModal.columnTitle}</span>
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setEditingColumnModal(null)}
+                                                        className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center text-white transition"
+                                                    >
+                                                        <i className="fa-solid fa-times"></i>
+                                                    </button>
+                                                </div>
+
+                                                {/* Body */}
+                                                <div className="p-5 space-y-4">
+                                                    <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 flex items-center justify-between">
+                                                        <span className="text-xs font-bold text-indigo-900">نسبة عرض العمود من الجدول:</span>
+                                                        <span className="text-lg font-black text-indigo-700 bg-white px-3 py-1 rounded-lg border border-indigo-300 shadow-sm">
+                                                            {customPercentInput}%
+                                                        </span>
+                                                    </div>
+
+                                                    {/* Range Slider */}
+                                                    <div>
+                                                        <div className="flex justify-between text-xs text-slate-500 font-bold mb-1">
+                                                            <span>5% (ضيق)</span>
+                                                            <span>تمرير لتغيير النسبة</span>
+                                                            <span>80% (عريض جداً)</span>
+                                                        </div>
+                                                        <input
+                                                            type="range"
+                                                            min="5"
+                                                            max="80"
+                                                            step="1"
+                                                            value={customPercentInput}
+                                                            onChange={(e) => setCustomPercentInput(Number(e.target.value))}
+                                                            className="w-full accent-indigo-600 cursor-pointer h-2 bg-slate-200 rounded-lg"
+                                                        />
+                                                    </div>
+
+                                                    {/* Direct Number Input */}
+                                                    <div className="flex items-center gap-2">
+                                                        <label className="text-xs font-bold text-slate-700 shrink-0">أو كتابة النسبة يدوياً:</label>
+                                                        <div className="flex items-center gap-1 border border-slate-300 rounded-lg px-2 py-1 bg-white flex-1">
+                                                            <input
+                                                                type="number"
+                                                                min="5"
+                                                                max="80"
+                                                                value={customPercentInput}
+                                                                onChange={(e) => setCustomPercentInput(Math.max(5, Math.min(80, Number(e.target.value))))}
+                                                                className="w-full text-center font-bold text-slate-900 outline-none text-sm"
+                                                            />
+                                                            <span className="text-xs font-bold text-slate-500">%</span>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Quick Presets */}
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 mb-1.5">نسب مقترحة سريعة:</label>
+                                                        <div className="grid grid-cols-4 gap-1.5">
+                                                            {[
+                                                                { label: '8% (أرقام)', val: 8 },
+                                                                { label: '12% (وحدات)', val: 12 },
+                                                                { label: '20% (عادي)', val: 20 },
+                                                                { label: '30% (متوسط)', val: 30 },
+                                                                { label: '40% (توصيف)', val: 40 },
+                                                                { label: '50% (نص عريض)', val: 50 },
+                                                                { label: '60% (بيان كبير)', val: 60 },
+                                                                { label: 'تلقائي Auto', val: 0 },
+                                                            ].map((preset, idx) => (
+                                                                <button
+                                                                    key={idx}
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        if (preset.val === 0) {
+                                                                            applyColumnWidth(editingColumnModal.tableIndex, editingColumnModal.columnIndex, 'auto');
+                                                                        } else {
+                                                                            setCustomPercentInput(preset.val);
+                                                                        }
+                                                                    }}
+                                                                    className={`py-1.5 px-2 rounded-lg text-[11px] font-bold border transition ${
+                                                                        customPercentInput === preset.val
+                                                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                                                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                                                                    }`}
+                                                                >
+                                                                    {preset.label}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-800 flex items-start gap-2">
+                                                        <i className="fa-solid fa-lightbulb text-amber-600 mt-0.5"></i>
+                                                        <span>سيتم تطبيق هذه النسبة على هذا العمود في كامل الجدول وحفظها تلقائياً في التقرير.</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Footer */}
+                                                <div className="p-4 bg-slate-50 border-t flex justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setEditingColumnModal(null)}
+                                                        className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-200 text-slate-700 hover:bg-slate-300 transition"
+                                                    >
+                                                        إلغاء
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            applyColumnWidth(editingColumnModal.tableIndex, editingColumnModal.columnIndex, customPercentInput);
+                                                        }}
+                                                        className="px-5 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition shadow flex items-center gap-1.5"
+                                                    >
+                                                        <i className="fa-solid fa-check"></i>
+                                                        <span>تطبيق وحفظ ({customPercentInput}%)</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -3304,133 +4298,182 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     </div>
                                 </div>
 
-                                {/* 2. BOQ Items List */}
-                                <div className="space-y-2.5">
+                                {/* 2. BOQ Items List - Grouped by BOQ (مقسمة طبقا للمقايسات) */}
+                                <div className="space-y-3">
                                     <div className="flex items-center justify-between px-1">
                                         <h4 className="text-xs font-black text-slate-700 flex items-center gap-1.5">
                                             <i className="fa-solid fa-list-check text-emerald-600"></i>
-                                            <span>بنود الأعمال والكميات المنفذة</span>
+                                            <span>بنود الأعمال والكميات المنفذة (مقسمة طبقاً للمقايسات)</span>
                                         </h4>
                                         <span className="text-[10px] font-bold text-slate-500">يمكنك تعديل الكمية الحالية أو الإجمالية لأي بند</span>
                                     </div>
 
-                                    {smartIpcDraftItems.map((item, idx) => {
-                                        const itemLogs = item.boqItemId ? (logsByBoqItemId.get(item.boqItemId) || []) : [];
-                                        const isVisibleInFilter = smartIpcShowAllBoq || (item.totalQuantity || 0) > 0 || (item.currQuantity || 0) > 0 || itemLogs.length > 0;
-                                        if (!isVisibleInFilter) return null;
+                                    {(() => {
+                                        const groupedDrafts: {
+                                            batchName: string;
+                                            entries: { item: PaymentItem; idx: number; matchedBoq?: BOQItem; itemLogs: ProjectLog[] }[];
+                                            subtotalValue: number;
+                                        }[] = [];
+                                        const draftGroupIdx = new Map<string, number>();
 
-                                        const matchedBoq = item.boqItemId ? masterData.boqItems.find(b => b.id === item.boqItemId) : undefined;
-                                        const isOverContract = (item.contractQuantity || 0) > 0 && (item.totalQuantity || 0) > (item.contractQuantity || 0);
+                                        smartIpcDraftItems.forEach((item, idx) => {
+                                            const itemLogs = item.boqItemId ? (logsByBoqItemId.get(item.boqItemId) || []) : [];
+                                            const isVisibleInFilter = smartIpcShowAllBoq || (item.totalQuantity || 0) > 0 || (item.currQuantity || 0) > 0 || itemLogs.length > 0;
+                                            if (!isVisibleInFilter) return;
 
-                                        return (
-                                            <div
-                                                key={item.boqItemId || idx}
-                                                className={`bg-white rounded-2xl p-3 border-2 transition shadow-xs ${
-                                                    (item.currQuantity || 0) > 0
-                                                        ? 'border-emerald-400 bg-emerald-50/15'
-                                                        : (item.totalQuantity || 0) > 0
-                                                        ? 'border-blue-200'
-                                                        : 'border-slate-200'
-                                                }`}
-                                            >
-                                                <div className="flex flex-col gap-2 mb-2.5 border-b border-slate-100 pb-2.5">
-                                                    {/* Row 1: Item Number & BOQ Name on one row + Quick Actions */}
-                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                                                        <div className="flex items-center gap-1.5 min-w-0">
-                                                            <span className="bg-slate-900 text-white font-mono font-bold text-[11px] px-2.5 py-1 rounded-lg shrink-0">
-                                                                بند {item.itemCode}
-                                                            </span>
-                                                            {item.batchName && (
-                                                                <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 truncate">
-                                                                    {item.batchName}
-                                                                </span>
-                                                            )}
+                                            const matchedBoq = item.boqItemId ? masterData.boqItems.find(b => b.id === item.boqItemId) : undefined;
+                                            const batchName = (item.batchName || matchedBoq?.batchName || 'المقايسة الأساسية').trim() || 'المقايسة الأساسية';
+
+                                            if (!draftGroupIdx.has(batchName)) {
+                                                draftGroupIdx.set(batchName, groupedDrafts.length);
+                                                groupedDrafts.push({
+                                                    batchName,
+                                                    entries: [],
+                                                    subtotalValue: 0
+                                                });
+                                            }
+                                            const gIndex = draftGroupIdx.get(batchName)!;
+                                            groupedDrafts[gIndex].entries.push({ item, idx, matchedBoq, itemLogs });
+                                            groupedDrafts[gIndex].subtotalValue += Number(item.totalValue) || 0;
+                                        });
+
+                                        return groupedDrafts.map((group, gIdx) => (
+                                            <div key={gIdx} className="bg-slate-200/60 rounded-2xl border-2 border-indigo-200 overflow-hidden shadow-xs">
+                                                {/* BOQ Group Header */}
+                                                <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-900 text-white px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <div className="w-7 h-7 rounded-lg bg-white/15 text-amber-300 flex items-center justify-center shrink-0">
+                                                            <i className="fa-solid fa-layer-group text-xs"></i>
                                                         </div>
-
-                                                        <div className="flex items-center gap-1.5 shrink-0">
-                                                            {matchedBoq && itemLogs.length > 0 && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setViewingBoqLogsItem(matchedBoq)}
-                                                                    className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-900 border border-indigo-300 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
-                                                                >
-                                                                    <i className="fa-solid fa-camera text-indigo-600"></i>
-                                                                    <span>إثبات اليوميات ({itemLogs.length})</span>
-                                                                </button>
-                                                            )}
-                                                            {(item.contractQuantity || 0) > 0 && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleSmartDraftItemChange(idx, 'totalQuantity', item.contractQuantity)}
-                                                                    className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg text-[10px] font-bold transition"
-                                                                    title="تعيين الإجمالي التراكمي = 100% من الكمية التعاقدية"
-                                                                >
-                                                                    100% تنفيذ
-                                                                </button>
-                                                            )}
-                                                        </div>
+                                                        <span className="font-black text-xs sm:text-sm text-white truncate">
+                                                            {group.batchName}
+                                                        </span>
+                                                        <span className="bg-white/15 text-indigo-100 px-2.5 py-0.5 rounded-full text-[10px] font-bold shrink-0">
+                                                            {group.entries.length} بند
+                                                        </span>
                                                     </div>
-
-                                                    {/* Row 2: Full Item Description (منطوق البند) in its own row */}
-                                                    <div className="w-full text-xs sm:text-sm font-bold text-slate-800 leading-relaxed bg-slate-50/80 px-3 py-2 rounded-xl border border-slate-100 break-words">
-                                                        {item.description}
+                                                    <div className="bg-white/10 border border-white/20 px-3 py-1 rounded-xl text-[11px] font-bold text-white shrink-0">
+                                                        <span className="text-indigo-200 ml-1">إجمالي المقايسة:</span>
+                                                        <span className="font-mono font-black text-amber-300">{group.subtotalValue.toLocaleString()} ج.م</span>
                                                     </div>
                                                 </div>
 
-                                                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 items-center text-center">
-                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
-                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">التعاقدية ({item.unit})</span>
-                                                        <span className="font-mono font-bold text-xs text-slate-800">{(item.contractQuantity || 0).toLocaleString()}</span>
-                                                    </div>
-                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
-                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">السابقة</span>
-                                                        <input
-                                                            type="number"
-                                                            step="any"
-                                                            value={item.prevQuantity ?? 0}
-                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'prevQuantity', e.target.value)}
-                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-blue-500"
-                                                        />
-                                                    </div>
-                                                    <div className="bg-emerald-50 rounded-xl p-1.5 border border-emerald-300">
-                                                        <span className="text-[9px] font-black text-emerald-800 block mb-0.5">الحالية (الفترة)</span>
-                                                        <input
-                                                            type="number"
-                                                            step="any"
-                                                            value={item.currQuantity ?? 0}
-                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'currQuantity', e.target.value)}
-                                                            className="w-full bg-white border border-emerald-400 rounded-lg text-center font-mono font-black text-xs text-emerald-900 py-1 outline-none focus:ring-1 focus:ring-emerald-500"
-                                                        />
-                                                    </div>
-                                                    <div className={`rounded-xl p-1.5 border ${isOverContract ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
-                                                        <span className="text-[9px] font-black text-blue-800 block mb-0.5">الإجمالية التراكمية</span>
-                                                        <input
-                                                            type="number"
-                                                            step="any"
-                                                            value={item.totalQuantity ?? 0}
-                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'totalQuantity', e.target.value)}
-                                                            className="w-full bg-white border border-blue-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 py-1 outline-none focus:ring-1 focus:ring-blue-500"
-                                                        />
-                                                    </div>
-                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
-                                                        <span className="text-[9px] font-bold text-slate-600 block mb-0.5">نسبة الصرف %</span>
-                                                        <input
-                                                            type="number"
-                                                            min={0}
-                                                            max={100}
-                                                            value={item.completionRatio ?? 100}
-                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'completionRatio', e.target.value)}
-                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-indigo-500"
-                                                        />
-                                                    </div>
-                                                    <div className="bg-indigo-950 text-white rounded-xl p-1.5 border border-indigo-900 flex flex-col justify-center h-full">
-                                                        <span className="text-[8px] text-indigo-300 block mb-0.5">القيمة ({item.unitPrice?.toLocaleString()} ج)</span>
-                                                        <span className="font-mono font-black text-xs text-amber-300">{(item.totalValue || 0).toLocaleString()}</span>
-                                                    </div>
+                                                {/* Group Items */}
+                                                <div className="p-2.5 space-y-2.5">
+                                                    {group.entries.map(({ item, idx, matchedBoq, itemLogs }) => {
+                                                        const isOverContract = (item.contractQuantity || 0) > 0 && (item.totalQuantity || 0) > (item.contractQuantity || 0);
+
+                                                        return (
+                                                            <div
+                                                                key={item.boqItemId || idx}
+                                                                className={`bg-white rounded-2xl p-3 border-2 transition shadow-xs ${
+                                                                    (item.currQuantity || 0) > 0
+                                                                        ? 'border-emerald-400 bg-emerald-50/15'
+                                                                        : (item.totalQuantity || 0) > 0
+                                                                        ? 'border-blue-200'
+                                                                        : 'border-slate-200'
+                                                                }`}
+                                                            >
+                                                                <div className="flex flex-col gap-2 mb-2.5 border-b border-slate-100 pb-2.5">
+                                                                    {/* Row 1: Item Number & BOQ Name on one row + Quick Actions */}
+                                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                                            <span className="bg-slate-900 text-white font-mono font-bold text-[11px] px-2.5 py-1 rounded-lg shrink-0">
+                                                                                بند {item.itemCode}
+                                                                            </span>
+                                                                            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 truncate">
+                                                                                {group.batchName}
+                                                                            </span>
+                                                                        </div>
+
+                                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                                            {matchedBoq && itemLogs.length > 0 && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => setViewingBoqLogsItem(matchedBoq)}
+                                                                                    className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-900 border border-indigo-300 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                                                                                >
+                                                                                    <i className="fa-solid fa-camera text-indigo-600"></i>
+                                                                                    <span>إثبات اليوميات ({itemLogs.length})</span>
+                                                                                </button>
+                                                                            )}
+                                                                            {(item.contractQuantity || 0) > 0 && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleSmartDraftItemChange(idx, 'totalQuantity', item.contractQuantity)}
+                                                                                    className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg text-[10px] font-bold transition"
+                                                                                    title="تعيين الإجمالي التراكمي = 100% من الكمية التعاقدية"
+                                                                                >
+                                                                                    100% تنفيذ
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Row 2: Full Item Description (منطوق البند) in its own row */}
+                                                                    <div className="w-full text-xs sm:text-sm font-bold text-slate-800 leading-relaxed bg-slate-50/80 px-3 py-2 rounded-xl border border-slate-100 break-words">
+                                                                        {item.description}
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 items-center text-center">
+                                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">التعاقدية ({item.unit})</span>
+                                                                        <span className="font-mono font-bold text-xs text-slate-800">{(item.contractQuantity || 0).toLocaleString()}</span>
+                                                                    </div>
+                                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                                        <span className="text-[9px] font-bold text-slate-500 block mb-0.5">السابقة</span>
+                                                                        <input
+                                                                            type="number"
+                                                                            step="any"
+                                                                            value={item.prevQuantity ?? 0}
+                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'prevQuantity', e.target.value)}
+                                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-blue-500"
+                                                                        />
+                                                                    </div>
+                                                                    <div className="bg-emerald-50 rounded-xl p-1.5 border border-emerald-300">
+                                                                        <span className="text-[9px] font-black text-emerald-800 block mb-0.5">الحالية (الفترة)</span>
+                                                                        <input
+                                                                            type="number"
+                                                                            step="any"
+                                                                            value={item.currQuantity ?? 0}
+                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'currQuantity', e.target.value)}
+                                                                            className="w-full bg-white border border-emerald-400 rounded-lg text-center font-mono font-black text-xs text-emerald-900 py-1 outline-none focus:ring-1 focus:ring-emerald-500"
+                                                                        />
+                                                                    </div>
+                                                                    <div className={`rounded-xl p-1.5 border ${isOverContract ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
+                                                                        <span className="text-[9px] font-black text-blue-800 block mb-0.5">الإجمالية التراكمية</span>
+                                                                        <input
+                                                                            type="number"
+                                                                            step="any"
+                                                                            value={item.totalQuantity ?? 0}
+                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'totalQuantity', e.target.value)}
+                                                                            className="w-full bg-white border border-blue-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 py-1 outline-none focus:ring-1 focus:ring-blue-500"
+                                                                        />
+                                                                    </div>
+                                                                    <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
+                                                                        <span className="text-[9px] font-bold text-slate-600 block mb-0.5">نسبة الصرف %</span>
+                                                                        <input
+                                                                            type="number"
+                                                                            min={0}
+                                                                            max={100}
+                                                                            value={item.completionRatio ?? 100}
+                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'completionRatio', e.target.value)}
+                                                                            className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-indigo-500"
+                                                                        />
+                                                                    </div>
+                                                                    <div className="bg-indigo-950 text-white rounded-xl p-1.5 border border-indigo-900 flex flex-col justify-center h-full">
+                                                                        <span className="text-[8px] text-indigo-300 block mb-0.5">القيمة ({item.unitPrice?.toLocaleString()} ج)</span>
+                                                                        <span className="font-mono font-black text-xs text-amber-300">{(item.totalValue || 0).toLocaleString()}</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
                                             </div>
-                                        );
-                                    })}
+                                        ));
+                                    })()}
                                 </div>
 
                                 {/* 3. Stacked Deductions, Discounts & Taxes Section (توحيد التنسيق والشكل) */}

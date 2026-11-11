@@ -457,7 +457,75 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <Layout navActions={<div className="flex gap-2"><button onClick={() => api.signOut()} className="bg-white/10 text-white px-3 py-1.5 rounded-lg text-xs hover:bg-white/20 transition" title="تسجيل الخروج"><i className="fa-solid fa-sign-out-alt"></i></button></div>}>
+    <Layout
+      navActions={
+        <div className="space-y-1.5">
+          <button
+            onClick={openCreateModal}
+            className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 transition text-xs font-bold text-white"
+            title="إضافة مشروع جديد"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center">
+                <i className="fa-solid fa-plus text-xs"></i>
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-bold text-white">إضافة مشروع جديد</div>
+                <div className="text-[10px] text-blue-300">إنشاء ملف مشروع هندسي جديد</div>
+              </div>
+            </div>
+          </button>
+
+          <button
+            onClick={handleExportBackup}
+            className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold text-white"
+            title="تصدير نسخة احتياطية من جميع المشروعات"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-slate-800 text-blue-400 flex items-center justify-center">
+                <i className="fa-solid fa-file-export text-xs"></i>
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-bold text-white">تصدير نسخة احتياطية</div>
+                <div className="text-[10px] text-slate-400">حفظ بيانات جميع المشروعات</div>
+              </div>
+            </div>
+          </button>
+
+          <button
+            onClick={handleImportBackup}
+            className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold text-white"
+            title="استيراد نسخة احتياطية من ملف"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center">
+                <i className="fa-solid fa-file-import text-xs"></i>
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-bold text-white">استيراد نسخة احتياطية</div>
+                <div className="text-[10px] text-slate-400">استعادة مشروعات من ملف خارجي</div>
+              </div>
+            </div>
+          </button>
+
+          <button
+            onClick={() => api.signOut()}
+            className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-red-500/20 text-red-300 transition text-xs font-bold"
+            title="تسجيل الخروج"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-slate-800 text-red-400 flex items-center justify-center">
+                <i className="fa-solid fa-sign-out-alt text-xs"></i>
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-bold text-red-300">تسجيل الخروج</div>
+                <div className="text-[10px] text-slate-400">إنهاء الجلسة الحالية</div>
+              </div>
+            </div>
+          </button>
+        </div>
+      }
+    >
       {/* Full Screen Map Overlay - Rendered when viewMode is 'map' */}
       {viewMode === 'map' && (
           <div className="fixed inset-0 z-[2000] bg-slate-900 animate-fade-in flex flex-col">
@@ -538,31 +606,6 @@ const Dashboard: React.FC = () => {
                             <i className="fa-solid fa-building-columns text-blue-600"></i>
                             {searchQuery ? 'نتائج البحث' : 'مشاريعك الحالية'}
                         </h3>
-                        {!searchQuery && (
-                            <div className="flex items-center gap-1.5">
-                                <button 
-                                    onClick={openCreateModal} 
-                                    className="bg-blue-600 text-white hover:bg-blue-700 transition-colors rounded-xl px-3 py-1.5 text-[10px] font-bold shadow-md flex items-center gap-1.5"
-                                    title="إضافة مشروع جديد"
-                                >
-                                    <i className="fa-solid fa-plus"></i> إضافة مشروع جديد
-                                </button>
-                                <button 
-                                    onClick={handleExportBackup} 
-                                    className="bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors rounded-xl px-2.5 py-1.5 text-[10px] font-bold border border-slate-200 shadow-sm flex items-center gap-1"
-                                    title="تصدير نسخة احتياطية من جميع المشروعات"
-                                >
-                                    <i className="fa-solid fa-file-export text-blue-600"></i> تصدير
-                                </button>
-                                <button 
-                                    onClick={handleImportBackup} 
-                                    className="bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors rounded-xl px-2.5 py-1.5 text-[10px] font-bold border border-slate-200 shadow-sm flex items-center gap-1"
-                                    title="استيراد نسخة احتياطية من ملف"
-                                >
-                                    <i className="fa-solid fa-file-import text-teal-600"></i> استيراد
-                                </button>
-                            </div>
-                        )}
                     </div>
                 </div>
 

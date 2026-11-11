@@ -198,7 +198,20 @@ export interface PrintOptions {
     showDate?: boolean;
     showRef?: boolean;
     showFooter?: boolean;
+    headerColor?: string;
+    footerColor?: string;
 }
+
+const isLightColor = (hex?: string): boolean => {
+    if (!hex || !hex.startsWith('#')) return false;
+    const clean = hex.replace('#', '');
+    const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+    if (full.length !== 6) return false;
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 165;
+};
 
 export const printService = {
     printHTML: (contentHTML: string, title: string = 'مستند هندسي', options: { marginCm?: number } = {}) => {
@@ -294,7 +307,7 @@ export const printService = {
     printReport: (bodyContent: string, reportTitle: string, projectRef?: string, options: PrintOptions = {}) => {
         const dateStr = new Date().toLocaleDateString('en-CA'); 
         const refStr = projectRef || `AI-${Date.now().toString().slice(-6)}`;
-        const subtitle = options.subtitle || "تقرير استشاري";
+        const subtitle = options.subtitle || "تقرير هندسي استشاري";
         const footerText = options.footerText || "تم إعداد هذا التقرير بواسطة الذكاء الاصطناعي - تحت إشراف المهندس / وحيد سماحة";
         const dateLabel = options.labels?.date || "Date:";
         const refLabel = options.labels?.ref || "Ref:";
@@ -305,35 +318,39 @@ export const printService = {
             showSubtitle = true,
             showDate = true,
             showRef = true,
-            showFooter = true
+            showFooter = true,
+            headerColor = '#1e3a8a',
+            footerColor = '#ffffff'
         } = options;
 
         const paddingStyle = options.margins ? `padding: ${options.margins.y} ${options.margins.x};` : '';
+        const headerTextColor = isLightColor(headerColor) ? '#0f172a' : '#ffffff';
+        const footerTextColor = isLightColor(footerColor) ? '#000000' : '#ffffff';
 
         let headerHTML = '';
         if (showHeader && (showTitle || showSubtitle || showDate || showRef)) {
             let titleBlock = '';
             if (showTitle || showSubtitle) {
                 titleBlock = `
-                    <div>
-                        ${showTitle ? `<h1 style="margin:0; font-size: 32px;">${reportTitle}</h1>` : ''}
-                        ${showSubtitle ? `<p style="margin:8px 0 0 0; font-size: 18px;">${subtitle}</p>` : ''}
+                    <div style="color: ${headerTextColor} !important;">
+                        ${showTitle ? `<h1 style="margin:0; font-size: 32px; color: ${headerTextColor} !important;">${reportTitle}</h1>` : ''}
+                        ${showSubtitle ? `<p style="margin:8px 0 0 0; font-size: 18px; color: ${headerTextColor} !important;">${subtitle}</p>` : ''}
                     </div>
                 `;
             }
             let metaBlock = '';
             if (showDate || showRef) {
                 metaBlock = `
-                    <div style="text-align: left; font-size: 15px;">
-                        ${showDate ? `<p style="margin:0;" dir="auto"><strong>${dateLabel}</strong> ${dateStr}</p>` : ''}
-                        ${showRef ? `<p style="margin:0;" dir="auto"><strong>${refLabel}</strong> ${refStr}</p>` : ''}
+                    <div style="text-align: left; font-size: 15px; color: ${headerTextColor} !important;">
+                        ${showDate ? `<p style="margin:0; color: ${headerTextColor} !important;" dir="auto"><strong style="color: ${headerTextColor} !important;">${dateLabel}</strong> ${dateStr}</p>` : ''}
+                        ${showRef ? `<p style="margin:0; color: ${headerTextColor} !important;" dir="auto"><strong style="color: ${headerTextColor} !important;">${refLabel}</strong> ${refStr}</p>` : ''}
                     </div>
                 `;
             }
-            headerHTML = `<div class="print-header">${titleBlock}${metaBlock}</div>`;
+            headerHTML = `<div class="print-header" style="background-color: ${headerColor} !important; color: ${headerTextColor} !important;">${titleBlock}${metaBlock}</div>`;
         }
 
-        const footerHTML = showFooter ? `<div class="print-footer" dir="auto">${footerText}</div>` : '';
+        const footerHTML = showFooter ? `<div class="print-footer" style="background-color: ${footerColor} !important; color: ${footerTextColor} !important;" dir="auto">${footerText}</div>` : '';
 
         const wrappedHTML = `
             ${headerHTML}

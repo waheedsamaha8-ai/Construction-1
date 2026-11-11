@@ -96,10 +96,85 @@ const wrapTablesInHtml = (html: string) => {
 };
 
 const ArchiveFullViewer: React.FC<{ item: FileItem, onClose: () => void, onEdit: (content: string) => void }> = ({ item, onClose, onEdit }) => {
-    const [content, setContent] = useState<string>(''); const [loading, setLoading] = useState(true);
+    const [content, setContent] = useState<string>('');
+    const [loading, setLoading] = useState(true);
+    const [showActionsMenu, setShowActionsMenu] = useState(false);
     useEffect(() => { let active = true; const fetchContent = async () => { try { if (item.content) { if(active) { setContent(item.content); setLoading(false); } return; } const text = await api.getFileContent(item.id); if(active) { setContent(text); } } catch (e) { if(active) setContent('<div class="p-10 text-center text-red-500 font-bold">فشل تحميل المحتوى</div>'); } finally { if(active) setLoading(false); } }; fetchContent(); return () => { active = false; }; }, [item.id, item.content]);
     const handlePrint = () => { const bodyContent = content.replace(/<!DOCTYPE html>[\s\S]*<body>/, '').replace(/<\/body>[\s\S]*<\/html>/, ''); printService.printReport(bodyContent, item.name.replace('.html', '')); };
-    return ( <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in"><div className="bg-slate-900 text-white px-4 py-3 flex justify-between items-center shadow-md z-10 shrink-0"><div className="flex items-center gap-3"><button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button><h3 className="font-bold text-sm truncate max-w-[200px] sm:max-w-md">{item.name.replace('.html', '')}</h3></div><div className="flex gap-2"><button onClick={() => onEdit(content)} disabled={loading} className="bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm border border-white/10 disabled:opacity-50"><i className="fa-solid fa-pen-to-square"></i> <span className="hidden sm:inline">تعديل</span></button><button onClick={handlePrint} disabled={loading} className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-sm disabled:opacity-50"><i className="fa-solid fa-print"></i> <span className="hidden sm:inline">طباعة</span></button></div></div><div className="flex-1 overflow-y-auto bg-white w-full">{loading ? (<div className="h-full flex items-center justify-center"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-slate-400 font-bold">جاري تحميل المستند...</p></div></div>) : (<div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-4xl mx-auto" dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(content) }} />)}</div></div> );
+    return (
+        <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in">
+            <div className="bg-slate-900 text-white px-3 py-2.5 flex justify-between items-center shadow-md z-20 shrink-0">
+                <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1 ml-2">
+                    <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
+                        <i className="fa-solid fa-file-contract text-xs"></i>
+                    </div>
+                    <h3 className="font-bold text-xs sm:text-sm truncate max-w-[200px] sm:max-w-md">{item.name.replace('.html', '')}</h3>
+                </div>
+                <div className="flex gap-1.5 items-center relative shrink-0">
+                    <button
+                        onClick={() => setShowActionsMenu(prev => !prev)}
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${showActionsMenu ? 'bg-teal-600 text-white border-teal-400' : 'bg-white/10 hover:bg-white/20 text-white border-white/10'}`}
+                        title="خيارات المستند"
+                    >
+                        <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className="w-8 h-8 rounded-xl bg-white/10 hover:bg-red-500/80 flex items-center justify-center transition text-xs border border-white/10"
+                        title="إغلاق"
+                    >
+                        <i className="fa-solid fa-times text-xs"></i>
+                    </button>
+
+                    {showActionsMenu && (
+                        <>
+                            <div className="fixed inset-0 z-[90]" onClick={() => setShowActionsMenu(false)}></div>
+                            <div className="absolute left-0 top-10 w-52 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                <button
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        onEdit(content);
+                                    }}
+                                    disabled={loading}
+                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-indigo-400 flex items-center justify-center shrink-0">
+                                        <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                    </div>
+                                    <span>تعديل المستند</span>
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        handlePrint();
+                                    }}
+                                    disabled={loading}
+                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center shrink-0">
+                                        <i className="fa-solid fa-print text-xs"></i>
+                                    </div>
+                                    <span>طباعة المستند</span>
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-white w-full">
+                {loading ? (
+                    <div className="h-full flex items-center justify-center">
+                        <div className="flex flex-col items-center">
+                            <div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <p className="text-slate-400 font-bold">جاري تحميل المستند...</p>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-4xl mx-auto" dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(content) }} />
+                )}
+            </div>
+        </div>
+    );
 };
 const SkeletonRow = () => (<div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 animate-pulse mb-2 h-[74px]"><div className="w-12 h-12 rounded-xl bg-slate-200 shrink-0"></div><div className="flex-1 space-y-2"><div className="h-4 w-1/2 bg-slate-200 rounded"></div><div className="h-3 w-1/4 bg-slate-200 rounded"></div></div></div>);
 
@@ -688,7 +763,62 @@ export default function ProjectFolder() {
   };
 
   return (
-    <Layout title={currentFolderName} showBack={true} onBack={handleBack} actions={<div className="flex items-center gap-2 relative z-50 pointer-events-auto">{!isArchive && (<button onClick={(e) => { e.stopPropagation(); setUseGeotagging(!useGeotagging); }} className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm border transition relative ${useGeotagging ? 'bg-green-500 text-white border-green-600' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}> <i className="fa-solid fa-location-dot text-xs"></i> </button>)}<button onClick={(e) => { e.stopPropagation(); setModalMode('createFolder'); }} className="w-8 h-8 rounded-full bg-white text-orange-600 border border-orange-200 flex items-center justify-center shadow-sm hover:bg-orange-50 transition"><i className="fa-solid fa-folder-plus text-xs"></i></button>{!isArchive && (<button onClick={(e) => { e.stopPropagation(); setViewMode(viewMode === 'list' ? 'grid' : 'list'); }} className="w-8 h-8 rounded-full bg-white text-slate-700 border border-slate-200 flex items-center justify-center shadow-sm"><i className={`fa-solid ${viewMode === 'list' ? 'fa-border-all' : 'fa-list'} text-xs`}></i></button>)}</div>}>
+    <Layout
+      title={currentFolderName}
+      showBack={true}
+      onBack={handleBack}
+      actions={
+        <div className="flex items-center gap-2 relative z-50 pointer-events-auto">
+          {!isArchive && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAI(true);
+              }}
+              className="w-8 h-8 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-sm hover:shadow-indigo-500/40 transition transform active:scale-90"
+              title="المركز الاستشاري الموحد"
+            >
+              <i className="fa-solid fa-wand-magic-sparkles text-xs"></i>
+            </button>
+          )}
+          {!isArchive && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setUseGeotagging(!useGeotagging);
+              }}
+              className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm border transition relative ${
+                useGeotagging
+                  ? 'bg-green-500 text-white border-green-600'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <i className="fa-solid fa-location-dot text-xs"></i>
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setModalMode('createFolder');
+            }}
+            className="w-8 h-8 rounded-full bg-white text-orange-600 border border-orange-200 flex items-center justify-center shadow-sm hover:bg-orange-50 transition"
+          >
+            <i className="fa-solid fa-folder-plus text-xs"></i>
+          </button>
+          {!isArchive && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setViewMode(viewMode === 'list' ? 'grid' : 'list');
+              }}
+              className="w-8 h-8 rounded-full bg-white text-slate-700 border border-slate-200 flex items-center justify-center shadow-sm"
+            >
+              <i className={`fa-solid ${viewMode === 'list' ? 'fa-border-all' : 'fa-list'} text-xs`}></i>
+            </button>
+          )}
+        </div>
+      }
+    >
       
       {/* ... (Hidden Inputs) ... */}
       <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,application/rtf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
@@ -864,7 +994,7 @@ export default function ProjectFolder() {
       
       {selectedArchiveItem && <ArchiveFullViewer item={selectedArchiveItem} onClose={() => setSelectedArchiveItem(null)} onEdit={(c) => navigate(`/editor/${projectId}/${currentFolderId}`, {state:{initialContent:c}})} />}
       {previewItem && ( <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} /> )}
-      {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} onClose={() => setShowAI(false)} />}
+      {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} onClose={() => setShowAI(false)} onProjectUpdated={(updated) => setCurrentProject(updated)} />}
     </Layout>
   );
 }

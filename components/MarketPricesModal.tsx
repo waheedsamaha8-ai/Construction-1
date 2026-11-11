@@ -113,9 +113,10 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [isAiSearching, setIsAiSearching] = useState(false);
 
-    // --- Editing State ---
+    // --- Editing & Single Refresh State ---
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editForm, setEditForm] = useState<{ name: string, price: string }>({ name: '', price: '' });
+    const [refreshingItemId, setRefreshingItemId] = useState<string | null>(null);
 
     // --- Bulletin Upload State ---
     const bulletinInputRef = useRef<HTMLInputElement>(null);
@@ -167,23 +168,34 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
 
     useEffect(() => {
         if (selectedMaterial && viewMode === 'detail') {
-            if (selectedMaterial.details) {
+            const hasGenericPlaceholder =
+                !selectedMaterial.details ||
+                !selectedMaterial.details.description ||
+                selectedMaterial.details.description.startsWith('توصيف هندسي قياسي') ||
+                selectedMaterial.details.description.startsWith('توصيف فني قياسي') ||
+                selectedMaterial.details.consumptionRates === 'حسب الرسومات والمقايسة' ||
+                selectedMaterial.details.consumptionRates === 'حسب المقايسة';
+
+            if (selectedMaterial.details && !hasGenericPlaceholder) {
                 setMaterialDetails(selectedMaterial.details);
             } else {
-                // If details missing, fetch and save
-                const fetchMissingDetails = async () => {
-                    setLoadingDetails(true);
-                    try {
-                        const result = await aiHelper.getMaterialDetails(selectedMaterial.name);
-                        setMaterialDetails(result.details);
-                        
-                        // Update item in state and save
-                        const updatedPrices = prices.map(p => p.id === selectedMaterial.id ? { ...p, details: result.details, price: result.price > 0 ? result.price : p.price } : p);
-                        setPrices(updatedPrices);
-                        await api.saveMarketPrices(updatedPrices); // Sync to Firestore
-                    } finally { setLoadingDetails(false); }
+                // Immediately populate rich engineering specs in 0ms and sync to Firebase
+                const instantDetails = marketService.buildRichFallbackDetails(
+                    selectedMaterial.name,
+                    selectedMaterial.unit,
+                    selectedMaterial.category
+                );
+                const upgradedItem: MarketItem = {
+                    ...selectedMaterial,
+                    details: instantDetails
                 };
-                fetchMissingDetails();
+                setMaterialDetails(instantDetails);
+                setSelectedMaterial(upgradedItem);
+                setPrices(prev => {
+                    const updatedPrices = prev.map(p => p.id === selectedMaterial.id ? upgradedItem : p);
+                    api.saveMarketPrices(updatedPrices).catch(() => {});
+                    return updatedPrices;
+                });
             }
         }
     }, [selectedMaterial?.id, viewMode]);
@@ -326,6 +338,43 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
     };
 
     // --- ITEM ACTION HANDLERS ---
+    const handleRefreshSingleItem = async (e: React.MouseEvent, item: MarketItem) => {
+        e.stopPropagation();
+        if (refreshingItemId === item.id) return;
+        setRefreshingItemId(item.id);
+
+        // 1. Optimistic instant update (0ms) of technical specs & timestamp + immediate Firebase sync
+        const instantDetails = marketService.buildRichFallbackDetails(item.name, item.unit, item.category);
+        const optimisticItem: MarketItem = {
+            ...item,
+            lastUpdated: new Date().toISOString(),
+            details: (!item.details || !item.details.description || item.details.description.startsWith('توصيف')) ? instantDetails : item.details
+        };
+        setPrices(prev => {
+            const next = prev.map(p => p.id === item.id ? optimisticItem : p);
+            api.saveMarketPrices(next).catch(() => {});
+            return next;
+        });
+
+        try {
+            // 2. Fast AI refresh of live price, specs, consumption rate, and execution method + immediate Firebase sync
+            const refreshedItem = await aiHelper.refreshSingleMaterial(item);
+            setPrices(prev => {
+                const updatedPrices = prev.map(p => p.id === item.id ? refreshedItem : p);
+                api.saveMarketPrices(updatedPrices).catch(() => {});
+                return updatedPrices;
+            });
+            if (selectedMaterial?.id === item.id) {
+                setSelectedMaterial(refreshedItem);
+                setMaterialDetails(refreshedItem.details || null);
+            }
+        } catch (err) {
+            console.error("Failed to refresh single material", err);
+        } finally {
+            setRefreshingItemId(null);
+        }
+    };
+
     const handleStartEdit = (e: React.MouseEvent, item: MarketItem) => {
         e.stopPropagation();
         setEditingId(item.id);
@@ -684,6 +733,14 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                                                                                     </div>
                                                                                     <div className="flex gap-1">
                                                                                         <button 
+                                                                                            onClick={(e) => handleRefreshSingleItem(e, item)} 
+                                                                                            disabled={refreshingItemId === item.id}
+                                                                                            className="w-7 h-7 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition flex items-center justify-center border border-blue-100 disabled:opacity-60"
+                                                                                            title="تحديث السعر والمواصفات الفنية وطريقة التنفيذ"
+                                                                                        >
+                                                                                            <i className={`fa-solid fa-rotate text-[10px] ${refreshingItemId === item.id ? 'fa-spin' : ''}`}></i>
+                                                                                        </button>
+                                                                                        <button 
                                                                                             onClick={(e) => handleStartEdit(e, item)} 
                                                                                             className="w-7 h-7 rounded-full bg-slate-50 text-slate-400 hover:bg-blue-100 hover:text-blue-600 transition flex items-center justify-center border border-slate-100"
                                                                                             title="تعديل"
@@ -778,6 +835,14 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                                                             
                                                             {/* Actions Row */}
                                                             <div className="flex gap-1">
+                                                                <button 
+                                                                    onClick={(e) => handleRefreshSingleItem(e, item)} 
+                                                                    disabled={refreshingItemId === item.id}
+                                                                    className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition flex items-center justify-center border border-blue-200 shadow-xs disabled:opacity-60"
+                                                                    title="تحديث السعر والمواصفات ومعدل الاستهلاك وطريقة التنفيذ لهذه المادة"
+                                                                >
+                                                                    <i className={`fa-solid fa-rotate text-xs ${refreshingItemId === item.id ? 'fa-spin' : ''}`}></i>
+                                                                </button>
                                                                 <button 
                                                                     onClick={(e) => handleStartEdit(e, item)} 
                                                                     className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-blue-100 hover:text-blue-600 transition flex items-center justify-center border border-slate-200"
@@ -893,12 +958,19 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
                                     <div className="bg-blue-50 p-3 rounded-2xl border border-blue-100">
                                         <h3 className="flex items-center gap-2 text-xs font-bold text-blue-900 mb-2"><i className="fa-solid fa-lightbulb text-blue-500"></i> نصيحة فنية</h3>
                                         <ul className="space-y-1">
-                                            {ensureArray(materialDetails.technicalTips).slice(0, 3).map((tip, i) => (
-                                                <li key={i} className="text-[10px] text-blue-800 font-medium flex gap-1.5"><i className="fa-solid fa-check text-blue-400 mt-0.5"></i>{tip}</li>
+                                            {ensureArray(materialDetails.technicalTips).slice(0, 4).map((tip, i) => (
+                                                <li key={i} className="text-[10px] text-blue-800 font-medium flex gap-1.5"><i className="fa-solid fa-check text-blue-400 mt-0.5"></i><span>{tip}</span></li>
                                             ))}
                                         </ul>
                                     </div>
                                 </div>
+
+                                {materialDetails.safetyPrecautions && (
+                                    <div className="bg-rose-50 p-3 rounded-2xl border border-rose-100">
+                                        <h3 className="flex items-center gap-2 text-xs font-bold text-rose-900 mb-1.5"><i className="fa-solid fa-helmet-safety text-rose-500"></i> احتياطات السلامة المهنية</h3>
+                                        <p className="text-rose-800 text-[11px] font-medium leading-relaxed">{materialDetails.safetyPrecautions}</p>
+                                    </div>
+                                )}
                             </div>
                         ) : (
                             <div className="text-center py-10 text-slate-400 text-xs"><p>لا تتوفر بيانات تفصيلية لهذا العنصر.</p></div>

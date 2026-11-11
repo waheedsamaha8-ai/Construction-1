@@ -8,12 +8,15 @@ import { tipsService } from './ai/tips';
 import { consultantService } from './ai/consultant';
 import { analysisService } from './ai/analysis';
 
-import { safeGenerateStream, connectLiveApi } from './ai/core';
+import { safeGenerateStream, connectLiveApi, getSmartKeyStatus, rotateCustomApiKey, getCustomApiKeys } from './ai/core';
 
 export const aiHelper = {
     // --- Live API & Streaming ---
     stream: safeGenerateStream,
     connectLiveApi,
+    getSmartKeyStatus,
+    rotateCustomApiKey,
+    getCustomApiKeys,
 
     // --- Consultant & Agents ---
     ...consultantService,

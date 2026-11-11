@@ -96,79 +96,112 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // --- GEMINI GENERATE CONTENT ENDPOINT ---
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config, cachedContent, apiKey: bodyKey } = req.body;
+  const { model: requestedModel, contents, config, cachedContent, apiKey: bodyKey, apiKeys: bodyKeys } = req.body;
   const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
   const customUserKey = (headerKey || bodyKey || '').trim();
 
-  const primaryModel = normalizeModel(requestedModel);
-
-  const sequence = [primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
-  const uniqueSequence = [...new Set(sequence)];
-
-  let lastError: any = null;
-  let stopAllModels = false;
-
-  for (const model of uniqueSequence) {
-    if (stopAllModels) break;
-    const maxAttempts = customUserKey ? 2 : Math.max(2, API_KEYS.length * 2);
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        const client = getAiClient(customUserKey);
-        const requestParams: any = {
-          model,
-          contents,
-        };
-
-        if (config) {
-          requestParams.config = config;
-        }
-        if (cachedContent) {
-          requestParams.cachedContent = cachedContent;
-        }
-
-        const response = await client.models.generateContent(requestParams);
-
-        return res.json({
-          text: response.text || '',
-          functionCalls: response.functionCalls || null,
-          usedModel: model,
-        });
-      } catch (error: any) {
-        lastError = error;
-        const status = error.status || 0;
-        const msg = (error.message || '').toLowerCase();
-
-        if (status === 404 || msg.includes('404')) {
-          console.warn(`Model ${model} returned 404. Moving to next model...`);
-          break;
-        }
-
-        if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
-          if (!customUserKey && API_KEYS.length > 1) {
-            rotateKey();
-            continue;
-          } else {
-            stopAllModels = true;
-            break;
-          }
-        }
-
-        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
-          if (!customUserKey && API_KEYS.length > 1 && rotateKey()) {
-            await new Promise(r => setTimeout(r, 400));
-            continue;
-          } else {
-            await new Promise(r => setTimeout(r, 600));
-          }
-        }
-
-        break;
+  const manualUserKeys: string[] = [];
+  if (customUserKey) manualUserKeys.push(customUserKey);
+  if (Array.isArray(bodyKeys)) {
+    for (const k of bodyKeys) {
+      const trimmed = String(k || '').trim();
+      if (trimmed && !manualUserKeys.includes(trimmed)) {
+        manualUserKeys.push(trimmed);
       }
     }
   }
 
-  console.warn('All server-side Gemini generation attempts failed (Quota Exceeded / Rate Limit). Serving continuity fallback.');
+  const liveEnvKeys = collectEnvKeys();
+  const activeEnvKeys = liveEnvKeys.length > 0 ? liveEnvKeys : API_KEYS;
+
+  const primaryModel = normalizeModel(requestedModel);
+
+  // Build candidate keys: try all manually entered user keys first, then fall back to server env keys
+  const keyCandidates: (string | undefined)[] = manualUserKeys.length > 0
+    ? [...manualUserKeys, ...(activeEnvKeys.length > 0 ? [undefined] : [])]
+    : [undefined];
+
+  for (const candidateKey of keyCandidates) {
+    // When using a user's manually entered AI Studio key, include standard public Gemini model IDs first
+    const modelSequence = candidateKey
+      ? ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite']
+      : [primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+    const uniqueSequence = [...new Set(modelSequence)];
+
+    for (const model of uniqueSequence) {
+      const maxAttempts = candidateKey ? 1 : Math.max(1, activeEnvKeys.length);
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // If config has tools (e.g., googleSearch), try with tools first, then retry once without tools if grounding quota is exhausted
+        const hasSearchTool = Array.isArray(config?.tools) && config.tools.some((t: any) => t.googleSearch);
+        const configVariants = hasSearchTool
+          ? [config, { ...config, tools: undefined }]
+          : [config];
+
+        for (const activeConfig of configVariants) {
+          try {
+            const client = getAiClient(candidateKey);
+            const requestParams: any = {
+              model,
+              contents,
+            };
+
+            if (activeConfig) {
+              const cleanedConfig = { ...activeConfig };
+              if (cleanedConfig.tools === undefined) delete cleanedConfig.tools;
+              if (Object.keys(cleanedConfig).length > 0) {
+                requestParams.config = cleanedConfig;
+              }
+            }
+            if (cachedContent && String(cachedContent).startsWith('cachedContents/')) {
+              requestParams.cachedContent = cachedContent;
+            }
+
+            const response = await client.models.generateContent(requestParams);
+            const hasText = typeof response?.text === 'string' && response.text.length > 0;
+            const hasFunctionCalls = Array.isArray(response?.functionCalls) && response.functionCalls.length > 0;
+
+            if (response && (hasText || hasFunctionCalls)) {
+              return res.json({
+                text: hasText ? response.text : '',
+                functionCalls: response.functionCalls || null,
+                modelContent: response.candidates?.[0]?.content || null,
+                usedModel: model,
+              });
+            }
+          } catch (error: any) {
+            const status = error.status || 0;
+            const msg = (error.message || '').toLowerCase();
+
+            // If googleSearch tool failed, let the inner loop immediately try without googleSearch
+            if (activeConfig?.tools && hasSearchTool) {
+              continue;
+            }
+
+            if (status === 404 || msg.includes('404') || msg.includes('not found')) {
+              break;
+            }
+
+            if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+              if (!candidateKey && activeEnvKeys.length > 1) {
+                rotateKey();
+              }
+              break;
+            }
+
+            if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
+              if (!candidateKey && activeEnvKeys.length > 1 && rotateKey()) {
+                await new Promise(r => setTimeout(r, 300));
+                continue;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   return res.json({
     text: `
         <div class="warning-box editable-box">
@@ -191,13 +224,25 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
 // --- GEMINI STREAMING ENDPOINT (Server-Sent Events) ---
 app.post('/api/gemini/stream', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config, apiKey: bodyKey } = req.body;
+  const { model: requestedModel, contents, config, apiKey: bodyKey, apiKeys: bodyKeys } = req.body;
   const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
   const customUserKey = (headerKey || bodyKey || '').trim();
 
+  const manualUserKeys: string[] = [];
+  if (customUserKey) manualUserKeys.push(customUserKey);
+  if (Array.isArray(bodyKeys)) {
+    for (const k of bodyKeys) {
+      const trimmed = String(k || '').trim();
+      if (trimmed && !manualUserKeys.includes(trimmed)) {
+        manualUserKeys.push(trimmed);
+      }
+    }
+  }
+
   const primaryModel = normalizeModel(requestedModel);
-  const sequence = [primaryModel, ...FALLBACK_MODELS];
-  const uniqueSequence = [...new Set(sequence)];
+  const keyCandidates: (string | undefined)[] = manualUserKeys.length > 0
+    ? [...manualUserKeys, undefined]
+    : [undefined];
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -207,31 +252,39 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
   let streamedSuccessfully = false;
   let lastError: any = null;
 
-  for (const model of uniqueSequence) {
-    try {
-      const client = getAiClient(customUserKey);
-      const responseStream = await client.models.generateContentStream({
-        model,
-        contents,
-        config,
-      });
+  for (const candidateKey of keyCandidates) {
+    if (streamedSuccessfully) break;
+    const sequence = candidateKey
+      ? ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', primaryModel, ...FALLBACK_MODELS]
+      : [primaryModel, ...FALLBACK_MODELS];
+    const uniqueSequence = [...new Set(sequence)];
 
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+    for (const model of uniqueSequence) {
+      try {
+        const client = getAiClient(candidateKey);
+        const responseStream = await client.models.generateContentStream({
+          model,
+          contents,
+          config,
+        });
+
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+          }
         }
-      }
-      streamedSuccessfully = true;
-      break;
-    } catch (error: any) {
-      lastError = error;
-      const status = error.status || 0;
-      const msg = (error.message || '').toLowerCase();
-      console.warn(`Streaming attempt with model ${model} failed:`, error.message || error);
-      if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+        streamedSuccessfully = true;
         break;
+      } catch (error: any) {
+        lastError = error;
+        const status = error.status || 0;
+        const msg = (error.message || '').toLowerCase();
+        console.warn(`Streaming attempt with model ${model} failed:`, error.message || error);
+        if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+          break;
+        }
+        if (!candidateKey) rotateKey();
       }
-      rotateKey();
     }
   }
 

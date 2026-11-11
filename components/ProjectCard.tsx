@@ -235,12 +235,6 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                 </div>
             )}
 
-            {/* Location if expanded */}
-            <div className={`flex items-center gap-2 text-xs ${style.subTextColor} mb-4 font-bold`}>
-                <div className="w-6 h-6 rounded-full bg-white/50 flex items-center justify-center"><i className="fa-solid fa-location-dot"></i></div>
-                <span>{project.location || 'الموقع غير محدد'}</span>
-            </div>
-
             {/* Financial vs Time Progress Comparison */}
             <div className="mb-5 bg-white/60 p-3 rounded-2xl border border-black/5 shadow-sm space-y-3">
                 <div>
@@ -275,9 +269,9 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                         ></div>
                     </div>
                     {project.totalDays ? (
-                        <div className="flex justify-between items-center text-[10px] text-slate-600 font-bold mt-1.5">
-                            <span>المنقضي: {project.elapsedDays || 0} يوم من {project.totalDays} يوم</span>
-                            <span className={project.daysRemaining && project.daysRemaining < 0 ? 'text-rose-600 font-extrabold' : 'text-slate-700'}>
+                        <div className="flex justify-between items-center gap-1.5 text-[11px] text-slate-600 font-bold mt-1.5 whitespace-nowrap">
+                            <span className="compact-single-line whitespace-nowrap">المنقضي: {project.elapsedDays || 0} يوم من {project.totalDays} يوم</span>
+                            <span className={`compact-single-line whitespace-nowrap ${project.daysRemaining && project.daysRemaining < 0 ? 'text-rose-600 font-extrabold' : 'text-slate-700'}`}>
                                 {project.daysRemaining !== undefined
                                     ? (project.daysRemaining >= 0 ? `متبقي ${project.daysRemaining} يوم` : `تجاوز المدة بـ ${Math.abs(project.daysRemaining)} يوم`)
                                     : ''}

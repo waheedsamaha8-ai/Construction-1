@@ -3,6 +3,7 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams, useLocation } from 'react-router-dom';
 import { api } from '../services/api';
+import { aiHelper } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { REPORT_CSS, ReportGenerator } from '../services/reportGenerator';
 
@@ -57,6 +58,8 @@ const LetterEditor: React.FC = () => {
   const colorInputRef = useRef<HTMLInputElement>(null); 
   const borderColorInputRef = useRef<HTMLInputElement>(null);
   const textColorInputRef = useRef<HTMLInputElement>(null); 
+  const draftCameraInputRef = useRef<HTMLInputElement>(null);
+  const draftFileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   
@@ -76,13 +79,19 @@ const LetterEditor: React.FC = () => {
 
   const [filename, setFilename] = useState('خطاب جديد');
   
+  const isNewBlankLetter = !fileId && !(location.state && location.state.initialContent);
+
   // PAGE DATA & VISIBILITY STATES (Initialized from LocalStorage for permanent persistence)
   const [showHeader, setShowHeader] = useState(savedSettings?.showHeader ?? true); 
-  const [reportTitle, setReportTitle] = useState(savedSettings?.reportTitle ?? 'الموضوع: .......................................');
+  const rawSavedTitle = savedSettings?.reportTitle;
+  const initialReportTitle = isNewBlankLetter
+    ? 'تقرير هندسي استشاري'
+    : (!rawSavedTitle || rawSavedTitle.includes('فترة التقرير') || rawSavedTitle.includes('......') ? 'تقرير هندسي استشاري' : rawSavedTitle);
+  const [reportTitle, setReportTitle] = useState(initialReportTitle);
   const [showTitle, setShowTitle] = useState(savedSettings?.showTitle ?? true);
 
   const rawSavedSub = savedSettings?.headerSubtitle;
-  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل")) ? "تقرير استشاري" : rawSavedSub;
+  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل") || rawSavedSub.includes("فترة التقرير")) ? "تقرير هندسي استشاري" : rawSavedSub;
   const [headerSubtitle, setHeaderSubtitle] = useState(initialSubtitle);
   const [showSubtitle, setShowSubtitle] = useState(savedSettings?.showSubtitle ?? true);
 
@@ -99,8 +108,34 @@ const LetterEditor: React.FC = () => {
   const [footerText, setFooterText] = useState(initialFooter);
   const [showFooter, setShowFooter] = useState(savedSettings?.showFooter ?? false);
 
+  // HEADER & FOOTER COLORS
+  const [headerColor, setHeaderColor] = useState<string>(savedSettings?.headerColor || '#1e3a8a');
+  const [footerColor, setFooterColor] = useState<string>(savedSettings?.footerColor || '#f8fafc');
+
+  const isLightHex = (hex: string) => {
+    const clean = (hex || '').replace('#', '');
+    if (clean.length !== 6) return false;
+    const r = parseInt(clean.substring(0, 2), 16);
+    const g = parseInt(clean.substring(2, 4), 16);
+    const b = parseInt(clean.substring(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.62;
+  };
+  const isHeaderLight = isLightHex(headerColor);
+  const headerTextColor = isHeaderLight ? '#0f172a' : '#ffffff';
+  const headerSubTextColor = isHeaderLight ? '#334155' : '#e2e8f0';
+  const headerMetaBg = isHeaderLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(255, 255, 255, 0.1)';
+  const headerMetaBorder = isHeaderLight ? 'rgba(15, 23, 42, 0.15)' : 'rgba(255, 255, 255, 0.2)';
+  const isFooterLight = isLightHex(footerColor);
+  const footerTextColor = isFooterLight ? '#334155' : '#ffffff';
+
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [isAnalyzingDraft, setIsAnalyzingDraft] = useState(false);
+  const [isRefiningText, setIsRefiningText] = useState(false);
+  const [showRefineModal, setShowRefineModal] = useState(false);
+  const [refineTargetText, setRefineTargetText] = useState('');
+  const [refineCustomPrompt, setRefineCustomPrompt] = useState('');
+  const refineRangeRef = useRef<Range | null>(null);
   
   // Scaling State
   const [scale, setScale] = useState(1);
@@ -122,16 +157,32 @@ const LetterEditor: React.FC = () => {
       const settingsToSave = {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
         reportTitle, headerSubtitle, refLabel, dateLabel, footerText,
+        headerColor, footerColor,
         marginConfig, printPageMargin
       };
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settingsToSave));
     } catch(e) {
       console.warn("Failed to persist letter settings to localStorage", e);
     }
-  }, [showHeader, showTitle, showSubtitle, showDate, showRef, showFooter, reportTitle, headerSubtitle, refLabel, dateLabel, footerText, marginConfig, printPageMargin]);
+  }, [showHeader, showTitle, showSubtitle, showDate, showRef, showFooter, reportTitle, headerSubtitle, refLabel, dateLabel, footerText, headerColor, footerColor, marginConfig, printPageMargin]);
 
-  // Settings Modal State
+  // Settings Modal & Header Menu State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) {
+        setIsHeaderMenuOpen(false);
+      }
+    };
+    if (isHeaderMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isHeaderMenuOpen]);
+
   // Templates modal removed
   const [mobileTab, setMobileTab] = useState<'format' | 'insert' | 'none'>('none');
 
@@ -554,6 +605,121 @@ const LetterEditor: React.FC = () => {
   const handleBoxImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file && activeElement && activeElement.classList.contains('editable-box')) { const reader = new FileReader(); reader.onload = (event) => { if (event.target?.result) { const img = document.createElement('img'); img.src = event.target.result as string; img.style.maxWidth = '100%'; img.style.height = 'auto'; img.style.display = 'block'; img.style.margin = '5px auto'; activeElement.appendChild(img); } }; reader.readAsDataURL(file); } if (boxImageInputRef.current) boxImageInputRef.current.value = ''; };
   const triggerImageUpload = () => imageInputRef.current?.click();
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (event) => { if (event.target?.result) { execCmd('insertImage', event.target.result as string); } }; reader.readAsDataURL(file); } };
+
+  // --- AI DRAFT TO FORMAL LETTER (CAMERA OR IMAGE UPLOAD) ---
+  const handleDraftToLetterUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setIsHeaderMenuOpen(false);
+      setIsSettingsOpen(false);
+      setIsAnalyzingDraft(true);
+      try {
+          const result = await aiHelper.analyzeDraftToLetter(file);
+          if (result && result.bodyHtml && result.bodyHtml !== 'فشل تحليل المسودة.') {
+              if (editorRef.current) {
+                  editorRef.current.innerHTML = result.bodyHtml;
+              }
+              if (result.title) {
+                  setReportTitle(result.title.startsWith('الموضوع') ? result.title : `الموضوع: ${result.title}`);
+                  if (!filename || filename === 'خطاب جديد') {
+                      const cleanName = result.title.replace(/^الموضوع:\s*/i, '').trim().slice(0, 45);
+                      if (cleanName) setFilename(cleanName);
+                  }
+              }
+              setTimeout(() => {
+                  ensureTableWrappers();
+                  calculateSize();
+              }, 80);
+          } else {
+              alert("تعذر تحليل صورة المسودة. يرجى التأكد من وضوح الصورة والمحاولة مرة أخرى.");
+          }
+      } catch (err) {
+          console.error("Draft to letter AI failed:", err);
+          alert("حدث خطأ أثناء تحويل المسودة إلى خطاب.");
+      } finally {
+          setIsAnalyzingDraft(false);
+          if (draftCameraInputRef.current) draftCameraInputRef.current.value = '';
+          if (draftFileInputRef.current) draftFileInputRef.current.value = '';
+      }
+  };
+
+  // Keep selection state synced whenever user highlights text inside the editor
+  useEffect(() => {
+      const onSelectionChange = () => {
+          const sel = window.getSelection();
+          if (!sel || !editorRef.current) return;
+          if (sel.rangeCount > 0) {
+              const range = sel.getRangeAt(0);
+              if (editorRef.current.contains(range.commonAncestorContainer)) {
+                  const hasText = !sel.isCollapsed && sel.toString().trim().length > 0;
+                  if (hasText) {
+                      savedRange.current = range.cloneRange();
+                  }
+                  setFormats(prev => prev.hasSelection === hasText ? prev : { ...prev, hasSelection: hasText });
+              }
+          }
+      };
+      document.addEventListener('selectionchange', onSelectionChange);
+      return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, []);
+
+  // --- AI SMART REFINE FOR SELECTED WORD, PHRASE, OR LINE ---
+  const openSmartRefineModal = () => {
+      if (!editorRef.current || isRefiningText) return;
+      const sel = window.getSelection();
+
+      // Restore saved selection range if focus moved to toolbar button
+      if (savedRange.current && sel && (sel.isCollapsed || !sel.toString().trim())) {
+          try {
+              sel.removeAllRanges();
+              sel.addRange(savedRange.current);
+          } catch (_) {}
+      }
+
+      const activeSel = window.getSelection();
+      if (activeSel && activeSel.rangeCount > 0 && !activeSel.isCollapsed && activeSel.toString().trim().length > 0) {
+          const range = activeSel.getRangeAt(0);
+          if (editorRef.current.contains(range.commonAncestorContainer)) {
+              refineRangeRef.current = range.cloneRange();
+              setRefineTargetText(activeSel.toString().trim());
+              setRefineCustomPrompt('');
+              setShowRefineModal(true);
+          }
+      }
+  };
+
+  const executeSmartRefine = async (mode: 'formal' | 'custom') => {
+      if (!editorRef.current || !refineTargetText.trim() || isRefiningText) return;
+      const contextText = editorRef.current.innerText || '';
+      const instruction = mode === 'formal'
+          ? 'قم بإعادة صياغة وتنقيح هذا النص بأسلوب هندسي استشاري رسمي رصين واحترافي مع الحفاظ على المعنى الدقيق.'
+          : refineCustomPrompt.trim();
+
+      setIsRefiningText(true);
+      try {
+          const refined = await aiHelper.refineSelectedLetterText(refineTargetText, contextText, instruction);
+          if (refined && refined.trim()) {
+              editorRef.current.focus();
+              const s = window.getSelection();
+              if (s && refineRangeRef.current) {
+                  s.removeAllRanges();
+                  s.addRange(refineRangeRef.current);
+                  document.execCommand('insertText', false, refined.trim());
+                  if (s.rangeCount > 0) {
+                      savedRange.current = s.getRangeAt(0).cloneRange();
+                  }
+              }
+              setShowRefineModal(false);
+              setRefineTargetText('');
+              setRefineCustomPrompt('');
+              checkFormats();
+          }
+      } catch (err) {
+          console.error("Smart refine failed:", err);
+      } finally {
+          setIsRefiningText(false);
+      }
+  };
   const handleImageResize = (widthPercent: string) => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.style.width = widthPercent; activeElement.style.height = 'auto'; } };
   const handleImageAlign = (align: string) => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.style.display = 'block'; if (align === 'center') { activeElement.style.marginLeft = 'auto'; activeElement.style.marginRight = 'auto'; } else if (align === 'right') { activeElement.style.marginLeft = 'auto'; activeElement.style.marginRight = '0'; } else { activeElement.style.marginLeft = '0'; activeElement.style.marginRight = 'auto'; } } };
   const deleteImage = () => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.remove(); setActiveElement(null); setShowImageTools(false); } };
@@ -761,6 +927,8 @@ const LetterEditor: React.FC = () => {
                   if (savedConfig.metaRef) setMetaRef(savedConfig.metaRef);
                   if (savedConfig.dateLabel) setDateLabel(savedConfig.dateLabel);
                   if (savedConfig.refLabel) setRefLabel(savedConfig.refLabel);
+                  if (savedConfig.headerColor) setHeaderColor(savedConfig.headerColor);
+                  if (savedConfig.footerColor) setFooterColor(savedConfig.footerColor);
                   if (savedConfig.printPageMargin !== undefined) setPrintPageMargin(savedConfig.printPageMargin);
                   if (savedConfig.marginConfig) setMarginConfig(savedConfig.marginConfig);
               } catch(e) { console.warn("Failed to parse settings", e); }
@@ -788,7 +956,7 @@ const LetterEditor: React.FC = () => {
           // Extract Metadata if available and not already set by settings block
           if (!settingsEl || !settingsEl.dataset.config) {
               const reportTitleEl = doc.querySelector('.report-header-title h1');
-              if (reportTitleEl) setReportTitle(reportTitleEl.textContent || "الموضوع: .......................................");
+              if (reportTitleEl) setReportTitle(reportTitleEl.textContent || "تقرير هندسي استشاري");
 
               const subtitleEl = doc.querySelector('.report-header-subtitle');
               if (subtitleEl) setHeaderSubtitle(subtitleEl.textContent || "");
@@ -839,6 +1007,7 @@ const LetterEditor: React.FC = () => {
             parseAndLoadContent(location.state.initialContent);
             setFilename(location.state.filename || "تقرير_استشاري_مسودة");
         } else {
+            setReportTitle('تقرير هندسي استشاري');
             if (editorRef.current) editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
         }
     };
@@ -858,6 +1027,8 @@ const LetterEditor: React.FC = () => {
         date: metaDate,
         subtitle: headerSubtitle,
         footerText: footerText,
+        headerColor,
+        footerColor,
         margins: marginConfig,
         labels: { date: dateLabel, ref: refLabel },
         // Flags
@@ -868,6 +1039,7 @@ const LetterEditor: React.FC = () => {
     const currentSettings = {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
         reportTitle, headerSubtitle, footerText,
+        headerColor, footerColor,
         metaDate, metaRef, dateLabel, refLabel,
         printPageMargin, marginConfig
     };
@@ -879,26 +1051,51 @@ const LetterEditor: React.FC = () => {
     try {
         const result = await api.saveLetter(folderId, filename, finalContent, fileId || undefined, projectId);
         
-        // NEW: Update Project Card if this was generated from one
+        // NEW: Update Project Card or BOQ Item Saved Report if this was generated from one
         const cardId = location.state?.cardId;
         const cardType = location.state?.cardType;
-        if (cardId && cardType && projectId) {
+        const boqItemId = location.state?.boqItemId;
+        const boqReportType = location.state?.boqReportType;
+        if (projectId && ((cardId && cardType) || (boqItemId && boqReportType))) {
             try {
                 const project = await api.getProjectById(projectId);
                 if (project) {
                     let updated = false;
-                    const cardMap: any = {
-                        rfi: 'rfis',
-                        submittal: 'submittals',
-                        correspondence: 'correspondence',
-                        checklist: 'checklists',
-                        ncr: 'ncrs'
-                    };
-                    const key = cardMap[cardType];
-                    if (key && project[key]) {
-                        project[key] = project[key].map((item: any) => 
-                            item.id === cardId ? { ...item, htmlContent: finalContent } : item
-                        );
+                    if (cardId && cardType) {
+                        const cardMap: any = {
+                            rfi: 'rfis',
+                            submittal: 'submittals',
+                            correspondence: 'correspondence',
+                            checklist: 'checklists',
+                            ncr: 'ncrs'
+                        };
+                        const key = cardMap[cardType];
+                        if (key && project[key]) {
+                            project[key] = project[key].map((item: any) => 
+                                item.id === cardId ? { ...item, htmlContent: finalContent } : item
+                            );
+                            updated = true;
+                        }
+                    }
+                    if (boqItemId && boqReportType && Array.isArray(project.boqItems)) {
+                        project.boqItems = project.boqItems.map((bItem: any) => {
+                            if (bItem.id === boqItemId) {
+                                const existingSaved = bItem.savedReports || {};
+                                return {
+                                    ...bItem,
+                                    savedReports: {
+                                        ...existingSaved,
+                                        [boqReportType]: {
+                                            type: boqReportType,
+                                            title: reportTitle || existingSaved[boqReportType]?.title || 'تقرير البند',
+                                            content: bodyContent,
+                                            updatedAt: new Date().toISOString()
+                                        }
+                                    }
+                                };
+                            }
+                            return bItem;
+                        });
                         updated = true;
                     }
                     if (updated) {
@@ -906,7 +1103,7 @@ const LetterEditor: React.FC = () => {
                     }
                 }
             } catch (cardErr) {
-                console.warn("Failed to update project card", cardErr);
+                console.warn("Failed to update project card/boq report", cardErr);
             }
         }
 
@@ -920,6 +1117,8 @@ const LetterEditor: React.FC = () => {
       printService.printReport(editorRef.current.innerHTML, reportTitle, metaRef, { 
           subtitle: headerSubtitle, 
           footerText: footerText,
+          headerColor,
+          footerColor,
           margins: marginConfig, 
           pageMargin: printPageMargin, 
           labels: { date: dateLabel, ref: refLabel },
@@ -1059,37 +1258,171 @@ const LetterEditor: React.FC = () => {
 
             /* Print Preview Specifics */
             .report-header, .report-footer { user-select: none; pointer-events: none; }
+
+            /* Dynamic Custom Header & Footer Colors */
+            #paper-container .report-header {
+                background-color: ${headerColor} !important;
+                color: ${headerTextColor} !important;
+            }
+            #paper-container .report-header .report-header-title h1,
+            #paper-container .report-header .report-header-meta,
+            #paper-container .report-header .report-header-meta span,
+            #paper-container .report-header .report-header-meta div {
+                color: ${headerTextColor} !important;
+            }
+            #paper-container .report-header .report-header-subtitle {
+                color: ${headerSubTextColor} !important;
+            }
+            #paper-container .report-header .report-header-meta {
+                background-color: ${headerMetaBg} !important;
+                border-color: ${headerMetaBorder} !important;
+            }
+            #paper-container .report-footer {
+                background-color: ${footerColor} !important;
+                color: ${footerTextColor} !important;
+            }
+            #paper-container .report-footer * {
+                color: ${footerTextColor} !important;
+            }
             
             /* Hidden Elements for Editing */
             .hidden-element { display: none !important; }
        `}</style>
 
-        <div className="bg-slate-900 border-b border-slate-700 px-4 py-3 flex justify-between items-center shadow-md shrink-0 z-50 no-print text-white overflow-x-auto hide-scrollbar">
+        <div className="bg-slate-900 border-b border-slate-700 px-4 py-3 flex justify-between items-center shadow-md shrink-0 z-50 no-print text-white relative">
             <div className="flex items-center gap-3 shrink-0">
                  <button onClick={handleBack} className="text-slate-400 hover:text-white transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button>
                  <div className="flex flex-col">
                     <span className="text-[10px] text-slate-400">اسم الملف</span>
-                    <input type="text" value={filename} onChange={(e) => setFilename(e.target.value)} className="font-bold text-white text-sm bg-transparent outline-none border-b border-transparent hover:border-slate-500 focus:border-blue-500 w-32 sm:w-48" />
+                    <input type="text" value={filename} onChange={(e) => setFilename(e.target.value)} className="font-bold text-white text-sm bg-transparent outline-none border-b border-transparent hover:border-slate-500 focus:border-blue-500 w-36 sm:w-56" />
                  </div>
             </div>
-            <div className="flex gap-2 items-center shrink-0">
-                {/* Settings Button */}
-                <button 
-                    onClick={() => setIsSettingsOpen(true)}
-                    className="bg-slate-800 text-slate-300 w-9 h-9 rounded-lg hover:bg-slate-700 hover:text-white transition flex items-center justify-center border border-slate-700 text-sm font-bold"
-                    title="إعدادات الصفحة والبيانات"
+            <div className="relative shrink-0" ref={headerMenuRef}>
+                {/* Hidden inputs for Draft-to-Letter Camera & Image Upload */}
+                <input
+                    type="file"
+                    ref={draftCameraInputRef}
+                    onChange={handleDraftToLetterUpload}
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                />
+                <input
+                    type="file"
+                    ref={draftFileInputRef}
+                    onChange={handleDraftToLetterUpload}
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                />
+
+                <button
+                    onClick={() => setIsHeaderMenuOpen(prev => !prev)}
+                    className={`w-9 h-9 rounded-lg transition flex items-center justify-center border text-sm font-bold ${
+                        isHeaderMenuOpen
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-lg'
+                            : 'bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white border-slate-700'
+                    }`}
+                    title="خيارات وإعدادات الخطاب"
                 >
-                    <i className="fa-solid fa-gear"></i>
+                    {isSaving || isAnalyzingDraft ? (
+                        <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                    ) : (
+                        <i className="fa-solid fa-ellipsis-vertical"></i>
+                    )}
                 </button>
 
-                <button onClick={handleSave} disabled={isSaving || isLoadingContent} className="bg-blue-600 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-500 shadow-lg flex items-center gap-2 transition disabled:opacity-50">
-                    {isSaving ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-save"></i>} <span className="hidden sm:inline">حفظ</span>
-                </button>
-                <button onClick={handlePrint} disabled={isLoadingContent} className="bg-slate-700 text-white px-3 py-2 rounded-lg hover:bg-slate-600 transition font-bold flex items-center gap-2 disabled:opacity-50" title="طباعة PDF احترافي">
-                    <i className="fa-solid fa-print"></i> <span className="hidden sm:inline">طباعة</span>
-                </button>
+                {isHeaderMenuOpen && (
+                    <div className="absolute left-0 top-full mt-2 w-60 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-[120] text-white animate-fade-in">
+                        <button
+                            onClick={() => {
+                                setIsHeaderMenuOpen(false);
+                                handleSave();
+                            }}
+                            disabled={isSaving || isLoadingContent || isAnalyzingDraft}
+                            className="w-full px-3.5 py-2.5 text-right text-xs font-bold hover:bg-slate-700/80 transition flex items-center gap-2.5 disabled:opacity-50"
+                        >
+                            <span className="w-7 h-7 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center shrink-0">
+                                {isSaving ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-floppy-disk"></i>}
+                            </span>
+                            <span>حفظ المستند</span>
+                        </button>
+
+                        <button
+                            onClick={() => {
+                                setIsHeaderMenuOpen(false);
+                                handlePrint();
+                            }}
+                            disabled={isLoadingContent || isAnalyzingDraft}
+                            className="w-full px-3.5 py-2.5 text-right text-xs font-bold hover:bg-slate-700/80 transition flex items-center gap-2.5 disabled:opacity-50"
+                        >
+                            <span className="w-7 h-7 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center shrink-0">
+                                <i className="fa-solid fa-print"></i>
+                            </span>
+                            <span>طباعة PDF احترافي</span>
+                        </button>
+
+                        <div className="my-1 border-t border-slate-700/80"></div>
+
+                        <button
+                            onClick={() => {
+                                setIsHeaderMenuOpen(false);
+                                draftCameraInputRef.current?.click();
+                            }}
+                            disabled={isAnalyzingDraft}
+                            className="w-full px-3.5 py-2.5 text-right text-xs font-bold hover:bg-slate-700/80 transition flex items-center gap-2.5 disabled:opacity-50"
+                        >
+                            <span className="w-7 h-7 rounded-lg bg-purple-600/20 text-purple-400 flex items-center justify-center shrink-0">
+                                <i className="fa-solid fa-camera"></i>
+                            </span>
+                            <div className="flex flex-col text-right">
+                                <span>تصوير مسودة خطاب (AI)</span>
+                                <span className="text-[9px] text-slate-400 font-normal">تحويل صورة مسودة لخطاب رسمي منسق</span>
+                            </div>
+                        </button>
+
+                        <button
+                            onClick={() => {
+                                setIsHeaderMenuOpen(false);
+                                draftFileInputRef.current?.click();
+                            }}
+                            disabled={isAnalyzingDraft}
+                            className="w-full px-3.5 py-2.5 text-right text-xs font-bold hover:bg-slate-700/80 transition flex items-center gap-2.5 disabled:opacity-50"
+                        >
+                            <span className="w-7 h-7 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center shrink-0">
+                                <i className="fa-solid fa-wand-magic-sparkles"></i>
+                            </span>
+                            <div className="flex flex-col text-right">
+                                <span>تحميل صورة مسودة (AI)</span>
+                                <span className="text-[9px] text-slate-400 font-normal">رفع صورة/PDF وتحويلها لخطاب احترافي</span>
+                            </div>
+                        </button>
+
+                        <div className="my-1 border-t border-slate-700/80"></div>
+
+                        <button
+                            onClick={() => {
+                                setIsHeaderMenuOpen(false);
+                                setIsSettingsOpen(true);
+                            }}
+                            className="w-full px-3.5 py-2.5 text-right text-xs font-bold hover:bg-slate-700/80 transition flex items-center gap-2.5"
+                        >
+                            <span className="w-7 h-7 rounded-lg bg-slate-700 text-slate-300 flex items-center justify-center shrink-0">
+                                <i className="fa-solid fa-gear"></i>
+                            </span>
+                            <span>إعدادات الصفحة والبيانات</span>
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
+
+        {/* AI DRAFT ANALYSIS LOADING BANNER */}
+        {isAnalyzingDraft && (
+            <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 text-white px-4 py-2 text-xs font-bold flex items-center justify-center gap-2 shadow-md z-50 no-print animate-fade-in">
+                <i className="fa-solid fa-circle-notch fa-spin"></i>
+                <span>جاري قراءة المسودة وتحويلها إلى خطاب رسمي منسق بالذكاء الاصطناعي...</span>
+            </div>
+        )}
 
         {/* SETTINGS MODAL */}
         {isSettingsOpen && (
@@ -1128,6 +1461,49 @@ const LetterEditor: React.FC = () => {
                                         <input type="text" value={headerSubtitle} onChange={(e) => setHeaderSubtitle(e.target.value)} className="w-full p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" disabled={!showSubtitle || !showHeader} />
                                     </div>
                                 </div>
+
+                                {/* Header Color Picker */}
+                                <div className="pt-2 border-t border-slate-100">
+                                    <label className="block text-xs font-bold text-slate-700 mb-2">لون خلفية رأس الصفحة (Header)</label>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        {[
+                                            { color: '#1e3a8a', label: 'كحلي رسمي' },
+                                            { color: '#0f172a', label: 'داكن فخم' },
+                                            { color: '#0f766e', label: 'أخضر زمردي' },
+                                            { color: '#1d4ed8', label: 'أزرق ملكي' },
+                                            { color: '#7c2d12', label: 'بني هندسي' },
+                                            { color: '#4c1d95', label: 'بنفسجي رسمي' },
+                                            { color: '#f1f5f9', label: 'رمادي فاتح' },
+                                            { color: '#ffffff', label: 'أبيض' },
+                                        ].map((preset) => (
+                                            <button
+                                                key={preset.color}
+                                                type="button"
+                                                onClick={() => setHeaderColor(preset.color)}
+                                                className={`w-7 h-7 rounded-lg border-2 transition transform hover:scale-110 flex items-center justify-center ${
+                                                    headerColor.toLowerCase() === preset.color.toLowerCase()
+                                                        ? 'border-blue-600 ring-2 ring-blue-300 scale-105'
+                                                        : 'border-slate-300'
+                                                }`}
+                                                style={{ backgroundColor: preset.color }}
+                                                title={preset.label}
+                                            >
+                                                {headerColor.toLowerCase() === preset.color.toLowerCase() && (
+                                                    <i className={`fa-solid fa-check text-[10px] ${isLightHex(preset.color) ? 'text-slate-900' : 'text-white'}`}></i>
+                                                )}
+                                            </button>
+                                        ))}
+                                        <label className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 cursor-pointer text-xs font-bold text-slate-700 transition">
+                                            <input
+                                                type="color"
+                                                value={headerColor}
+                                                onChange={(e) => setHeaderColor(e.target.value)}
+                                                className="w-5 h-5 border-0 p-0 bg-transparent cursor-pointer"
+                                            />
+                                            <span>لون مخصص</span>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -1154,9 +1530,61 @@ const LetterEditor: React.FC = () => {
                         <div className="space-y-4">
                             <h4 className="font-bold text-sm text-slate-500 border-b pb-1">تذييل الصفحة (الفوتر)</h4>
                             <div className="flex items-center gap-3">
-                                <input type="checkbox" checked={showFooter} onChange={(e) => setShowFooter(e.target.checked)} className="w-5 h-5 accent-blue-600" />
+                                <input
+                                    type="checkbox"
+                                    checked={showFooter}
+                                    onChange={(e) => {
+                                        setShowFooter(e.target.checked);
+                                        if (e.target.checked && !footerText.trim()) {
+                                            setFooterText('تقرير هندسي استشاري - جميع الحقوق محفوظة');
+                                        }
+                                    }}
+                                    className="w-5 h-5 accent-blue-600"
+                                />
                                 <div className="flex-1">
-                                    <textarea value={footerText} onChange={(e) => setFooterText(e.target.value)} className="w-full p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none" disabled={!showFooter}></textarea>
+                                    <textarea value={footerText} onChange={(e) => setFooterText(e.target.value)} placeholder="اكتب نص تذييل الصفحة هنا..." className="w-full p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none" disabled={!showFooter}></textarea>
+                                </div>
+                            </div>
+
+                            {/* Footer Color Picker */}
+                            <div className={`pt-2 border-t border-slate-100 transition-opacity ${!showFooter ? 'opacity-50 pointer-events-none' : ''}`}>
+                                <label className="block text-xs font-bold text-slate-700 mb-2">لون خلفية ذيل الصفحة (Footer)</label>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    {[
+                                        { color: '#f8fafc', label: 'رمادي فاتح (افتراضي)' },
+                                        { color: '#ffffff', label: 'أبيض' },
+                                        { color: '#e2e8f0', label: 'رمادي رسمي' },
+                                        { color: '#fef3c7', label: 'كريمي دافئ' },
+                                        { color: '#1e3a8a', label: 'كحلي رسمي' },
+                                        { color: '#0f172a', label: 'داكن فخم' },
+                                        { color: '#0f766e', label: 'أخضر زمردي' },
+                                    ].map((preset) => (
+                                        <button
+                                            key={preset.color}
+                                            type="button"
+                                            onClick={() => setFooterColor(preset.color)}
+                                            className={`w-7 h-7 rounded-lg border-2 transition transform hover:scale-110 flex items-center justify-center ${
+                                                footerColor.toLowerCase() === preset.color.toLowerCase()
+                                                    ? 'border-blue-600 ring-2 ring-blue-300 scale-105'
+                                                    : 'border-slate-300'
+                                            }`}
+                                            style={{ backgroundColor: preset.color }}
+                                            title={preset.label}
+                                        >
+                                            {footerColor.toLowerCase() === preset.color.toLowerCase() && (
+                                                <i className={`fa-solid fa-check text-[10px] ${isLightHex(preset.color) ? 'text-slate-900' : 'text-white'}`}></i>
+                                            )}
+                                        </button>
+                                    ))}
+                                    <label className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 cursor-pointer text-xs font-bold text-slate-700 transition">
+                                        <input
+                                            type="color"
+                                            value={footerColor}
+                                            onChange={(e) => setFooterColor(e.target.value)}
+                                            className="w-5 h-5 border-0 p-0 bg-transparent cursor-pointer"
+                                        />
+                                        <span>لون مخصص</span>
+                                    </label>
                                 </div>
                             </div>
                         </div>
@@ -1180,6 +1608,84 @@ const LetterEditor: React.FC = () => {
 
                     <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
                         <button onClick={() => setIsSettingsOpen(false)} className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 transition">إغلاق وتطبيق</button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* SMART AI REFINE MODAL */}
+        {showRefineModal && (
+            <div className="fixed inset-0 z-[2100] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in no-print" dir="rtl">
+                <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-purple-200 animate-scale-in">
+                    <div className="bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 text-white px-5 py-4 flex justify-between items-center">
+                        <div className="flex items-center gap-2.5">
+                            <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center">
+                                <i className="fa-solid fa-wand-magic-sparkles text-purple-200"></i>
+                            </span>
+                            <div>
+                                <h3 className="font-bold text-sm sm:text-base">التنقيح والصياغة الذكية (AI)</h3>
+                                <p className="text-[10px] text-purple-200">تعديل أو إعادة صياغة النص المحدد بالذكاء الاصطناعي</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => !isRefiningText && setShowRefineModal(false)}
+                            disabled={isRefiningText}
+                            className="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center text-white/80 hover:text-white transition"
+                        >
+                            <i className="fa-solid fa-times"></i>
+                        </button>
+                    </div>
+
+                    <div className="p-5 space-y-4 bg-white">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1.5">النص المحدد:</label>
+                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 max-h-28 overflow-y-auto leading-relaxed font-medium">
+                                {refineTargetText}
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                                ماذا تريد أن تفعل في هذا النص؟ <span className="text-slate-400 font-normal">(أو اختر الصياغة الهندسية المباشرة بالأسفل)</span>
+                            </label>
+                            <textarea
+                                value={refineCustomPrompt}
+                                onChange={(e) => setRefineCustomPrompt(e.target.value)}
+                                placeholder="مثال: اختصر هذه الفقرة، أو صغها بلهجة تعاقدية حازمة، أو أضف إشارة لاشتراطات الكود المصري..."
+                                className="w-full p-3 border border-slate-300 rounded-xl text-xs sm:text-sm bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-500 h-24 resize-none leading-relaxed"
+                                disabled={isRefiningText}
+                            />
+                        </div>
+
+                        <div className="flex flex-col gap-2.5 pt-1">
+                            <button
+                                type="button"
+                                onClick={() => executeSmartRefine('formal')}
+                                disabled={isRefiningText}
+                                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs sm:text-sm shadow-md hover:shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-60"
+                            >
+                                {isRefiningText ? (
+                                    <i className="fa-solid fa-circle-notch fa-spin"></i>
+                                ) : (
+                                    <i className="fa-solid fa-helmet-safety"></i>
+                                )}
+                                <span>الصياغة والتنقيح بأسلوب هندسي ورسمي رصين</span>
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => executeSmartRefine('custom')}
+                                disabled={isRefiningText || !refineCustomPrompt.trim()}
+                                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                {isRefiningText ? (
+                                    <i className="fa-solid fa-circle-notch fa-spin"></i>
+                                ) : (
+                                    <i className="fa-solid fa-paper-plane"></i>
+                                )}
+                                <span>تنفيذ التعديل المطلوب أعلاه</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1252,6 +1758,28 @@ const LetterEditor: React.FC = () => {
                 </div>
 
                 <div className="flex gap-1.5 items-center shrink-0">
+                    <button
+                        onMouseDown={(e) => {
+                            e.preventDefault();
+                            if (formats.hasSelection && !isRefiningText) {
+                                openSmartRefineModal();
+                            }
+                        }}
+                        disabled={!formats.hasSelection || isRefiningText}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-bold transition shadow-sm h-7 whitespace-nowrap border ${
+                            formats.hasSelection
+                                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-purple-500 shadow-md cursor-pointer'
+                                : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                        }`}
+                        title={formats.hasSelection ? "اضغط لفتح نافذة التنقيح الذكي للنص المحدد" : "حدد كلمة أو عبارة أو سطراً أولاً لتفعيل التنقيح الذكي"}
+                    >
+                        {isRefiningText ? (
+                            <i className="fa-solid fa-circle-notch fa-spin"></i>
+                        ) : (
+                            <i className="fa-solid fa-wand-magic-sparkles"></i>
+                        )}
+                        <span>تنقيح ذكي</span>
+                    </button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertTable()}} className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md text-[10px] font-bold text-indigo-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-solid fa-table"></i> <span className="hidden sm:inline">جدول</span></button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertTextBox()}} className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md text-[10px] font-bold text-emerald-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-regular fa-square-plus"></i> <span className="hidden sm:inline">مربع</span></button>
                     <button onMouseDown={(e) => {e.preventDefault(); triggerImageUpload()}} className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md text-[10px] font-bold text-slate-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-regular fa-image"></i> <span className="hidden sm:inline">صورة</span></button>

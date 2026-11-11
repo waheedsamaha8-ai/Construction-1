@@ -183,16 +183,10 @@ export const consultantService = {
         const modelName = MODEL_SMART; 
         const agentPrompt = AGENT_PROMPTS[agentType] || AGENT_PROMPTS['general'];
 
-        // CONTEXT CACHING STRATEGY:
-        // If the project has a large BOQ or many logs, we can cache the "Project Context"
-        let cachedContentName = project.aiCacheName || null;
-        
-        // If no cache exists and project is large, try to create one
-        if (!cachedContentName && (project.boqItems?.length > 50 || project.executionLogs?.length > 100)) {
-            console.log("🚀 Creating Context Cache for Project Records...");
-            project.aiCacheName = "project-context-cache-" + project.id;
-            cachedContentName = project.aiCacheName;
-        }
+        // Only pass a valid Google GenAI server-created cachedContents resource if one exists
+        const cachedContentName = (project.aiCacheName && String(project.aiCacheName).startsWith('cachedContents/'))
+            ? project.aiCacheName
+            : undefined;
 
         // Define Tools (Function Declarations)
         const getProjectInventory: FunctionDeclaration = {
@@ -321,16 +315,16 @@ export const consultantService = {
 
             let currentModel = modelName;
             
-            // Tool Loop (Max 5 iterations)
-            for (let i = 0; i < 5; i++) {
+            // Tool Loop (Max 7 iterations)
+            for (let i = 0; i < 7; i++) {
                 if (i > 0) {
-                    // Add a small delay between tool calls to prevent hitting burst rate limits (429)
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    // Small delay between tool calls to prevent hitting burst rate limits (429)
+                    await new Promise(resolve => setTimeout(resolve, 600));
                 }
 
                 const result = await safeGenerateContent(currentModel, {
                     contents: contents,
-                    cachedContent: cachedContentName, // Use the cache if available
+                    cachedContent: cachedContentName,
                     config: {
                         systemInstruction: systemInstruction,
                         temperature: 0.1,
@@ -540,13 +534,27 @@ export const consultantService = {
                     contents.push({ role: 'user', parts: functionResponses });
                 } else {
                     // No more function calls, we have the final text
-                    let finalText = result.text.replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '');
+                    let finalText = (result.text || '').replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '');
                     finalText += getAiFooter(result.usedModel);
                     return finalText;
                 }
             }
 
-            return "عذراً، استغرق البحث وقتاً طويلاً. يرجى إعادة صياغة السؤال.";
+            // Final synthesis call without tools if loop reached max turns
+            contents.push({
+                role: 'user',
+                parts: [{ text: 'بناءً على جميع البيانات المستخرجة أعلاه، قم بإصدار التقرير الاستشاري النهائي بصيغة HTML الآن دون استدعاء أي أدوات إضافية.' }]
+            });
+            const finalSynthesis = await safeGenerateContent(currentModel, {
+                contents,
+                config: {
+                    systemInstruction,
+                    temperature: 0.1
+                }
+            });
+            let synthesizedText = (finalSynthesis.text || '').replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '');
+            synthesizedText += getAiFooter(finalSynthesis.usedModel);
+            return synthesizedText;
 
         } catch (error) {
             return `

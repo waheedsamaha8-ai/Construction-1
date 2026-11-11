@@ -18,6 +18,8 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, showBack = false, onBack }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isHomePage = location.pathname === '/' || location.pathname === '';
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSyncs, setPendingSyncs] = useState(0);
   const [showSyncTroubleshoot, setShowSyncTroubleshoot] = useState(false);
@@ -26,6 +28,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [hasCustomKey, setHasCustomKey] = useState(false);
   const [customKeysCount, setCustomKeysCount] = useState(0);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
 
   const updateKeyStatus = () => {
     const keys = loadStoredGeminiKeys();
@@ -164,74 +167,139 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
             </div>
           </div>
           
-          <div className="flex items-center gap-2 md:gap-3">
-            {/* PWA Install Button (Only shows if installable) */}
-            {showInstallBtn && (
-                <button 
-                    onClick={handleInstallClick}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg transition flex items-center gap-2 animate-pulse"
-                >
-                    <i className="fa-solid fa-download"></i> تثبيت التطبيق
-                </button>
-            )}
+          {/* Settings Icon-Only Button - ONLY visible on the Home Page */}
+          {isHomePage && (
+            <div className="relative flex items-center">
+              <button
+                onClick={() => setShowSettingsMenu(prev => !prev)}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition shadow-sm border relative ${showSettingsMenu ? 'bg-blue-600 text-white border-blue-500' : 'bg-white/10 text-white hover:bg-white/20 border-white/10'}`}
+                title="الإعدادات"
+              >
+                <i className="fa-solid fa-gear text-sm"></i>
+                {(!isOnline || pendingSyncs > 0) ? (
+                  <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border border-slate-900 ${!isOnline ? 'bg-red-500' : 'bg-yellow-400 animate-pulse'}`}></span>
+                ) : hasCustomKey ? (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-purple-400 border border-slate-900"></span>
+                ) : null}
+              </button>
 
-            {/* Sync & Connection Status - ONLY SHOW IF OFFLINE OR ERRORS */}
-            {(!isOnline || pendingSyncs > 0) && (
-                <div 
-                    className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] transition-all duration-300 cursor-pointer ${!isOnline ? 'bg-red-500/20 text-red-200 border border-red-500/30' : 'bg-yellow-500/20 text-yellow-200 border border-yellow-500/30 hover:bg-yellow-500/30'}`}
-                    onClick={handleSyncIndicatorClick}
-                >
-                    {!isOnline ? (
-                        <>
-                            <i className="fa-solid fa-wifi-slash text-red-400"></i>
-                            <span className="font-bold">غير متصل (Offline)</span>
-                            {pendingSyncs > 0 && <span className="bg-red-500 text-white px-1.5 rounded-full text-[9px]">{pendingSyncs}</span>}
-                        </>
-                    ) : (
-                        <>
-                        <i className="fa-solid fa-rotate text-yellow-400"></i>
-                        <span className="font-mono">مزامنة معلقة ({pendingSyncs})</span>
-                        </>
+              {showSettingsMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-[90]"
+                    onClick={() => setShowSettingsMenu(false)}
+                  ></div>
+                  <div className="absolute left-0 top-12 w-64 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in">
+                    <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-slate-400">إعدادات النظام والأدوات</span>
+                      <i className="fa-solid fa-sliders text-[10px] text-slate-500"></i>
+                    </div>
+
+                    {/* Gemini Custom Key Toggle */}
+                    <button
+                      onClick={() => {
+                        setShowSettingsMenu(false);
+                        setShowKeyModal(true);
+                      }}
+                      className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${hasCustomKey ? 'bg-purple-600 text-white' : 'bg-slate-800 text-purple-400'}`}>
+                          <i className="fa-solid fa-key text-xs"></i>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs font-bold text-white">مفاتيح Gemini الذكية</div>
+                          <div className="text-[10px] text-slate-400">
+                            {hasCustomKey ? `${customKeysCount} مفتاح نشط للتدوير` : 'إضافة مفاتيح يدوياً'}
+                          </div>
+                        </div>
+                      </div>
+                      {hasCustomKey && (
+                        <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                          {customKeysCount}
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Full Screen Toggle */}
+                    <button
+                      onClick={() => {
+                        toggleFullScreen();
+                        setShowSettingsMenu(false);
+                      }}
+                      className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isFullScreen ? 'bg-blue-600 text-white' : 'bg-slate-800 text-blue-400'}`}>
+                          <i className={`fa-solid ${isFullScreen ? 'fa-compress' : 'fa-expand'} text-xs`}></i>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs font-bold text-white">{isFullScreen ? 'إنهاء ملء الشاشة' : 'وضع ملء الشاشة'}</div>
+                          <div className="text-[10px] text-slate-400">عرض التطبيق بكامل الشاشة</div>
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* PWA Install Button */}
+                    {showInstallBtn && (
+                      <button
+                        onClick={() => {
+                          setShowSettingsMenu(false);
+                          handleInstallClick();
+                        }}
+                        className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 transition text-xs font-bold text-emerald-300"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
+                            <i className="fa-solid fa-download text-xs"></i>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs font-bold text-white">تثبيت التطبيق</div>
+                            <div className="text-[10px] text-emerald-300">تثبيت على الشاشة الرئيسية</div>
+                          </div>
+                        </div>
+                      </button>
                     )}
-                    <div className={`w-1.5 h-1.5 rounded-full ${!isOnline ? 'bg-red-500' : 'bg-yellow-400 animate-ping'}`}></div>
-                </div>
-            )}
 
-            {/* Gemini Custom Key Toggle */}
-            <button 
-                onClick={() => setShowKeyModal(true)} 
-                className={`w-9 h-9 rounded-xl flex items-center justify-center transition shadow-sm border relative ${hasCustomKey ? 'bg-purple-600 text-white border-purple-500 shadow-purple-500/30' : 'bg-white/10 text-white hover:bg-white/20 border-white/5'}`}
-                title={hasCustomKey ? `مفاتيح الذكاء الاصطناعي (${customKeysCount} نشط)` : "إضافة مفتاح Gemini خاص دون توقف"}
-            >
-                <i className="fa-solid fa-key text-xs"></i>
-                {customKeysCount > 1 && (
-                    <span className="absolute -top-1 -right-1 bg-amber-400 text-slate-900 font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center border border-slate-900 shadow">
-                        {customKeysCount}
-                    </span>
-                )}
-            </button>
+                    {/* Sync & Connection Status */}
+                    {(!isOnline || pendingSyncs > 0) && (
+                      <button
+                        onClick={() => {
+                          setShowSettingsMenu(false);
+                          handleSyncIndicatorClick();
+                        }}
+                        className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between transition text-xs font-bold ${!isOnline ? 'bg-red-500/20 text-red-200 border border-red-500/30' : 'bg-yellow-500/20 text-yellow-200 border border-yellow-500/30'}`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${!isOnline ? 'bg-red-600 text-white' : 'bg-yellow-600 text-white'}`}>
+                            <i className={`fa-solid ${!isOnline ? 'fa-wifi-slash' : 'fa-rotate'} text-xs`}></i>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs font-bold">{!isOnline ? 'غير متصل (Offline)' : `مزامنة معلقة (${pendingSyncs})`}</div>
+                            <div className="text-[10px] opacity-80">اضغط لإدارة طابور المزامنة</div>
+                          </div>
+                        </div>
+                      </button>
+                    )}
 
-            {/* Full Screen Toggle */}
-            <button 
-                onClick={toggleFullScreen} 
-                className={`w-9 h-9 rounded-xl flex items-center justify-center transition shadow-sm border ${isFullScreen ? 'bg-blue-600 text-white border-blue-500' : 'bg-white/10 text-white hover:bg-white/20 border-white/5'}`}
-                title={isFullScreen ? "إنهاء ملء الشاشة" : "وضع ملء الشاشة"}
-            >
-                <i className={`fa-solid ${isFullScreen ? 'fa-compress' : 'fa-expand'} text-xs`}></i>
-            </button>
-
-            {/* Top Bar Actions (Like Add Project) */}
-            {navActions}
-            
-            {/* Mobile Connection Dot - Only Red or Yellow */}
-            {(!isOnline || pendingSyncs > 0) && (
-                <div 
-                    className={`w-3 h-3 rounded-full shadow-[0_0_8px] border-2 border-slate-800 transition-colors duration-500 cursor-pointer ${!isOnline ? 'bg-red-500 shadow-red-500' : 'bg-yellow-400 shadow-yellow-400 animate-pulse'}`} 
-                    title="تنبيه اتصال"
-                    onClick={handleSyncIndicatorClick}
-                ></div>
-            )}
-          </div>
+                    {/* Extra Navbar Actions (Add Project, Export, Import, Sign Out) */}
+                    {navActions && (
+                      <div
+                        className="pt-1.5 border-t border-slate-800 space-y-1.5"
+                        onClick={() => setShowSettingsMenu(false)}
+                      >
+                        <div className="px-3 py-1 flex items-center justify-between">
+                          <span className="text-[11px] font-bold text-slate-400">إدارة المشروعات والحساب</span>
+                          <i className="fa-solid fa-folder-gear text-[10px] text-slate-500"></i>
+                        </div>
+                        {navActions}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </nav>
 

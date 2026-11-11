@@ -444,7 +444,21 @@ export interface ReportMetadata {
     showDate?: boolean;
     showRef?: boolean;
     showFooter?: boolean;
+    headerColor?: string;
+    footerColor?: string;
 }
+
+const isLightHexColor = (hex?: string): boolean => {
+    if (!hex || !hex.startsWith('#')) return false;
+    const clean = hex.replace('#', '');
+    const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+    if (full.length !== 6) return false;
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+    return yiq >= 165;
+};
 
 export const wrapTablesInHtml = (html: string): string => {
     if (!html) return '';
@@ -476,18 +490,30 @@ export const wrapTablesInHtml = (html: string): string => {
 };
 
 export const ReportGenerator = {
-    getHeaderHTML: (title: string, ref: string, date: string, subtitle: string, labels: { date: string, ref: string }, flags: {showHeader?: boolean, showTitle?: boolean, showSubtitle?: boolean, showDate?: boolean, showRef?: boolean}) => {
-        const { showHeader = true, showTitle = true, showSubtitle = true, showDate = true, showRef = true } = flags;
+    getHeaderHTML: (
+        title: string,
+        ref: string,
+        date: string,
+        subtitle: string,
+        labels: { date: string, ref: string },
+        flags: { showHeader?: boolean, showTitle?: boolean, showSubtitle?: boolean, showDate?: boolean, showRef?: boolean, headerColor?: string }
+    ) => {
+        const { showHeader = true, showTitle = true, showSubtitle = true, showDate = true, showRef = true, headerColor } = flags;
         
         if (!showHeader) return '';
         if (!showTitle && !showSubtitle && !showDate && !showRef) return '';
 
+        const bg = headerColor || THEME.colors.primary;
+        const isLight = isLightHexColor(bg);
+        const textColor = isLight ? '#0f172a' : '#ffffff';
+        const subColor = isLight ? '#334155' : '#e2e8f0';
+
         let titleBlock = '';
         if (showTitle || showSubtitle) {
             titleBlock = `
-                <div class="report-header-title">
-                    ${showTitle ? `<h1>${title}</h1>` : ''}
-                    ${showSubtitle ? `<p class="report-header-subtitle">${subtitle}</p>` : ''}
+                <div class="report-header-title" style="color: ${textColor} !important;">
+                    ${showTitle ? `<h1 style="color: ${textColor} !important;">${title}</h1>` : ''}
+                    ${showSubtitle ? `<p class="report-header-subtitle" style="color: ${subColor} !important;">${subtitle}</p>` : ''}
                 </div>
             `;
         }
@@ -495,24 +521,27 @@ export const ReportGenerator = {
         let metaBlock = '';
         if (showDate || showRef) {
             metaBlock = `
-                <div class="report-header-meta">
-                    ${showDate ? `<div><strong>${labels.date}</strong> <span>${date}</span></div>` : ''}
-                    ${showRef ? `<div><strong>${labels.ref}</strong> <span>${ref}</span></div>` : ''}
+                <div class="report-header-meta" style="color: ${textColor} !important;">
+                    ${showDate ? `<div style="color: ${textColor} !important;"><strong style="color: ${textColor} !important;">${labels.date}</strong> <span style="color: ${textColor} !important;">${date}</span></div>` : ''}
+                    ${showRef ? `<div style="color: ${textColor} !important;"><strong style="color: ${textColor} !important;">${labels.ref}</strong> <span style="color: ${textColor} !important;">${ref}</span></div>` : ''}
                 </div>
             `;
         }
 
         return `
-            <div class="report-header">
+            <div class="report-header" style="background-color: ${bg} !important; color: ${textColor} !important;">
                 ${titleBlock}
                 ${metaBlock}
             </div>
         `;
     },
-    getFooterHTML: (text: string, visible: boolean = true) => {
+    getFooterHTML: (text: string, visible: boolean = true, footerColor?: string) => {
         if (!visible) return '';
+        const bg = footerColor || THEME.colors.footerBg;
+        const isLight = isLightHexColor(bg);
+        const textColor = isLight ? '#334155' : '#ffffff';
         return `
-            <div class="report-footer">
+            <div class="report-footer" style="background-color: ${bg} !important; color: ${textColor} !important;">
                 ${text}
             </div>
         `;
@@ -520,7 +549,7 @@ export const ReportGenerator = {
     buildReport: (title: string, bodyHTML: string, metadata: ReportMetadata = {}) => {
         const dateStr = metadata.date || new Date().toLocaleDateString('en-CA'); 
         const refStr = metadata.ref || `REF-${Date.now().toString().slice(-6)}`;
-        const subtitle = metadata.subtitle || "تقرير استشاري";
+        const subtitle = metadata.subtitle || "تقرير هندسي استشاري";
         const footerText = metadata.footerText || "تم إعداد التقرير بواسطة الذكاء الاصطناعي تحت إشراف المهندس وحيد سماحة | مهندس_مصر";
         
         const dateLabel = metadata.labels?.date || "التاريخ:";
@@ -555,11 +584,12 @@ export const ReportGenerator = {
                             showTitle: metadata.showTitle, 
                             showSubtitle: metadata.showSubtitle, 
                             showDate: metadata.showDate, 
-                            showRef: metadata.showRef 
+                            showRef: metadata.showRef,
+                            headerColor: metadata.headerColor
                         }
                     )}
                     <div class="report-body">${processedBody}</div>
-                    ${ReportGenerator.getFooterHTML(footerText, metadata.showFooter)}
+                    ${ReportGenerator.getFooterHTML(footerText, metadata.showFooter, metadata.footerColor)}
                 </div>
             </body>
             </html>

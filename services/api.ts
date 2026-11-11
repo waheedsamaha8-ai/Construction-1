@@ -55,6 +55,58 @@ const LOCAL_STORAGE_RECENT_FILES_KEY = 'construction_pro_recent_files_sync';
 const LOCAL_STORAGE_MARKET_PRICES_KEY = 'construction_pro_market_prices'; 
 const LOCAL_STORAGE_FOLDER_CACHE_KEY = 'construction_pro_folder_cache_v1';
 
+let memoryMarketPrices: MarketItem[] | null = null;
+const marketPricesSubscribers = new Set<(prices: MarketItem[]) => void>();
+const marketPricesChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('construction_pro_market_prices_live') : null;
+
+if (marketPricesChannel) {
+    marketPricesChannel.onmessage = (event) => {
+        if (event.data && Array.isArray(event.data.items)) {
+            memoryMarketPrices = event.data.items;
+            marketPricesSubscribers.forEach(cb => {
+                try { cb(event.data.items); } catch (_) {}
+            });
+        }
+    };
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+        if (memoryMarketPrices && memoryMarketPrices.length > 0) {
+            setDoc(doc(db, "market_data", "current_prices"), {
+                items: memoryMarketPrices,
+                lastUpdated: new Date().toISOString(),
+                updatedBy: "user_action"
+            }).catch(() => {});
+        }
+    });
+}
+
+const safeSetLocalStorage = (key: string, value: string) => {
+    try {
+        localStorage.setItem(key, value);
+    } catch (e) {
+        try {
+            // Free up space by clearing bulky folder cache and older base64 video thumbnail entries (already persisted in IndexedDB)
+            localStorage.removeItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
+            const vthumbKeys: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && (k.startsWith('vthumb_') || k.startsWith('master_data_cache_'))) {
+                    vthumbKeys.push(k);
+                }
+            }
+            // Remove at least half or all vthumb keys from localStorage to free megabytes immediately
+            vthumbKeys.forEach(k => {
+                try { localStorage.removeItem(k); } catch (_) {}
+            });
+            localStorage.setItem(key, value);
+        } catch (_) {
+            // Ignore if storage is still full; in-memory cache, IndexedDB, and Firestore remain authoritative
+        }
+    }
+};
+
 // Hydrate memory cache synchronously on startup for 0ms navigation
 try {
     const rawProjects = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
@@ -62,6 +114,13 @@ try {
         const parsedProjects = JSON.parse(rawProjects);
         if (Array.isArray(parsedProjects) && parsedProjects.length > 0) {
             contentCache.set('projects_list', { timestamp: Date.now(), data: parsedProjects });
+        }
+    }
+    const rawMarket = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
+    if (rawMarket) {
+        const parsedMarket = JSON.parse(rawMarket);
+        if (Array.isArray(parsedMarket) && parsedMarket.length > 0) {
+            memoryMarketPrices = parsedMarket;
         }
     }
     const rawFolders = localStorage.getItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
@@ -84,18 +143,27 @@ const updateCache = (key: string, data: any) => {
         try {
             const raw = localStorage.getItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
             const store = raw ? JSON.parse(raw) : {};
-            store[key] = { timestamp: now, data };
+            // Strip large inline base64 previewUrl strings from localStorage folder cache to prevent QuotaExceededError
+            const lightweightData = data.map((item: any) => {
+                if (item && typeof item.previewUrl === 'string' && item.previewUrl.startsWith('data:')) {
+                    const { previewUrl, ...rest } = item;
+                    return rest;
+                }
+                return item;
+            });
+            store[key] = { timestamp: now, data: lightweightData };
             const keys = Object.keys(store);
-            if (keys.length > 40) {
-                delete store[keys[0]];
+            while (keys.length > 15) {
+                const oldest = keys.shift();
+                if (oldest) delete store[oldest];
             }
-            localStorage.setItem(LOCAL_STORAGE_FOLDER_CACHE_KEY, JSON.stringify(store));
+            safeSetLocalStorage(LOCAL_STORAGE_FOLDER_CACHE_KEY, JSON.stringify(store));
         } catch (e) {}
     }
 };
 
 const saveToSyncCache = (key: string, data: any) => {
-    try { localStorage.setItem(key, JSON.stringify(data)); } catch (e) {}
+    safeSetLocalStorage(key, JSON.stringify(data));
 };
 
 // --- AUTH SERVICE DEFINITION (STRICT ONLINE ONLY) ---
@@ -1948,39 +2016,60 @@ export const api = {
   },
   async searchFiles(queryText: string): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; triggerLoadingStart(); try { const result = await fetchDrive(`files?q=name contains '${queryText}' and trashed = false&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, size: f.size ? parseInt(f.size) : 0 })); } finally { triggerLoadingStop(); } },
   async getTasks(): Promise<Task[]> { return [...localTasks]; },
-  async addTask(content: string): Promise<Task> { const newTask = { id: `t${Date.now()}`, content, isDone: false, createdAt: new Date().toISOString() }; localTasks = [newTask, ...localTasks]; localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); return newTask; },
-  async toggleTask(id: string): Promise<void> { const index = localTasks.findIndex(t => t.id === id); if (index !== -1) { localTasks[index].isDone = !localTasks[index].isDone; localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); } },
-  async deleteTask(id: string): Promise<void> { localTasks = localTasks.filter(t => t.id !== id); localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); },
+  async addTask(content: string): Promise<Task> { const newTask = { id: `t${Date.now()}`, content, isDone: false, createdAt: new Date().toISOString() }; localTasks = [newTask, ...localTasks]; safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); return newTask; },
+  async toggleTask(id: string): Promise<void> { const index = localTasks.findIndex(t => t.id === id); if (index !== -1) { localTasks[index].isDone = !localTasks[index].isDone; safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); } },
+  async deleteTask(id: string): Promise<void> { localTasks = localTasks.filter(t => t.id !== id); safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); },
   async getRecentFiles(): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; try { const result = await fetchDrive(`files?q=trashed = false and mimeType != 'application/vnd.google-apps.folder' and name != 'metadata.json'&pageSize=10&orderBy=createdTime desc&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, webContentLink: f.webContentLink, size: f.size ? parseInt(f.size) : 0 })); } catch (e) { return []; } },
   subscribeToMarketPrices(onUpdate: (prices: MarketItem[]) => void): () => void {
+      marketPricesSubscribers.add(onUpdate);
+      if (memoryMarketPrices && memoryMarketPrices.length > 0) {
+          onUpdate(memoryMarketPrices);
+      }
       if (!navigator.onLine) {
-          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
-          if (saved) {
-              try { onUpdate(JSON.parse(saved)); } catch(e){}
+          if (!memoryMarketPrices) {
+              const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
+              if (saved) {
+                  try {
+                      const parsed = JSON.parse(saved);
+                      memoryMarketPrices = parsed;
+                      onUpdate(parsed);
+                  } catch(e){}
+              }
           }
-          return () => {};
+          return () => {
+              marketPricesSubscribers.delete(onUpdate);
+          };
       }
       try {
           const docRef = doc(db, "market_data", "current_prices");
-          const unsubscribe = onSnapshot(docRef, (docSnap) => {
+          const unsubscribeFirestore = onSnapshot(docRef, (docSnap) => {
               if (docSnap.exists()) {
                   const data = docSnap.data();
                   if (data.items && Array.isArray(data.items) && data.items.length > 0) {
-                      localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items));
-                      onUpdate(data.items as MarketItem[]);
+                      memoryMarketPrices = data.items as MarketItem[];
+                      safeSetLocalStorage(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items));
+                      marketPricesSubscribers.forEach(cb => {
+                          try { cb(data.items as MarketItem[]); } catch (_) {}
+                      });
                       return;
                   }
               }
               // Auto-seed baseline items into Firebase if empty
               const seed = marketService.getOfflineMarketPrices();
+              memoryMarketPrices = seed;
               this.saveMarketPrices(seed).catch(() => {});
               onUpdate(seed);
           }, (error) => {
               console.info("Market real-time sync offline or fallback active:", error);
           });
-          return unsubscribe;
+          return () => {
+              marketPricesSubscribers.delete(onUpdate);
+              unsubscribeFirestore();
+          };
       } catch (e) {
-          return () => {};
+          return () => {
+              marketPricesSubscribers.delete(onUpdate);
+          };
       }
   },
   async getMarketPrices(defaultPrices: MarketItem[]): Promise<MarketItem[]> { 
@@ -1989,15 +2078,38 @@ export const api = {
           return marketService.getOfflineMarketPrices();
       };
 
-      if (!navigator.onLine) { 
-          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); 
-          if (saved) {
-              try {
+      if (memoryMarketPrices && memoryMarketPrices.length > 0) {
+          return memoryMarketPrices;
+      }
+
+      const readLocalBackup = async (): Promise<MarketItem[] | null> => {
+          try {
+              const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
+              if (saved) {
                   const parsed = JSON.parse(saved);
-                  if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-              } catch (e) {}
-          }
-          return getSeedData(); 
+                  if (Array.isArray(parsed) && parsed.length > 0) {
+                      memoryMarketPrices = parsed;
+                      return parsed;
+                  }
+              }
+          } catch (e) {}
+          try {
+              const blob = await dbService.getBlob(LOCAL_STORAGE_MARKET_PRICES_KEY);
+              if (blob) {
+                  const text = await blob.text();
+                  const parsed = JSON.parse(text);
+                  if (Array.isArray(parsed) && parsed.length > 0) {
+                      memoryMarketPrices = parsed;
+                      return parsed;
+                  }
+              }
+          } catch (e) {}
+          return null;
+      };
+
+      if (!navigator.onLine) { 
+          const local = await readLocalBackup();
+          return local || getSeedData(); 
       } 
       try { 
           const docRef = doc(db, "market_data", "current_prices"); 
@@ -2005,39 +2117,52 @@ export const api = {
           if (docSnap.exists()) { 
               const data = docSnap.data(); 
               if (data.items && Array.isArray(data.items) && data.items.length > 0) { 
-                  localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items)); 
+                  memoryMarketPrices = data.items as MarketItem[];
+                  safeSetLocalStorage(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(data.items)); 
                   return data.items as MarketItem[]; 
               } 
           } 
           // Seed baseline items to Firestore if doc doesn't exist
           const seed = getSeedData();
           if (seed.length > 0) {
+              memoryMarketPrices = seed;
               await this.saveMarketPrices(seed).catch(e => console.warn("Auto-seed save failed", e));
           }
           return seed;
       } catch (e: any) { 
           if (e.code === 'permission-denied') console.warn("Market Sync Permission Denied"); 
-          const saved = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY); 
-          if (saved) {
-              try {
-                  const parsed = JSON.parse(saved);
-                  if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-              } catch (e) {}
-          }
-          return getSeedData(); 
+          const local = await readLocalBackup();
+          return local || getSeedData(); 
       } 
   },
   async saveMarketPrices(prices: MarketItem[]): Promise<void> { 
-      localStorage.setItem(LOCAL_STORAGE_MARKET_PRICES_KEY, JSON.stringify(prices)); 
-      if (!navigator.onLine) return; 
-      try { 
-          await setDoc(doc(db, "market_data", "current_prices"), { items: prices, lastUpdated: new Date().toISOString(), updatedBy: "user_action" }); 
-      } catch (e) {
-          console.error("Failed to save market prices to Firebase", e);
-      } 
+      memoryMarketPrices = prices;
+      const serialized = JSON.stringify(prices);
+      safeSetLocalStorage(LOCAL_STORAGE_MARKET_PRICES_KEY, serialized);
+      // Notify all subscribers and open tabs in 0ms
+      marketPricesSubscribers.forEach(cb => {
+          try { cb(prices); } catch (_) {}
+      });
+      if (marketPricesChannel) {
+          try { marketPricesChannel.postMessage({ items: prices, timestamp: Date.now() }); } catch (_) {}
+      }
+      // Execute Firebase write and IndexedDB backup concurrently without blocking each other
+      const tasks: Promise<any>[] = [
+          dbService.putBlob(LOCAL_STORAGE_MARKET_PRICES_KEY, new Blob([serialized], { type: 'application/json' })).catch(() => {})
+      ];
+      if (navigator.onLine) {
+          tasks.push(
+              setDoc(doc(db, "market_data", "current_prices"), {
+                  items: prices,
+                  lastUpdated: new Date().toISOString(),
+                  updatedBy: "user_action"
+              }).catch(e => console.warn("Failed to save market prices to Firebase", e))
+          );
+      }
+      await Promise.all(tasks);
   },
   async mergeAndSaveMarketPrices(newItems: MarketItem[], existingPrices: MarketItem[] = []): Promise<void> { 
-      let basePrices = existingPrices;
+      let basePrices = (memoryMarketPrices && memoryMarketPrices.length > 0) ? memoryMarketPrices : existingPrices;
       if (!basePrices || basePrices.length === 0) {
           basePrices = await this.getMarketPrices([]);
       }
@@ -2062,6 +2187,7 @@ export const api = {
           } 
       }); 
       const finalPrices = Array.from(mergedMap.values()); 
+      memoryMarketPrices = finalPrices;
       await this.saveMarketPrices(finalPrices); 
   },
   async migrateGuestData(): Promise<void> { return; } 

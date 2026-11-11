@@ -94,6 +94,15 @@ export interface ProjectPayment {
   attachments?: string[]; // Base64 or URLs
 }
 
+export type BOQItemReportType = 'materials' | 'method_specs' | 'productivity_labor' | 'inspection_quality';
+
+export interface BOQItemSavedReport {
+  type: BOQItemReportType;
+  title: string;
+  content: string;
+  updatedAt: string;
+}
+
 export interface BOQItem {
   id: string;
   itemCode: string;
@@ -105,6 +114,7 @@ export interface BOQItem {
   executedQuantity: number;
   batchId?: string;
   batchName?: string;
+  savedReports?: Partial<Record<BOQItemReportType, BOQItemSavedReport>>;
 }
 
 export interface MaterialRequirement {

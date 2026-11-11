@@ -95,6 +95,23 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         setScale(prev => Math.min(Math.max(1, prev + delta), 5));
     };
 
+    const [showActionsMenu, setShowActionsMenu] = useState(false);
+    const [isSharing, setIsSharing] = useState(false);
+
+    const handleShare = async () => {
+        if (isSharing) return;
+        setIsSharing(true);
+        try {
+            const blob = await api.downloadFileBlob(item.id);
+            const file = new File([blob], item.name, { type: blob.type || 'application/acad' });
+            await api.shareSmart(item, file);
+        } catch (e) {
+            alert('فشل تحضير الملف للمشاركة.');
+        } finally {
+            setIsSharing(false);
+        }
+    };
+
     return (
         <div className="w-full h-full flex flex-col relative bg-[#1a237e] overflow-hidden">
             {/* Blueprint Grid Background - Acts as backdrop */}
@@ -114,19 +131,107 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
             ></div>
 
             {/* Header */}
-            <div className="relative z-20 p-4 flex justify-between items-center text-white/80 border-b border-white/10 bg-[#0f172a]/80 backdrop-blur-md shadow-lg">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded bg-[#c41e3a] flex items-center justify-center text-white shadow-inner">
-                        <i className="fa-solid fa-compass-drafting"></i>
+            <div className="relative z-30 px-3 py-2.5 flex justify-between items-center text-white/80 border-b border-white/10 bg-[#0f172a]/90 backdrop-blur-md shadow-lg">
+                <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1 ml-2">
+                    <div className="w-7 h-7 rounded-lg bg-[#c41e3a] flex items-center justify-center text-white shadow-inner shrink-0">
+                        <i className="fa-solid fa-compass-drafting text-xs"></i>
                     </div>
-                    <div className="flex flex-col">
-                        <span className="font-bold text-sm text-white">{item.name}</span>
-                        <span className="text-[10px] text-white/50 font-mono">AUTOCAD DRAWING</span>
+                    <div className="flex flex-col min-w-0">
+                        <span className="font-bold text-xs sm:text-sm text-white truncate">{item.name}</span>
+                        <span className="text-[9px] text-white/50 font-mono">AUTOCAD DRAWING</span>
                     </div>
                 </div>
-                <div className="flex gap-2">
-                    <button onClick={() => setScale(1)} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition"><i className="fa-solid fa-compress"></i></button>
-                    <button onClick={onClose} className="w-8 h-8 rounded-full bg-red-500/20 hover:bg-red-500/40 text-red-200 flex items-center justify-center transition"><i className="fa-solid fa-times"></i></button>
+                <div className="flex gap-1.5 items-center relative shrink-0">
+                    <button
+                        onClick={() => setShowActionsMenu(prev => !prev)}
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${showActionsMenu ? 'bg-indigo-600 text-white border-indigo-400' : 'bg-white/10 hover:bg-white/20 text-white border-white/10'}`}
+                        title="أدوات المخطط"
+                    >
+                        {loading || isSharing ? (
+                            <i className="fa-solid fa-circle-notch fa-spin text-xs text-yellow-300"></i>
+                        ) : (
+                            <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
+                        )}
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className="w-8 h-8 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition text-xs border border-white/10"
+                        title="إغلاق"
+                    >
+                        <i className="fa-solid fa-times text-xs"></i>
+                    </button>
+
+                    {showActionsMenu && (
+                        <>
+                            <div
+                                className="fixed inset-0 z-[90]"
+                                onClick={() => setShowActionsMenu(false)}
+                            ></div>
+                            <div className="absolute left-0 top-10 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-slate-400">خيارات المخطط الهندسي</span>
+                                    <i className="fa-solid fa-compass-drafting text-[10px] text-red-400"></i>
+                                </div>
+
+                                <button
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        handleOpenInApp();
+                                    }}
+                                    disabled={loading}
+                                    className="w-full px-3 py-2.5 rounded-xl bg-[#c41e3a] hover:bg-[#a01830] text-white flex items-center gap-2.5 transition shadow-md text-xs font-bold disabled:opacity-50"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+                                        <i className="fa-solid fa-cube text-xs"></i>
+                                    </div>
+                                    <span>فتح بواسطة DWG FastView</span>
+                                </button>
+
+                                <button
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        handleShare();
+                                    }}
+                                    disabled={isSharing}
+                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-emerald-400 flex items-center justify-center shrink-0">
+                                        <i className="fa-solid fa-share-nodes text-xs"></i>
+                                    </div>
+                                    <span>مشاركة المخطط</span>
+                                </button>
+
+                                <button
+                                    onClick={() => {
+                                        setScale(1);
+                                        setPosition({ x: 0, y: 0 });
+                                        setShowActionsMenu(false);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center shrink-0">
+                                        <i className="fa-solid fa-compress text-xs"></i>
+                                    </div>
+                                    <span>إعادة ضبط الأبعاد (100%)</span>
+                                </button>
+
+                                {item.webViewLink && (
+                                    <a
+                                        href={item.webViewLink}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        onClick={() => setShowActionsMenu(false)}
+                                        className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold text-white"
+                                    >
+                                        <div className="w-7 h-7 rounded-lg bg-slate-800 text-blue-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-brands fa-google-drive text-xs"></i>
+                                        </div>
+                                        <span>معاينة Google Drive</span>
+                                    </a>
+                                )}
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
 
@@ -175,43 +280,17 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                         </div>
                         <h2 className="text-xl font-bold text-white mb-2">لا توجد معاينة متاحة</h2>
                         <p className="text-blue-200 text-xs mb-8">
-                            هذا الملف لا يحتوي على صورة مصغرة. يرجى فتحه بالتطبيق الخارجي.
+                            هذا الملف لا يحتوي على صورة مصغرة. يمكنك فتحه بالتطبيق الخارجي من زر الخيارات بالأعلى.
                         </p>
                     </div>
                 )}
-                
-                {/* Floating Action Bar */}
-                <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 flex flex-col gap-3 w-full max-w-xs px-4 pointer-events-none">
-                    {/* Status Message */}
-                    {status && (
-                        <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-xs font-bold border border-white/10 backdrop-blur-md text-center animate-slide-up pointer-events-auto">
-                            {loading && <i className="fa-solid fa-circle-notch fa-spin ml-2"></i>}
-                            {status} {progress > 0 && `(${progress}%)`}
-                        </div>
-                    )}
 
-                    <button 
-                        onClick={handleOpenInApp}
-                        disabled={loading}
-                        className="bg-[#c41e3a] hover:bg-[#a01830] text-white py-3.5 rounded-xl font-bold shadow-[0_0_20px_rgba(196,30,58,0.4)] transition transform active:scale-95 flex items-center justify-center gap-3 border border-white/10 group relative overflow-hidden pointer-events-auto"
-                    >
-                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                        <i className="fa-solid fa-cube text-lg"></i>
-                        <span className="text-sm">فتح بواسطة DWG FastView</span>
-                    </button>
-
-                    {item.webViewLink && (
-                        <a 
-                            href={item.webViewLink} 
-                            target="_blank" 
-                            rel="noreferrer"
-                            className="bg-white/10 hover:bg-white/20 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 border border-white/10 backdrop-blur-sm pointer-events-auto text-[10px]"
-                        >
-                            <i className="fa-brands fa-google-drive text-blue-400 text-sm"></i>
-                            <span>معاينة Google Drive</span>
-                        </a>
-                    )}
-                </div>
+                {status && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/75 text-white px-4 py-2 rounded-xl text-xs font-bold border border-white/10 backdrop-blur-md text-center animate-slide-up">
+                        {loading && <i className="fa-solid fa-circle-notch fa-spin ml-2"></i>}
+                        {status} {progress > 0 && `(${progress}%)`}
+                    </div>
+                )}
             </div>
         </div>
     );

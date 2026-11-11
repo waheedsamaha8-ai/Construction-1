@@ -148,6 +148,22 @@ export const getCustomApiKeys = (): string[] => {
     return [];
 };
 
+export const rotateCustomApiKey = (): number => {
+    const keys = getCustomApiKeys();
+    if (keys.length <= 1) return 0;
+    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % keys.length;
+    return activeCustomKeyIndex;
+};
+
+export const getSmartKeyStatus = () => {
+    const keys = getCustomApiKeys();
+    return {
+        hasCustomKeys: keys.length > 0,
+        totalKeys: keys.length,
+        activeIndex: keys.length > 0 ? (activeCustomKeyIndex % keys.length) : 0,
+    };
+};
+
 export const isStaticHost = (): boolean => {
     if (typeof window === 'undefined') return false;
     const host = window.location.hostname.toLowerCase();
@@ -158,59 +174,49 @@ export const isStaticHost = (): boolean => {
 export const safeGenerateContent = async (primaryModel: string, params: any): Promise<{ text: string, usedModel: string, functionCalls?: any[], response?: any }> => {
     const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest')) ? MODEL_SMART : primaryModel;
     const userKeys = getCustomApiKeys();
-    const attempts = userKeys.length > 0 ? userKeys.length : 1;
+    const rotatedKeys = userKeys.length > 0
+        ? userKeys.map((_, idx) => userKeys[(activeCustomKeyIndex + idx) % userKeys.length])
+        : [];
+    const customUserKey = rotatedKeys[0] || '';
 
-    for (let i = 0; i < attempts; i++) {
-        const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
-        const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
+    try {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+        };
+        if (customUserKey) {
+            headers['X-Gemini-Api-Key'] = customUserKey;
+        }
 
-        try {
-            const headers: Record<string, string> = {
-                'Content-Type': 'application/json',
-            };
-            if (customUserKey) {
-                headers['X-Gemini-Api-Key'] = customUserKey;
-            }
+        const res = await fetch('/api/gemini/generate', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                model,
+                contents: params.contents,
+                config: params.config,
+                cachedContent: params.cachedContent,
+                apiKey: customUserKey,
+                apiKeys: rotatedKeys,
+            }),
+        });
 
-            const res = await fetch('/api/gemini/generate', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    model,
-                    contents: params.contents,
-                    config: params.config,
-                    cachedContent: params.cachedContent,
-                    apiKey: customUserKey,
-                }),
-            });
-
-            if (!res.ok) {
-                const errorData = await res.json().catch(() => ({}));
-                const errMsg = errorData.error || `Server returned error ${res.status}`;
-
-                if (userKeys.length > 1 && i < attempts - 1) {
-                    console.warn(`Key #${keyIndex + 1} failed (${res.status}), rotating to key #${((keyIndex + 1) % userKeys.length) + 1}...`);
-                    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-                    continue;
-                }
-                throw new Error(errMsg);
-            }
-
+        if (res.ok) {
             const data = await res.json();
-            activeCustomKeyIndex = keyIndex;
-
+            if (userKeys.length > 1 && data.usedModel === 'Emergency-Quota-Protection') {
+                activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+            }
             return {
                 text: data.text || '',
                 functionCalls: data.functionCalls || undefined,
+                response: data.modelContent ? { candidates: [{ content: data.modelContent }] } : undefined,
                 usedModel: data.usedModel || model,
             };
-        } catch (error: any) {
-            if (userKeys.length > 1 && i < attempts - 1) {
-                console.warn(`Custom key #${keyIndex + 1} error (${error.message}), trying next key...`);
-                activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-                continue;
-            }
         }
+    } catch (error: any) {
+        if (userKeys.length > 1) {
+            activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
+        }
+        console.warn('safeGenerateContent error:', error?.message || error);
     }
 
     // Static emergency fallback to ensure UX continuity
@@ -239,41 +245,38 @@ export const safeGenerateStream = async (
 ): Promise<string> => {
     const model = primaryModel || MODEL_SMART;
     const userKeys = getCustomApiKeys();
-    const attempts = userKeys.length > 0 ? userKeys.length : 1;
+    const rotatedKeys = userKeys.length > 0
+        ? userKeys.map((_, idx) => userKeys[(activeCustomKeyIndex + idx) % userKeys.length])
+        : [];
+    const customUserKey = rotatedKeys[0] || '';
+    let fullText = '';
 
-    for (let i = 0; i < attempts; i++) {
-        const keyIndex = (activeCustomKeyIndex + i) % (userKeys.length || 1);
-        const customUserKey = userKeys.length > 0 ? userKeys[keyIndex] : '';
-        let fullText = '';
+    try {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+        };
+        if (customUserKey) {
+            headers['X-Gemini-Api-Key'] = customUserKey;
+        }
 
-        try {
-            const headers: Record<string, string> = {
-                'Content-Type': 'application/json',
-            };
-            if (customUserKey) {
-                headers['X-Gemini-Api-Key'] = customUserKey;
+        const res = await fetch('/api/gemini/stream', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                model,
+                contents: params.contents,
+                config: params.config,
+                apiKey: customUserKey,
+                apiKeys: rotatedKeys,
+            }),
+        });
+
+        if (!res.ok || !res.body) {
+            if (userKeys.length > 1) {
+                activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
             }
-
-            const res = await fetch('/api/gemini/stream', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    model,
-                    contents: params.contents,
-                    config: params.config,
-                    apiKey: customUserKey,
-                }),
-            });
-
-            if (!res.ok || !res.body) {
-                if (userKeys.length > 1 && i < attempts - 1) {
-                    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-                    continue;
-                }
-                throw new Error(`Streaming failed with status ${res.status}`);
-            }
-
-            activeCustomKeyIndex = keyIndex;
+            throw new Error(`Streaming failed with status ${res.status}`);
+        }
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -303,16 +306,12 @@ export const safeGenerateStream = async (
             }
             return fullText;
         } catch (e: any) {
-            if (userKeys.length > 1 && i < attempts - 1) {
-                console.warn(`Streaming key #${keyIndex + 1} failed, rotating to next key...`);
+            if (userKeys.length > 1) {
                 activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-                continue;
             }
             console.error("Streaming error:", e);
             return fullText;
         }
-    }
-    return '';
 };
 
 // --- LIVE API WEBSOCKET CLIENT HELPER ---
