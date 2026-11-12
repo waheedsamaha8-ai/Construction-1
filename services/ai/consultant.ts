@@ -287,16 +287,8 @@ export const consultantService = {
             ${prompt}
 
             **IMPORTANT FORMATTING INSTRUCTION:**
-            You MUST start your response with the following HTML Header structure exactly (fill in the data):
-            <div class="report-header">
-                <div class="left-side">
-                    <p>التاريخ: ${new Date().toLocaleDateString('en-GB')}</p>
-                </div>
-                <div class="right-side">
-                    <h2>.......................................</h2>
-                    <p>تقرير استشاري</p>
-                </div>
-            </div>
+            - Start your response directly with a clean main title: \`<h1>عنوان التقرير الاستشاري</h1>\` (Do NOT use any \`.report-header\` div or blue header box).
+            - Never place \`<table>\` inside an \`info-box\` or any text box; place \`<table>\` directly in the report body at 100% width with natural text wrapping in all cells and column headers.
             `;
 
         try {

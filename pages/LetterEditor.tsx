@@ -51,7 +51,15 @@ const LetterEditor: React.FC = () => {
   const location = useLocation(); 
   
   // Refs
+  const paperRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const headerTitleRef = useRef<HTMLHeadingElement>(null);
+  const headerSubtitleRef = useRef<HTMLParagraphElement>(null);
+  const dateLabelRef = useRef<HTMLSpanElement>(null);
+  const metaDateRef = useRef<HTMLSpanElement>(null);
+  const refLabelRef = useRef<HTMLSpanElement>(null);
+  const metaRefRef = useRef<HTMLSpanElement>(null);
+  const footerElRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const boxImageInputRef = useRef<HTMLInputElement>(null); 
@@ -81,36 +89,44 @@ const LetterEditor: React.FC = () => {
   
   const isNewBlankLetter = !fileId && !(location.state && location.state.initialContent);
 
-  // PAGE DATA & VISIBILITY STATES (Initialized from LocalStorage for permanent persistence)
-  const [showHeader, setShowHeader] = useState(savedSettings?.showHeader ?? true); 
+  // PAGE DATA & VISIBILITY STATES (For new blank Letter / خطاب, always start with clean defaults and visible header)
+  const [showHeader, setShowHeader] = useState(isNewBlankLetter ? true : (savedSettings?.showHeader ?? false)); 
   const rawSavedTitle = savedSettings?.reportTitle;
   const initialReportTitle = isNewBlankLetter
     ? 'تقرير هندسي استشاري'
     : (!rawSavedTitle || rawSavedTitle.includes('فترة التقرير') || rawSavedTitle.includes('......') ? 'تقرير هندسي استشاري' : rawSavedTitle);
   const [reportTitle, setReportTitle] = useState(initialReportTitle);
-  const [showTitle, setShowTitle] = useState(savedSettings?.showTitle ?? true);
+  const [showTitle, setShowTitle] = useState(isNewBlankLetter ? true : (savedSettings?.showTitle ?? true));
 
   const rawSavedSub = savedSettings?.headerSubtitle;
-  const initialSubtitle = (!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل") || rawSavedSub.includes("فترة التقرير")) ? "تقرير هندسي استشاري" : rawSavedSub;
+  const initialSubtitle = isNewBlankLetter
+    ? 'تقرير استشاري'
+    : ((!rawSavedSub || rawSavedSub.includes("مدير مشروعات") || rawSavedSub.includes("المحفظة") || rawSavedSub.includes("الشامل") || rawSavedSub.includes("فترة التقرير")) ? "تقرير استشاري" : rawSavedSub);
   const [headerSubtitle, setHeaderSubtitle] = useState(initialSubtitle);
-  const [showSubtitle, setShowSubtitle] = useState(savedSettings?.showSubtitle ?? true);
+  const [showSubtitle, setShowSubtitle] = useState(isNewBlankLetter ? true : (savedSettings?.showSubtitle ?? true));
 
   const [metaRef, setMetaRef] = useState(`REF-${Date.now().toString().slice(-6)}`);
-  const [refLabel, setRefLabel] = useState(savedSettings?.refLabel ?? 'المرجع:');
-  const [showRef, setShowRef] = useState(savedSettings?.showRef ?? true);
+  const [refLabel, setRefLabel] = useState(isNewBlankLetter ? 'المرجع:' : (savedSettings?.refLabel ?? 'المرجع:'));
+  const [showRef, setShowRef] = useState(isNewBlankLetter ? true : (savedSettings?.showRef ?? true));
 
   const [metaDate, setMetaDate] = useState(new Date().toLocaleDateString('en-CA'));
-  const [dateLabel, setDateLabel] = useState(savedSettings?.dateLabel ?? 'التاريخ:');
-  const [showDate, setShowDate] = useState(savedSettings?.showDate ?? true);
+  const [dateLabel, setDateLabel] = useState(isNewBlankLetter ? 'التاريخ:' : (savedSettings?.dateLabel ?? 'التاريخ:'));
+  const [showDate, setShowDate] = useState(isNewBlankLetter ? true : (savedSettings?.showDate ?? true));
 
   const rawSavedFooter = savedSettings?.footerText;
-  const initialFooter = rawSavedFooter || '';
+  const initialFooter = rawSavedFooter || 'تم إعداد التقرير بواسطة الذكاء الاصطناعي تحت إشراف المهندس وحيد سماحة | مهندس_مصر';
   const [footerText, setFooterText] = useState(initialFooter);
-  const [showFooter, setShowFooter] = useState(savedSettings?.showFooter ?? false);
+  const [showFooter, setShowFooter] = useState(savedSettings?.showFooter ?? true);
+
+  // HEADER & FOOTER FONT SIZES
+  const [titleFontSize, setTitleFontSize] = useState<string>(savedSettings?.titleFontSize || '15px');
+  const [subtitleFontSize, setSubtitleFontSize] = useState<string>(savedSettings?.subtitleFontSize || '11.5px');
+  const [metaFontSize, setMetaFontSize] = useState<string>(savedSettings?.metaFontSize || '11px');
+  const [footerFontSize, setFooterFontSize] = useState<string>(savedSettings?.footerFontSize || '12px');
 
   // HEADER & FOOTER COLORS
-  const [headerColor, setHeaderColor] = useState<string>(savedSettings?.headerColor || '#1e3a8a');
-  const [footerColor, setFooterColor] = useState<string>(savedSettings?.footerColor || '#f8fafc');
+  const [headerColor, setHeaderColor] = useState<string>(isNewBlankLetter ? '#1e3a8a' : (savedSettings?.headerColor || '#1e3a8a'));
+  const [footerColor, setFooterColor] = useState<string>(savedSettings?.footerColor || '#1e3a8a');
 
   const isLightHex = (hex: string) => {
     const clean = (hex || '').replace('#', '');
@@ -151,6 +167,50 @@ const LetterEditor: React.FC = () => {
   // PRINT PAGE MARGIN STATE
   const [printPageMargin, setPrintPageMargin] = useState(savedSettings?.printPageMargin ?? 0.5);
 
+  // Sync contentEditable header & footer elements when state updates externally (without resetting cursor while typing)
+  useEffect(() => {
+    if (headerTitleRef.current && document.activeElement !== headerTitleRef.current && headerTitleRef.current.innerText !== reportTitle) {
+      headerTitleRef.current.innerText = reportTitle;
+    }
+  }, [reportTitle, showHeader, showTitle]);
+
+  useEffect(() => {
+    const displaySub = headerSubtitle?.includes("المحفظة") ? "تقرير استشاري" : headerSubtitle;
+    if (headerSubtitleRef.current && document.activeElement !== headerSubtitleRef.current && headerSubtitleRef.current.innerText !== displaySub) {
+      headerSubtitleRef.current.innerText = displaySub;
+    }
+  }, [headerSubtitle, showHeader, showSubtitle]);
+
+  useEffect(() => {
+    if (dateLabelRef.current && document.activeElement !== dateLabelRef.current && dateLabelRef.current.innerText !== dateLabel) {
+      dateLabelRef.current.innerText = dateLabel;
+    }
+  }, [dateLabel, showHeader, showDate]);
+
+  useEffect(() => {
+    if (metaDateRef.current && document.activeElement !== metaDateRef.current && metaDateRef.current.innerText !== metaDate) {
+      metaDateRef.current.innerText = metaDate;
+    }
+  }, [metaDate, showHeader, showDate]);
+
+  useEffect(() => {
+    if (refLabelRef.current && document.activeElement !== refLabelRef.current && refLabelRef.current.innerText !== refLabel) {
+      refLabelRef.current.innerText = refLabel;
+    }
+  }, [refLabel, showHeader, showRef]);
+
+  useEffect(() => {
+    if (metaRefRef.current && document.activeElement !== metaRefRef.current && metaRefRef.current.innerText !== metaRef) {
+      metaRefRef.current.innerText = metaRef;
+    }
+  }, [metaRef, showHeader, showRef]);
+
+  useEffect(() => {
+    if (footerElRef.current && document.activeElement !== footerElRef.current && footerElRef.current.innerText !== footerText) {
+      footerElRef.current.innerText = footerText;
+    }
+  }, [footerText, showFooter]);
+
   // Auto-Save settings to LocalStorage whenever modified
   useEffect(() => {
     try {
@@ -158,13 +218,14 @@ const LetterEditor: React.FC = () => {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
         reportTitle, headerSubtitle, refLabel, dateLabel, footerText,
         headerColor, footerColor,
+        titleFontSize, subtitleFontSize, metaFontSize, footerFontSize,
         marginConfig, printPageMargin
       };
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settingsToSave));
     } catch(e) {
       console.warn("Failed to persist letter settings to localStorage", e);
     }
-  }, [showHeader, showTitle, showSubtitle, showDate, showRef, showFooter, reportTitle, headerSubtitle, refLabel, dateLabel, footerText, headerColor, footerColor, marginConfig, printPageMargin]);
+  }, [showHeader, showTitle, showSubtitle, showDate, showRef, showFooter, reportTitle, headerSubtitle, refLabel, dateLabel, footerText, headerColor, footerColor, titleFontSize, subtitleFontSize, metaFontSize, footerFontSize, marginConfig, printPageMargin]);
 
   // Settings Modal & Header Menu State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -313,13 +374,14 @@ const LetterEditor: React.FC = () => {
 
   // --- Format Checking ---
   const checkFormats = useCallback(() => {
-      if (!document || !editorRef.current) return;
+      const rootContainer = paperRef.current || editorRef.current;
+      if (!document || !rootContainer) return;
       const sel = window.getSelection();
       let hasSelection = false;
 
       if (sel && sel.rangeCount > 0) {
           const range = sel.getRangeAt(0);
-          if (editorRef.current.contains(range.commonAncestorContainer)) {
+          if (rootContainer.contains(range.commonAncestorContainer)) {
               savedRange.current = range.cloneRange();
               hasSelection = !sel.isCollapsed && sel.toString().trim().length > 0;
           }
@@ -341,7 +403,7 @@ const LetterEditor: React.FC = () => {
 
       if (sel && sel.anchorNode) {
           const element = (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) as HTMLElement;
-          if (element) {
+          if (element && rootContainer.contains(element)) {
               const style = window.getComputedStyle(element);
               const blockEl = element.closest('h1, h2, h3, p, div, blockquote, li, td, th');
               if (blockEl) blockType = blockEl.tagName.toLowerCase();
@@ -420,7 +482,8 @@ const LetterEditor: React.FC = () => {
   const handleInput = () => { checkFormats(); };
   
   const execCmd = (command: string, value: string = '') => { 
-      if (!editorRef.current) return;
+      const rootContainer = paperRef.current || editorRef.current;
+      if (!rootContainer) return;
       const sel = window.getSelection();
       
       // Restore saved range if available
@@ -428,10 +491,10 @@ const LetterEditor: React.FC = () => {
           sel.removeAllRanges();
           sel.addRange(savedRange.current);
       } else if (!sel?.rangeCount) {
-          editorRef.current.focus();
+          editorRef.current?.focus();
       }
       
-      // Special handling for Font Size to apply to current block if no selection
+      // Special handling for Font Size to apply to header/footer or current block
       if (command === 'fontSize') {
           const sel = window.getSelection();
           if (sel && sel.rangeCount > 0) {
@@ -443,13 +506,49 @@ const LetterEditor: React.FC = () => {
               };
               const pixelSize = sizeMap[value] || '16px';
 
+              let target = range.commonAncestorContainer as HTMLElement;
+              if (target.nodeType === 3) target = target.parentElement as HTMLElement;
+
+              // Check if user is inside Header or Footer
+              if (target) {
+                  const headerH1 = target.closest('.report-header-title h1') as HTMLElement;
+                  if (headerH1) {
+                      setTitleFontSize(pixelSize);
+                      headerH1.style.fontSize = pixelSize;
+                      headerH1.querySelectorAll('*').forEach((el: any) => el.style.fontSize = pixelSize);
+                      checkFormats();
+                      return;
+                  }
+                  const headerSub = target.closest('.report-header-subtitle') as HTMLElement;
+                  if (headerSub) {
+                      setSubtitleFontSize(pixelSize);
+                      headerSub.style.fontSize = pixelSize;
+                      headerSub.querySelectorAll('*').forEach((el: any) => el.style.fontSize = pixelSize);
+                      checkFormats();
+                      return;
+                  }
+                  const headerMeta = target.closest('.report-header-meta') as HTMLElement;
+                  if (headerMeta) {
+                      setMetaFontSize(pixelSize);
+                      headerMeta.style.fontSize = pixelSize;
+                      headerMeta.querySelectorAll('*').forEach((el: any) => el.style.fontSize = pixelSize);
+                      checkFormats();
+                      return;
+                  }
+                  const footerEl = target.closest('.report-footer') as HTMLElement;
+                  if (footerEl) {
+                      setFooterFontSize(pixelSize);
+                      footerEl.style.fontSize = pixelSize;
+                      footerEl.querySelectorAll('*').forEach((el: any) => el.style.fontSize = pixelSize);
+                      checkFormats();
+                      return;
+                  }
+              }
+
               if (!hasSelection) {
                   // Apply to current block element
-                  let target = range.commonAncestorContainer as HTMLElement;
-                  if (target.nodeType === 3) target = target.parentElement as HTMLElement;
-                  
-                  const blockEl = target.closest('p, div, h1, h2, h3, li, td, th, blockquote') as HTMLElement;
-                  if (blockEl && editorRef.current.contains(blockEl)) {
+                  const blockEl = target?.closest('p, div, h1, h2, h3, li, td, th, blockquote') as HTMLElement;
+                  if (blockEl && rootContainer.contains(blockEl)) {
                       blockEl.style.fontSize = pixelSize;
                       
                       // If it's a table cell, also ensure line-height is tight
@@ -470,8 +569,8 @@ const LetterEditor: React.FC = () => {
                   
                   // Post-process selection to ensure it's applied correctly
                   // Find any <font> tags created and convert them to spans with inline styles
-                  if (editorRef.current) {
-                      const fonts = editorRef.current.querySelectorAll('font[size]');
+                  if (rootContainer) {
+                      const fonts = rootContainer.querySelectorAll('font[size]');
                       fonts.forEach((f: any) => {
                           const size = f.getAttribute('size');
                           if (sizeMap[size]) {
@@ -479,9 +578,6 @@ const LetterEditor: React.FC = () => {
                               f.removeAttribute('size');
                           }
                       });
-                      
-                      // Also check spans with font-size style that might need normalization
-                      // (Optional, but good for consistency)
                   }
                   
                   document.execCommand('styleWithCSS', false, 'false');
@@ -929,6 +1025,10 @@ const LetterEditor: React.FC = () => {
                   if (savedConfig.refLabel) setRefLabel(savedConfig.refLabel);
                   if (savedConfig.headerColor) setHeaderColor(savedConfig.headerColor);
                   if (savedConfig.footerColor) setFooterColor(savedConfig.footerColor);
+                  if (savedConfig.titleFontSize) setTitleFontSize(savedConfig.titleFontSize);
+                  if (savedConfig.subtitleFontSize) setSubtitleFontSize(savedConfig.subtitleFontSize);
+                  if (savedConfig.metaFontSize) setMetaFontSize(savedConfig.metaFontSize);
+                  if (savedConfig.footerFontSize) setFooterFontSize(savedConfig.footerFontSize);
                   if (savedConfig.printPageMargin !== undefined) setPrintPageMargin(savedConfig.printPageMargin);
                   if (savedConfig.marginConfig) setMarginConfig(savedConfig.marginConfig);
               } catch(e) { console.warn("Failed to parse settings", e); }
@@ -955,11 +1055,13 @@ const LetterEditor: React.FC = () => {
 
           // Extract Metadata if available and not already set by settings block
           if (!settingsEl || !settingsEl.dataset.config) {
+              const hasHeaderEl = !!doc.querySelector('.report-header');
+              setShowHeader(hasHeaderEl);
               const reportTitleEl = doc.querySelector('.report-header-title h1');
               if (reportTitleEl) setReportTitle(reportTitleEl.textContent || "تقرير هندسي استشاري");
 
               const subtitleEl = doc.querySelector('.report-header-subtitle');
-              if (subtitleEl) setHeaderSubtitle(subtitleEl.textContent || "");
+              if (subtitleEl) setHeaderSubtitle(subtitleEl.textContent || "تقرير استشاري");
 
               const footerEl = doc.querySelector('.report-footer');
               if (footerEl) setFooterText(footerEl.textContent?.trim() || "");
@@ -1007,7 +1109,18 @@ const LetterEditor: React.FC = () => {
             parseAndLoadContent(location.state.initialContent);
             setFilename(location.state.filename || "تقرير_استشاري_مسودة");
         } else {
+            setShowHeader(true);
+            setShowTitle(true);
+            setShowSubtitle(true);
+            setShowDate(true);
+            setShowRef(true);
             setReportTitle('تقرير هندسي استشاري');
+            setHeaderSubtitle('تقرير استشاري');
+            setDateLabel('التاريخ:');
+            setMetaDate(new Date().toLocaleDateString('en-CA'));
+            setRefLabel('المرجع:');
+            setMetaRef(`REF-${Date.now().toString().slice(-6)}`);
+            setHeaderColor('#1e3a8a');
             if (editorRef.current) editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
         }
     };
@@ -1031,6 +1144,12 @@ const LetterEditor: React.FC = () => {
         footerColor,
         margins: marginConfig,
         labels: { date: dateLabel, ref: refLabel },
+        fontSizes: {
+            title: titleFontSize,
+            subtitle: subtitleFontSize,
+            meta: metaFontSize,
+            footer: footerFontSize
+        },
         // Flags
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter
     });
@@ -1040,6 +1159,7 @@ const LetterEditor: React.FC = () => {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
         reportTitle, headerSubtitle, footerText,
         headerColor, footerColor,
+        titleFontSize, subtitleFontSize, metaFontSize, footerFontSize,
         metaDate, metaRef, dateLabel, refLabel,
         printPageMargin, marginConfig
     };
@@ -1115,6 +1235,7 @@ const LetterEditor: React.FC = () => {
   const handlePrint = () => { 
       if (!editorRef.current) return; 
       printService.printReport(editorRef.current.innerHTML, reportTitle, metaRef, { 
+          date: metaDate,
           subtitle: headerSubtitle, 
           footerText: footerText,
           headerColor,
@@ -1122,6 +1243,12 @@ const LetterEditor: React.FC = () => {
           margins: marginConfig, 
           pageMargin: printPageMargin, 
           labels: { date: dateLabel, ref: refLabel },
+          fontSizes: {
+              title: titleFontSize,
+              subtitle: subtitleFontSize,
+              meta: metaFontSize,
+              footer: footerFontSize
+          },
           // Pass flags to print service (which uses ReportGenerator internally in many cases)
           showHeader, showTitle, showSubtitle, showDate, showRef, showFooter
       }); 
@@ -1256,13 +1383,21 @@ const LetterEditor: React.FC = () => {
                 }
             }
 
-            /* Print Preview Specifics */
-            .report-header, .report-footer { user-select: none; pointer-events: none; }
-
-            /* Dynamic Custom Header & Footer Colors */
+            /* Header & Footer Direct Editing and Layout */
             #paper-container .report-header {
+                display: flex !important;
+                flex-direction: row !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                direction: rtl !important;
                 background-color: ${headerColor} !important;
                 color: ${headerTextColor} !important;
+                cursor: text;
+            }
+            #paper-container .report-header .report-header-title {
+                text-align: right !important;
+                flex: 1 1 auto !important;
+                min-width: 0 !important;
             }
             #paper-container .report-header .report-header-title h1,
             #paper-container .report-header .report-header-meta,
@@ -1272,17 +1407,35 @@ const LetterEditor: React.FC = () => {
             }
             #paper-container .report-header .report-header-subtitle {
                 color: ${headerSubTextColor} !important;
+                text-align: right !important;
             }
             #paper-container .report-header .report-header-meta {
+                text-align: left !important;
+                direction: rtl !important;
+                align-items: flex-end !important;
+                margin-right: auto !important;
+                flex-shrink: 0 !important;
                 background-color: ${headerMetaBg} !important;
                 border-color: ${headerMetaBorder} !important;
             }
+            #paper-container #letter-content-area {
+                flex: 1 1 auto !important;
+            }
             #paper-container .report-footer {
+                margin-top: auto !important;
+                margin-bottom: 0 !important;
+                width: 100% !important;
                 background-color: ${footerColor} !important;
                 color: ${footerTextColor} !important;
+                cursor: text;
             }
             #paper-container .report-footer * {
                 color: ${footerTextColor} !important;
+            }
+            #paper-container .report-header [contenteditable="true"]:focus,
+            #paper-container .report-footer[contenteditable="true"]:focus {
+                outline: 1.5px dashed rgba(255, 255, 255, 0.65);
+                border-radius: 4px;
             }
             
             /* Hidden Elements for Editing */
@@ -1971,6 +2124,7 @@ const LetterEditor: React.FC = () => {
              
              <div id="paper-container" className={`shadow-2xl relative transition-all duration-300 ${isMobileZoom ? 'is-mobile-zoom' : 'is-print-preview'}`} style={wrapperStyle}>
                 <div 
+                    ref={paperRef}
                     style={{
                         ...paperStyle,
                         // Override padding in Mobile Zoom Mode to minimal
@@ -1978,25 +2132,70 @@ const LetterEditor: React.FC = () => {
                     }} 
                     className="report-container"
                 >
-                     {/* 1. Visual Header (Matches Print Preview) */}
-                     <div className={`report-header ${!showHeader ? 'hidden-element' : (!showTitle && !showSubtitle && !showDate && !showRef ? 'hidden-element' : '')}`}>
+                     {/* 1. Visual Header (Matches Print Preview - Directly Editable & Font-Size Adjustable) */}
+                     <div
+                        className={`report-header ${!showHeader ? 'hidden-element' : (!showTitle && !showSubtitle && !showDate && !showRef ? 'hidden-element' : '')}`}
+                        onClick={(e) => { e.stopPropagation(); checkFormats(); }}
+                        onKeyUp={handleKeyUp}
+                        onMouseUp={checkFormats}
+                        onTouchEnd={checkFormats}
+                     >
                         <div className="report-header-title">
-                            {showTitle && <h1 contentEditable suppressContentEditableWarning onInput={(e) => setReportTitle(e.currentTarget.innerText)} dir="auto">{reportTitle}</h1>}
-                            {showSubtitle && <p className="report-header-subtitle" contentEditable suppressContentEditableWarning onInput={(e) => setHeaderSubtitle(e.currentTarget.innerText)} dir="auto">{headerSubtitle?.includes("المحفظة") ? "تقرير استشاري" : headerSubtitle}</p>}
+                            {showTitle && (
+                                <h1
+                                    ref={headerTitleRef}
+                                    contentEditable
+                                    suppressContentEditableWarning
+                                    style={{ fontSize: titleFontSize }}
+                                    onInput={(e) => { setReportTitle(e.currentTarget.innerText); checkFormats(); }}
+                                    dir="auto"
+                                />
+                            )}
+                            {showSubtitle && (
+                                <p
+                                    ref={headerSubtitleRef}
+                                    className="report-header-subtitle"
+                                    contentEditable
+                                    suppressContentEditableWarning
+                                    style={{ fontSize: subtitleFontSize }}
+                                    onInput={(e) => { setHeaderSubtitle(e.currentTarget.innerText); checkFormats(); }}
+                                    dir="auto"
+                                />
+                            )}
                         </div>
-                        <div className="report-header-meta">
+                        <div className="report-header-meta" style={{ fontSize: metaFontSize }}>
                             {(showDate || showRef) && (
                                 <>
                                     {showDate && (
-                                        <div>
-                                            <span contentEditable suppressContentEditableWarning onInput={(e) => setDateLabel(e.currentTarget.innerText)}>{dateLabel}</span>
-                                            <span contentEditable suppressContentEditableWarning onInput={(e) => setMetaDate(e.currentTarget.innerText)}>{metaDate}</span>
+                                        <div style={{ textAlign: 'left', direction: 'rtl', fontSize: metaFontSize }}>
+                                            <span
+                                                ref={dateLabelRef}
+                                                contentEditable
+                                                suppressContentEditableWarning
+                                                onInput={(e) => { setDateLabel(e.currentTarget.innerText); checkFormats(); }}
+                                            />{' '}
+                                            <span
+                                                ref={metaDateRef}
+                                                contentEditable
+                                                suppressContentEditableWarning
+                                                onInput={(e) => { setMetaDate(e.currentTarget.innerText); checkFormats(); }}
+                                            />
                                         </div>
                                     )}
                                     {showRef && (
-                                        <div>
-                                            <span contentEditable suppressContentEditableWarning onInput={(e) => setRefLabel(e.currentTarget.innerText)}>{refLabel}</span>
-                                            <span contentEditable suppressContentEditableWarning onInput={(e) => setMetaRef(e.currentTarget.innerText)}>{metaRef}</span>
+                                        <div style={{ textAlign: 'left', direction: 'rtl', fontSize: metaFontSize }}>
+                                            <span
+                                                ref={refLabelRef}
+                                                contentEditable
+                                                suppressContentEditableWarning
+                                                onInput={(e) => { setRefLabel(e.currentTarget.innerText); checkFormats(); }}
+                                            />{' '}
+                                            <span
+                                                ref={metaRefRef}
+                                                contentEditable
+                                                suppressContentEditableWarning
+                                                onInput={(e) => { setMetaRef(e.currentTarget.innerText); checkFormats(); }}
+                                            />
                                         </div>
                                     )}
                                 </>
@@ -2011,7 +2210,7 @@ const LetterEditor: React.FC = () => {
                         className={`report-body w-full outline-none text-slate-900 leading-relaxed text-base text-right ${!isMobileZoom ? 'visual-page-break' : ''}`} 
                         contentEditable={!isLoadingContent} 
                         // Fix: Apply user margins even in Mobile Zoom mode so they can adjust them freely
-                        style={{ padding: `${marginConfig.y} ${marginConfig.x}`, textAlign: 'right', wordSpacing: 'normal', letterSpacing: 'normal', transition: 'padding 0.3s ease' }}
+                        style={{ padding: `${marginConfig.y} ${marginConfig.x}`, textAlign: 'right', wordSpacing: 'normal', letterSpacing: 'normal', transition: 'padding 0.3s ease', flex: '1 1 auto' }}
                         onClick={(e) => { e.stopPropagation(); handleEditorClick(e); }} 
                         onTouchEnd={checkFormats} 
                         onKeyUp={handleKeyUp}
@@ -2019,17 +2218,21 @@ const LetterEditor: React.FC = () => {
                         onMouseUp={checkFormats}
                      ></div>
 
-                     {/* 3. Visual Footer (Removed bottom bar by default) */}
-                     {showFooter && footerText ? (
+                     {/* 3. Visual Footer at the Bottom of the Page (Directly Editable & Font-Size Adjustable) */}
+                     {showFooter ? (
                          <div 
+                            ref={footerElRef}
                             className="report-footer"
                             contentEditable={true}
                             suppressContentEditableWarning={true}
-                            onInput={(e) => setFooterText(e.currentTarget.innerText)}
+                            style={{ fontSize: footerFontSize, marginTop: 'auto' }}
+                            onClick={(e) => { e.stopPropagation(); checkFormats(); }}
+                            onKeyUp={handleKeyUp}
+                            onMouseUp={checkFormats}
+                            onTouchEnd={checkFormats}
+                            onInput={(e) => { setFooterText(e.currentTarget.innerText); checkFormats(); }}
                             dir="auto"
-                         >
-                            {footerText}
-                         </div>
+                         />
                      ) : null}
                 </div>
              </div>

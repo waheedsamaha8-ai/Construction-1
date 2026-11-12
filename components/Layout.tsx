@@ -87,14 +87,18 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
           setDeferredPrompt(e);
           setShowInstallBtn(true);
       };
+      window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
       // Listener to open Gemini Key Modal from anywhere in the app
       const handleOpenKeyModal = () => setShowKeyModal(true);
       window.addEventListener('open_gemini_key_modal', handleOpenKeyModal);
+      window.addEventListener('gemini_keys_updated', updateKeyStatus);
 
       return () => {
           window.removeEventListener('online', handleStatus);
           window.removeEventListener('offline', handleStatus);
           window.removeEventListener('open_gemini_key_modal', handleOpenKeyModal);
+          window.removeEventListener('gemini_keys_updated', updateKeyStatus);
           document.removeEventListener('fullscreenchange', checkFullScreen);
           document.removeEventListener('webkitfullscreenchange', checkFullScreen);
           window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);

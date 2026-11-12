@@ -31,21 +31,6 @@ export const REPORT_CSS = `
         box-sizing: border-box;
     }
 
-    html, body {
-        margin: 0; padding: 0;
-        background: #fff; 
-        font-family: 'Cairo', sans-serif; 
-        direction: rtl; 
-        font-size: 17px; 
-        font-weight: 700; 
-        line-height: 1.7;
-        color: #0f172a; 
-        width: 100%;
-        max-width: 100%;
-        overflow-x: hidden;
-    }
-
-    /* --- PAGE LAYOUT (FULL SCREEN 100% WIDTH) --- */
     .report-container {
         display: flex;
         flex-direction: column;
@@ -57,70 +42,86 @@ export const REPORT_CSS = `
         margin: 0 !important;
         padding: 0 !important;
         border: none !important;
+        font-family: 'Cairo', sans-serif;
+        direction: rtl;
+        font-size: 13.5px;
+        font-weight: 700;
+        line-height: 1.65;
+        color: #0f172a;
     }
 
-    /* 1. REPORT HEADER */
+    /* 1. REPORT HEADER (Used in LetterEditor / خطاب) */
     .report-header {
         background-color: ${THEME.colors.primary} !important;
         color: #ffffff !important;
-        padding: 20px 8px !important;
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
+        padding: 12px 14px !important;
+        border-radius: 10px 10px 0 0;
+        display: flex !important;
+        flex-direction: row !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: 12px;
         width: 100% !important;
-        border-bottom: 4px solid #3b82f6;
-        margin-bottom: 16px;
-        direction: rtl;
+        border-bottom: 3px solid #3b82f6;
+        margin-bottom: 14px;
+        direction: rtl !important;
     }
 
     .report-header-title {
-        text-align: right;
-        flex: 1;
+        text-align: right !important;
+        flex: 1 1 auto;
+        min-width: 0;
         color: #ffffff !important;
     }
 
-    /* REPORT TITLE (H1) - Crisp Light Text on Header */
-    .report-header-title h1, .report-header h1 {
-        margin: 0;
-        padding: 0;
-        font-size: 28px;
-        font-weight: 900;
+    .report-header-title h1, .report-header h1, .report-header h2 {
+        margin: 0 !important;
+        padding: 0 !important;
+        font-size: 15px;
+        font-weight: 800;
         color: #ffffff !important;
         border: none !important;
-        line-height: 1.3;
+        line-height: 1.4 !important;
         text-shadow: none !important;
+        text-align: right !important;
     }
 
-    .report-header-subtitle {
-        margin: 6px 0 0 0;
-        font-size: 16px;
-        font-weight: 800 !important;
+    .report-header-subtitle, .report-header p {
+        margin: 3px 0 0 0 !important;
+        font-size: 11.5px;
+        font-weight: 700;
         color: #e2e8f0 !important;
+        line-height: 1.4 !important;
+        text-align: right !important;
     }
 
     .report-header-meta {
-        text-align: left;
+        text-align: left !important;
         direction: rtl;
-        font-size: 14px;
-        color: #ffffff !important;
-        font-weight: 800;
-        line-height: 1.5;
-        min-width: 140px;
+        font-size: 11px;
+        color: #f1f5f9 !important;
+        font-weight: 700;
+        line-height: 1.45;
+        min-width: 110px;
+        flex-shrink: 0;
+        margin-right: auto;
         display: flex;
         flex-direction: column;
         align-items: flex-end;
+        padding: 6px 10px;
+        border-radius: 8px;
     }
 
     .report-header-meta * {
-        color: #ffffff !important;
+        color: #f1f5f9 !important;
     }
 
     /* 2. REPORT BODY - MINIMUM SIDE MARGINS FOR FULL SCREEN */
     .report-body {
         width: 100% !important;
         max-width: 100% !important;
-        flex: 1;
-        padding: 0 6px; /* ALLOW DYNAMIC PADDING FROM INLINE STYLES */
+        flex: 1 1 auto !important;
+        padding: 0 4px;
         background: white;
         min-height: 400px;
         direction: rtl;
@@ -133,7 +134,7 @@ export const REPORT_CSS = `
     .report-body p {
         margin-top: 0;
         margin-bottom: 8px;
-        line-height: 1.7;
+        line-height: 1.65;
         text-align: right;
         word-spacing: normal;
         letter-spacing: normal;
@@ -143,132 +144,115 @@ export const REPORT_CSS = `
     .report-footer {
         background-color: ${THEME.colors.footerBg} !important;
         color: ${THEME.colors.footerText} !important;
-        padding: 14px 8px;
+        padding: 10px 12px;
         text-align: center;
         width: 100%;
-        border-top: 2px solid #e2e8f0;
-        margin-top: 24px;
-        font-size: 13px;
-        font-weight: 800;
+        border-top: 1.5px solid #e2e8f0;
+        margin-top: auto !important;
+        margin-bottom: 0 !important;
+        font-size: 12px;
+        font-weight: 700;
         direction: rtl;
     }
 
-    /* --- TYPOGRAPHY & HIERARCHY --- */
+    /* --- UNIFIED TYPOGRAPHY & HIERARCHY --- */
 
-    .report-body h1, h1 {
-        font-size: 26px;
-        font-weight: 900;
+    .report-body h1 {
+        font-size: 15px !important;
+        font-weight: 800 !important;
         color: #1e3a8a !important;
-        border-bottom: 3px solid #1e3a8a;
-        padding-bottom: 8px;
-        margin-top: 20px;
-        margin-bottom: 14px;
-        width: 100%;
-        display: block;
+        text-align: center !important;
+        background: transparent !important;
+        border: none !important;
+        border-bottom: 2px solid #1e3a8a !important;
+        border-radius: 0 !important;
+        padding: 0 0 8px 0 !important;
+        margin: 6px 0 12px 0 !important;
+        width: 100% !important;
+        display: block !important;
         page-break-after: avoid;
     }
 
-    .report-body h2, h2 {
-        font-size: 22px;
-        font-weight: 900;
+    .report-body h2 {
+        font-size: 14px !important;
+        font-weight: 800 !important;
         color: #1e3a8a !important;
-        border-bottom: 2px solid #cbd5e1;
-        padding-bottom: 4px;
-        margin-top: 18px;
-        margin-bottom: 12px;
-        width: 100%;
-        display: block;
+        text-align: right !important;
+        background: transparent !important;
+        border: none !important;
+        border-bottom: 1.5px solid #cbd5e1 !important;
+        border-right: 4px solid #1e3a8a !important;
+        border-radius: 0 !important;
+        padding: 2px 8px 6px 0 !important;
+        margin: 14px 0 8px 0 !important;
+        width: 100% !important;
+        display: block !important;
         page-break-after: avoid;
     }
 
-    .report-body h3, h3, .report-body h4, h4 {
-        font-size: 18px;
-        font-weight: 800;
-        color: #0f172a !important;
-        background-color: #f1f5f9;
-        border-right: 5px solid #3b82f6;
-        padding: 6px 10px;
-        margin-top: 16px;
-        margin-bottom: 10px;
-        display: block;
-        border-radius: 4px;
+    .report-body h3, .report-body h4 {
+        font-size: 13px !important;
+        font-weight: 800 !important;
+        color: #1e3a8a !important;
+        text-align: right !important;
+        background: transparent !important;
+        border: none !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+        border-right: 3px solid #3b82f6 !important;
+        border-radius: 0 !important;
+        padding: 2px 8px 4px 0 !important;
+        margin: 10px 0 6px 0 !important;
+        width: 100% !important;
+        display: block !important;
         page-break-after: avoid;
     }
 
     .report-body p, .report-body li, .report-body div {
         text-align: right;
         margin-bottom: 6px;
-        font-size: 16px;
-        font-weight: 700;
-        line-height: 1.7;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.65;
     }
 
-    /* --- DARK BACKGROUND CONTRAST ENFORCEMENT --- */
-    /* Force white text on any element with a dark background */
-    [style*="background-color: #0"],
-    [style*="background-color: #1"],
-    [style*="background-color: #2"],
-    [style*="background-color: #3"],
-    [style*="background-color: rgb(30"],
-    [style*="background-color: rgb(15"],
-    [style*="background-color: rgb(0"],
-    .bg-slate-900,
-    .bg-blue-900,
-    .bg-indigo-900,
-    .bg-slate-800,
-    .bg-blue-800 {
-        color: #ffffff !important;
-    }
-
-    [style*="background-color: #0"] *,
-    [style*="background-color: #1"] *,
-    [style*="background-color: #2"] *,
-    [style*="background-color: #3"] *,
-    [style*="background-color: rgb(30"] *,
-    [style*="background-color: rgb(15"] *,
-    [style*="background-color: rgb(0"] *,
-    .bg-slate-900 *,
-    .bg-blue-900 *,
-    .bg-indigo-900 *,
-    .bg-slate-800 *,
-    .bg-blue-800 * {
-        color: #ffffff !important;
-    }
-
-    /* COLORED BOXES */
+    /* COLORED CALLOUT BOXES */
     .info-box { 
         background-color: #eff6ff !important; 
-        border-right: 5px solid #2563eb !important; 
-        color: #1e40af !important; 
-        padding: 10px 12px; margin: 10px 0; border-radius: 8px; 
+        border: 1px solid #bfdbfe !important;
+        border-right: 4px solid #2563eb !important; 
+        color: #1e3a8a !important; 
+        padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; 
         font-weight: 700 !important;
     }
     
     .success-box { 
         background-color: #f0fdf4 !important; 
-        border-right: 5px solid #16a34a !important;
-        color: #15803d !important; 
-        padding: 10px 12px; margin: 10px 0; border-radius: 8px; 
+        border: 1px solid #bbf7d0 !important;
+        border-right: 4px solid #16a34a !important;
+        color: #14532d !important; 
+        padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; 
         font-weight: 700 !important;
     }
     
     .warning-box { 
         background-color: #fef2f2 !important; 
-        border-right: 5px solid #dc2626 !important;
-        color: #991b1b !important; 
-        padding: 10px 12px; margin: 10px 0; border-radius: 8px; 
+        border: 1px solid #fecaca !important;
+        border-right: 4px solid #dc2626 !important;
+        color: #7f1d1d !important; 
+        padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; 
         font-weight: 700 !important;
     }
     
     .cost-box, .highlight-box { 
         background-color: #fffbeb !important; 
-        border-right: 5px solid #d97706 !important;
-        color: #92400e !important; 
-        padding: 10px 12px; margin: 10px 0; border-radius: 8px; 
+        border: 1px solid #fde68a !important;
+        border-right: 4px solid #d97706 !important;
+        color: #78350f !important; 
+        padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; 
         font-weight: 700 !important;
     }
 
-    /* --- RESPONSIVE TABLES & HORIZONTAL SCROLL --- */
+    /* --- TABLES DISPLAYED AT PRINT-READY WIDTH WITH SMOOTH HORIZONTAL SCROLL ON SCREEN --- */
     .table-responsive-wrapper {
         width: 100% !important;
         max-width: 100% !important;
@@ -276,16 +260,20 @@ export const REPORT_CSS = `
         overflow-y: hidden !important;
         -webkit-overflow-scrolling: touch !important;
         touch-action: pan-x pan-y !important;
-        margin: 14px 0 !important;
+        margin: 12px 0 !important;
         display: block !important;
         box-sizing: border-box !important;
+        border: none !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        padding: 0 0 6px 0 !important;
+        box-shadow: none !important;
         scrollbar-width: thin !important;
         scrollbar-color: #2563eb #e2e8f0 !important;
-        padding-bottom: 8px !important;
     }
 
     .table-responsive-wrapper::-webkit-scrollbar {
-        height: 10px !important;
+        height: 8px !important;
         display: block !important;
         background-color: #e2e8f0 !important;
         border-radius: 6px !important;
@@ -294,18 +282,11 @@ export const REPORT_CSS = `
     .table-responsive-wrapper::-webkit-scrollbar-track {
         background: #e2e8f0 !important;
         border-radius: 6px !important;
-        border: 1px solid #cbd5e1 !important;
-        margin: 0 4px !important;
     }
 
     .table-responsive-wrapper::-webkit-scrollbar-thumb {
         background: #2563eb !important;
         border-radius: 6px !important;
-        border: 2px solid #e2e8f0 !important;
-    }
-
-    .table-responsive-wrapper::-webkit-scrollbar-thumb:hover {
-        background: #1d4ed8 !important;
     }
 
     table, .editable-table { 
@@ -317,40 +298,74 @@ export const REPORT_CSS = `
         border: 1px solid #cbd5e1 !important;
         table-layout: auto !important; 
         display: table !important;
+        background: #ffffff !important;
     }
     
-    /* Table Header: Dark Blue Background with Crisp White Text */
     th { 
-        background-color: #1e3a8a !important; 
-        color: #ffffff !important; 
-        padding: 10px 12px !important; 
-        border: 1px solid #94a3b8 !important; 
-        font-weight: 900 !important; 
-        font-size: 15px !important; 
+        background-color: #f1f5f9 !important; 
+        color: #1e3a8a !important; 
+        padding: 8px 10px !important; 
+        border: 1px solid #cbd5e1 !important; 
+        font-weight: 800 !important; 
+        font-size: 12.5px !important; 
         text-align: center !important; 
-        min-width: 100px !important;
+        min-width: 90px !important;
         white-space: normal !important;
         word-break: normal !important;
+        overflow-wrap: normal !important;
+        word-wrap: normal !important;
+        hyphens: none !important;
+        line-height: 1.55 !important;
     }
 
     th * {
-        color: #ffffff !important;
+        color: #1e3a8a !important;
+        white-space: normal !important;
+        word-break: normal !important;
+        overflow-wrap: normal !important;
     }
     
     td { 
         padding: 8px 10px !important; 
         border: 1px solid #cbd5e1 !important; 
         vertical-align: middle !important; 
-        font-size: 14px !important; 
-        font-weight: 700 !important; 
+        font-size: 12.5px !important; 
+        font-weight: 600 !important; 
         color: #0f172a !important; 
-        text-align: center !important;
-        min-width: 90px !important;
+        text-align: right !important;
+        min-width: 85px !important;
+        white-space: normal !important;
         word-break: normal !important;
+        overflow-wrap: normal !important;
+        word-wrap: normal !important;
+        hyphens: none !important;
+        line-height: 1.55 !important;
     }
 
     tr:nth-child(even) td { 
         background-color: #f8fafc !important; 
+    }
+
+    table.boq-summary-mini-table {
+        min-width: 420px !important;
+        margin: 0 !important;
+    }
+    table.boq-summary-mini-table th {
+        padding: 5px 6px !important;
+        font-size: 11px !important;
+        font-weight: 800 !important;
+        text-align: center !important;
+        min-width: 50px !important;
+        line-height: 1.35 !important;
+    }
+    table.boq-summary-mini-table td {
+        padding: 5px 6px !important;
+        font-size: 11.5px !important;
+        font-weight: 700 !important;
+        text-align: center !important;
+        min-width: 50px !important;
+        line-height: 1.35 !important;
+        background-color: #ffffff !important;
     }
 
     /* PHOTO GRID */
@@ -381,21 +396,16 @@ export const REPORT_CSS = `
 
     /* MOBILE RESPONSIVE DISCIPLINE */
     @media screen and (max-width: 768px) {
-        .report-body {
-            /* allow dynamic padding */
-        }
         .report-header {
-            padding: 14px 6px !important;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 8px;
-        }
-        .report-header-title h1 {
-            font-size: 22px !important;
+            padding: 10px 12px !important;
+            flex-direction: row !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            gap: 10px;
         }
         th, td {
-            padding: 6px 8px !important; 
-            font-size: 14px !important;
+            padding: 7px 8px !important; 
+            font-size: 12.5px !important;
         }
         .photo-grid {
             grid-template-columns: 1fr;
@@ -407,6 +417,7 @@ export const REPORT_CSS = `
             overflow-x: visible !important;
         }
         table, .editable-table {
+            width: 100% !important;
             min-width: 100% !important;
         }
     }
@@ -416,15 +427,15 @@ export const AI_REPORT_INSTRUCTION = `
     **STRICT REPORT GENERATION STANDARDS:**
     1.  **Output Format:** Return ONLY clean, valid HTML. Do NOT use Markdown code blocks (\`\`\`html).
     2.  **Language:** Arabic (Professional Technical Consultant).
-    3.  **Layout:** Full Width (100%).
+    3.  **Layout:** Full Width (100%). Do NOT generate any blue header box or \`.report-header\` div.
     4.  **Spacing:** Do NOT use \`<br>\` for spacing. Rely on CSS classes (margin/padding).
     5.  **Hierarchy:**
-        - **H1:** Main Title (Use once).
-        - **H2:** Major Section Titles.
-        - **H3:** Subsections.
-    6.  **Tables:** Use \`<table>\` with \`width="100%"\` for ALL numerical data.
-    7.  **Boxes:** Use specific classes for content types:
-        - \`<div class="info-box editable-box">\` for General Info.
+        - **H1:** Main Report Title at the very top (Use once, plain \`<h1>Title</h1>\` without any surrounding div or background color).
+        - **H2:** Major Section Titles (\`<h2>Section</h2>\` outside any box).
+        - **H3:** Subsections (\`<h3>Subsection</h3>\` outside any box).
+    6.  **Tables:** Use \`<table>\` directly in the report body (NEVER place a \`<table>\` inside an \`info-box\` or any text box). Do not set fixed pixel widths or \`nowrap\`. Both column headers (\`<th>\`) and cells (\`<td>\`) must allow natural text wrapping.
+    7.  **Boxes:** Use specific classes for text callouts only:
+        - \`<div class="info-box editable-box">\` for Executive Summary / General Info.
         - \`<div class="success-box editable-box">\` for Recommendations.
         - \`<div class="warning-box editable-box">\` for Risks/Warnings.
         - \`<div class="cost-box editable-box">\` for Financials/Quality.
@@ -446,6 +457,12 @@ export interface ReportMetadata {
     showFooter?: boolean;
     headerColor?: string;
     footerColor?: string;
+    fontSizes?: {
+        title?: string;
+        subtitle?: string;
+        meta?: string;
+        footer?: string;
+    };
 }
 
 const isLightHexColor = (hex?: string): boolean => {
@@ -483,7 +500,6 @@ export const wrapTablesInHtml = (html: string): string => {
             return doc.body.innerHTML;
         }
     } catch (e) {}
-    // Fallback regex wrapping any table not already in table-responsive-wrapper
     return html.replace(/(<table[\s\S]*?<\/table>)/gi, (match) => {
         return `<div class="table-responsive-wrapper">${match}</div>`;
     });
@@ -496,9 +512,10 @@ export const ReportGenerator = {
         date: string,
         subtitle: string,
         labels: { date: string, ref: string },
-        flags: { showHeader?: boolean, showTitle?: boolean, showSubtitle?: boolean, showDate?: boolean, showRef?: boolean, headerColor?: string }
+        flags: { showHeader?: boolean, showTitle?: boolean, showSubtitle?: boolean, showDate?: boolean, showRef?: boolean, headerColor?: string, fontSizes?: { title?: string, subtitle?: string, meta?: string } }
     ) => {
-        const { showHeader = true, showTitle = true, showSubtitle = true, showDate = true, showRef = true, headerColor } = flags;
+        // Default showHeader to false so AI reports do not render the blue header box; only LetterEditor explicitly passes showHeader: true
+        const { showHeader = false, showTitle = true, showSubtitle = true, showDate = true, showRef = true, headerColor, fontSizes } = flags;
         
         if (!showHeader) return '';
         if (!showTitle && !showSubtitle && !showDate && !showRef) return '';
@@ -507,13 +524,16 @@ export const ReportGenerator = {
         const isLight = isLightHexColor(bg);
         const textColor = isLight ? '#0f172a' : '#ffffff';
         const subColor = isLight ? '#334155' : '#e2e8f0';
+        const titleFs = fontSizes?.title || '15px';
+        const subtitleFs = fontSizes?.subtitle || '11.5px';
+        const metaFs = fontSizes?.meta || '11px';
 
         let titleBlock = '';
         if (showTitle || showSubtitle) {
             titleBlock = `
                 <div class="report-header-title" style="color: ${textColor} !important;">
-                    ${showTitle ? `<h1 style="color: ${textColor} !important;">${title}</h1>` : ''}
-                    ${showSubtitle ? `<p class="report-header-subtitle" style="color: ${subColor} !important;">${subtitle}</p>` : ''}
+                    ${showTitle ? `<h1 style="color: ${textColor} !important; font-size: ${titleFs};">${title}</h1>` : ''}
+                    ${showSubtitle ? `<p class="report-header-subtitle" style="color: ${subColor} !important; font-size: ${subtitleFs};">${subtitle}</p>` : ''}
                 </div>
             `;
         }
@@ -521,9 +541,9 @@ export const ReportGenerator = {
         let metaBlock = '';
         if (showDate || showRef) {
             metaBlock = `
-                <div class="report-header-meta" style="color: ${textColor} !important;">
-                    ${showDate ? `<div style="color: ${textColor} !important;"><strong style="color: ${textColor} !important;">${labels.date}</strong> <span style="color: ${textColor} !important;">${date}</span></div>` : ''}
-                    ${showRef ? `<div style="color: ${textColor} !important;"><strong style="color: ${textColor} !important;">${labels.ref}</strong> <span style="color: ${textColor} !important;">${ref}</span></div>` : ''}
+                <div class="report-header-meta" style="color: ${textColor} !important; font-size: ${metaFs};">
+                    ${showDate ? `<div style="color: ${textColor} !important; font-size: ${metaFs};"><strong style="color: ${textColor} !important;">${labels.date}</strong> <span style="color: ${textColor} !important;">${date}</span></div>` : ''}
+                    ${showRef ? `<div style="color: ${textColor} !important; font-size: ${metaFs};"><strong style="color: ${textColor} !important;">${labels.ref}</strong> <span style="color: ${textColor} !important;">${ref}</span></div>` : ''}
                 </div>
             `;
         }
@@ -535,13 +555,14 @@ export const ReportGenerator = {
             </div>
         `;
     },
-    getFooterHTML: (text: string, visible: boolean = true, footerColor?: string) => {
+    getFooterHTML: (text: string, visible: boolean = true, footerColor?: string, footerFontSize?: string) => {
         if (!visible) return '';
         const bg = footerColor || THEME.colors.footerBg;
         const isLight = isLightHexColor(bg);
         const textColor = isLight ? '#334155' : '#ffffff';
+        const fs = footerFontSize || '12px';
         return `
-            <div class="report-footer" style="background-color: ${bg} !important; color: ${textColor} !important;">
+            <div class="report-footer" style="background-color: ${bg} !important; color: ${textColor} !important; font-size: ${fs};">
                 ${text}
             </div>
         `;
@@ -585,11 +606,12 @@ export const ReportGenerator = {
                             showSubtitle: metadata.showSubtitle, 
                             showDate: metadata.showDate, 
                             showRef: metadata.showRef,
-                            headerColor: metadata.headerColor
+                            headerColor: metadata.headerColor,
+                            fontSizes: metadata.fontSizes
                         }
                     )}
                     <div class="report-body">${processedBody}</div>
-                    ${ReportGenerator.getFooterHTML(footerText, metadata.showFooter, metadata.footerColor)}
+                    ${ReportGenerator.getFooterHTML(footerText, metadata.showFooter, metadata.footerColor, metadata.fontSizes?.footer)}
                 </div>
             </body>
             </html>

@@ -8,6 +8,7 @@ import { printService } from '../services/printService';
 import { imageUtils } from '../services/imageUtils'; 
 import { wrapTablesInHtml, ReportGenerator } from '../services/reportGenerator';
 import ProjectReportModal from './ProjectReportModal';
+import InteractiveReportViewer from './InteractiveReportViewer';
 import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult, PricingCalculationResult, FileItem, ItemType } from '../types';
 
 interface ProjectAIProps {
@@ -91,12 +92,14 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
   const [isLoading, setIsLoading] = useState(false);
   const [fullProjectData, setFullProjectData] = useState<Project | null>(null); 
   
-  // Archiving State
+  // Archiving & Report Menu State
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   const [contentToArchive, setContentToArchive] = useState('');
   const [archiveTitle, setArchiveTitle] = useState('');
   const [targetMessageIndex, setTargetMessageIndex] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [activeMenuMessageIdx, setActiveMenuMessageIdx] = useState<number | null>(null);
+  const [directEditingMessageIdx, setDirectEditingMessageIdx] = useState<number | null>(null);
 
   // Smart Report Modal State
   const [showReportModal, setShowReportModal] = useState(false);
@@ -307,26 +310,163 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
                         ) : (
                             <div className="w-full pb-4">
                                 {messages.map((msg, idx) => {
+                                    const isDirectEditingThis = directEditingMessageIdx === idx;
+                                    const isMenuOpenForThis = activeMenuMessageIdx === idx;
                                     return (
                                         <div key={idx} className="w-full animate-scale-in mb-4">
-                                            <div className={`flex items-center gap-2 mb-1 px-2 mt-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                                                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 shadow-sm ${msg.role === 'user' ? 'bg-slate-700 text-white' : `bg-${AGENT_CONFIG[activeAgent].color}-100 text-${AGENT_CONFIG[activeAgent].color}-600`}`}><i className={`fa-solid ${msg.role === 'user' ? 'fa-user' : AGENT_CONFIG[activeAgent].icon} text-[10px]`}></i></div>
-                                                <span className="text-[10px] font-bold text-slate-400">{msg.role === 'model' ? AGENT_CONFIG[activeAgent].title : 'أنت'}</span>
+                                            <div className={`flex items-center justify-between gap-2 mb-1 px-3 mt-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                                <div className={`flex items-center gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 shadow-sm ${msg.role === 'user' ? 'bg-slate-700 text-white' : `bg-${AGENT_CONFIG[activeAgent].color}-100 text-${AGENT_CONFIG[activeAgent].color}-600`}`}><i className={`fa-solid ${msg.role === 'user' ? 'fa-user' : AGENT_CONFIG[activeAgent].icon} text-[10px]`}></i></div>
+                                                    <span className="text-[11px] font-bold text-slate-600 !bg-transparent !border-0 !p-0 !m-0">{msg.role === 'model' ? AGENT_CONFIG[activeAgent].title : 'أنت'}</span>
+                                                    {msg.isSaved && (
+                                                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                                            <i className="fa-solid fa-check text-[9px]"></i> محفوظ في الأرشيف
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                {msg.role === 'model' && idx > 0 && (
+                                                    <div className="flex items-center gap-1.5 relative shrink-0 no-print">
+                                                        {isDirectEditingThis && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setDirectEditingMessageIdx(null)}
+                                                                className="w-7 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition text-xs shadow-sm"
+                                                                title="إنهاء التعديل المباشر"
+                                                            >
+                                                                <i className="fa-solid fa-check"></i>
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setActiveMenuMessageIdx(isMenuOpenForThis ? null : idx)}
+                                                            className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${
+                                                                isMenuOpenForThis
+                                                                    ? 'bg-indigo-600 text-white border-indigo-400 shadow-md'
+                                                                    : isDirectEditingThis
+                                                                        ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
+                                                                        : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200 shadow-sm'
+                                                            }`}
+                                                            title="خيارات التقرير"
+                                                        >
+                                                            <i className="fa-solid fa-ellipsis-vertical text-sm"></i>
+                                                        </button>
+
+                                                        {isMenuOpenForThis && (
+                                                            <>
+                                                                <div className="fixed inset-0 z-[2100]" onClick={() => setActiveMenuMessageIdx(null)}></div>
+                                                                <div className="absolute left-0 top-9 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[2150] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                                                    <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                                                        <span className="text-[10px] font-bold text-slate-400">إجراءات التقرير</span>
+                                                                        <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                                                    </div>
+
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setActiveMenuMessageIdx(null);
+                                                                            setDirectEditingMessageIdx(isDirectEditingThis ? null : idx);
+                                                                        }}
+                                                                        className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold text-right ${
+                                                                            isDirectEditingThis
+                                                                                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400'
+                                                                                : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                                                        }`}
+                                                                    >
+                                                                        <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                                                            <i className={`fa-solid ${isDirectEditingThis ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                                                        </div>
+                                                                        <div className="flex-1 text-right">
+                                                                            <div>{isDirectEditingThis ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
+                                                                            <div className="text-[10px] text-indigo-200 font-normal">حفظ تلقائي على التقرير</div>
+                                                                        </div>
+                                                                    </button>
+
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setActiveMenuMessageIdx(null);
+                                                                            handleEditAsLetter(msg.content as string, msg.savedFileId);
+                                                                        }}
+                                                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                                    >
+                                                                        <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                                                            <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                                                        </div>
+                                                                        <span>تعديل المستند</span>
+                                                                    </button>
+
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setActiveMenuMessageIdx(null);
+                                                                            handlePrintResponse(msg.content as string, msg.type || 'text');
+                                                                        }}
+                                                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                                    >
+                                                                        <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                                                            <i className="fa-solid fa-print text-xs"></i>
+                                                                        </div>
+                                                                        <span>طباعة المستند</span>
+                                                                    </button>
+
+                                                                    {!msg.isSaved && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                setActiveMenuMessageIdx(null);
+                                                                                handleOpenArchiveModal(msg.content as string, idx);
+                                                                            }}
+                                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                                        >
+                                                                            <div className="w-6 h-6 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0">
+                                                                                <i className="fa-solid fa-box-archive text-xs"></i>
+                                                                            </div>
+                                                                            <span>حفظ في الأرشيف الهندسي</span>
+                                                                        </button>
+                                                                    )}
+
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={async () => {
+                                                                            setActiveMenuMessageIdx(null);
+                                                                            if (!window.confirm('هل أنت متأكد من حذف هذا التقرير؟')) return;
+                                                                            if (msg.savedFileId) {
+                                                                                try { await api.deleteItem(msg.savedFileId); } catch (e) {}
+                                                                            }
+                                                                            if (isDirectEditingThis) setDirectEditingMessageIdx(null);
+                                                                            setMessages(prev => prev.filter((_, i) => i !== idx));
+                                                                        }}
+                                                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                                                    >
+                                                                        <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                                                            <i className="fa-solid fa-trash-can text-xs"></i>
+                                                                        </div>
+                                                                        <span>حذف التقرير</span>
+                                                                    </button>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                             <div className={`w-full overflow-hidden overflow-x-auto p-1 sm:p-2 ${msg.role === 'user' ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-900'}`}>
-                                                <div className="">
-                                                    <div className={`prose prose-sm max-w-none text-inherit w-full px-2`} dangerouslySetInnerHTML={{__html: wrapTablesInHtml(msg.content as string)}}></div>
-                                                    {msg.role === 'model' && idx > 0 && (
-                                                        <div className="flex gap-2 mt-4 pt-3 border-t border-slate-200 justify-end no-print opacity-90 w-full px-2 flex-wrap">
-                                                            <button onClick={() => handleCopyText(msg.content as string)} className="text-[10px] bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-3 py-1.5 rounded transition flex items-center gap-1 shadow-sm"><i className="fa-solid fa-copy"></i> نسخ</button>
-                                                            <button onClick={() => handlePrintResponse(msg.content as string, msg.type || 'text')} className="text-[10px] bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-3 py-1.5 rounded transition flex items-center gap-1 shadow-sm"><i className="fa-solid fa-print"></i> طباعة</button>
-                                                            <button onClick={() => handleEditAsLetter(msg.content as string, msg.savedFileId)} className="text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-3 py-1.5 rounded transition flex items-center gap-1 font-bold shadow-sm"><i className="fa-solid fa-pen-to-square"></i> تعديل</button>
-                                                            {!msg.isSaved ? (
-                                                                <button onClick={() => handleOpenArchiveModal(msg.content as string, idx)} className="text-[10px] bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded transition flex items-center gap-1 font-bold shadow-md"><i className="fa-solid fa-box-archive"></i> حفظ</button>
-                                                            ) : (
-                                                                <button disabled className="text-[10px] bg-teal-50 text-teal-600 border border-teal-200 px-3 py-1.5 rounded transition flex items-center gap-1 font-bold opacity-70"><i className="fa-solid fa-check"></i> تم الحفظ</button>
-                                                            )}
-                                                        </div>
+                                                <div className="px-2">
+                                                    {msg.role === 'model' && idx > 0 ? (
+                                                        <InteractiveReportViewer
+                                                            htmlContent={msg.content as string}
+                                                            showFloatingEditBar={false}
+                                                            isDirectEditing={isDirectEditingThis}
+                                                            onDirectEditChange={(val) => setDirectEditingMessageIdx(val ? idx : null)}
+                                                            onContentChange={(updatedHtml) => {
+                                                                setMessages(prev => prev.map((m, i) => i === idx ? { ...m, content: updatedHtml } : m));
+                                                                if (msg.savedFileId) {
+                                                                    api.updateFileContent(msg.savedFileId, updatedHtml).catch(() => {});
+                                                                }
+                                                            }}
+                                                        />
+                                                    ) : (
+                                                        <div className="prose prose-sm max-w-none text-inherit w-full" dangerouslySetInnerHTML={{__html: wrapTablesInHtml(msg.content as string)}}></div>
                                                     )}
                                                 </div>
                                             </div>

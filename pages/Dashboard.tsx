@@ -10,11 +10,29 @@ import ProjectMap from '../components/ProjectMap';
 import ConfirmModal from '../components/ConfirmModal'; 
 import MarketPricesModal from '../components/MarketPricesModal';
 import InstantExpert from '../components/InstantExpert'; // IMPORT NEW COMPONENT
+import InteractiveReportViewer from '../components/InteractiveReportViewer';
 import { api } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { Project, ProjectStatus, FileItem, ProjectLog } from '../types';
 import { ENGINEERING_TIPS_DB, getCategoryLabel, getArchiveSectionForCategory } from '../services/tipsData';
+
+const SAVED_TIPS_STORAGE_KEY = 'construction_pro_saved_tips_v1';
+const getSavedTipsMap = (): Record<string, string> => {
+    try {
+        const raw = localStorage.getItem(SAVED_TIPS_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch {
+        return {};
+    }
+};
+const saveTipToLocalMap = (tipText: string, html: string) => {
+    try {
+        const map = getSavedTipsMap();
+        map[tipText] = html;
+        localStorage.setItem(SAVED_TIPS_STORAGE_KEY, JSON.stringify(map));
+    } catch {}
+};
 
 const SkeletonCard = () => (
     <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 h-[80px] animate-pulse flex items-center gap-4">
@@ -65,6 +83,8 @@ const Dashboard: React.FC = () => {
   const [isExplainModalOpen, setIsExplainModalOpen] = useState(false);
   const [explainContent, setExplainContent] = useState<string>('');
   const [isExplaining, setIsExplaining] = useState(false);
+  const [isDirectEditingTip, setIsDirectEditingTip] = useState(false);
+  const [isTipReportMenuOpen, setIsTipReportMenuOpen] = useState(false);
   
   const [isGeneratingFreshTip, setIsGeneratingFreshTip] = useState(false);
   const [isOpeningArchive, setIsOpeningArchive] = useState(false);
@@ -302,15 +322,20 @@ const Dashboard: React.FC = () => {
   const [isTipSaved, setIsTipSaved] = useState(false);
   const [savedTipFile, setSavedTipFile] = useState<{id: string, parentId: string} | null>(null);
 
-  // Check if tip is saved
+  // Check if tip is saved (in local saved map or in Archive)
   const checkTipStatus = useCallback(async () => {
       if (!tipOfTheDay) return;
+      const localMap = getSavedTipsMap();
+      const hasLocal = Boolean(localMap[tipOfTheDay]);
       const title = tipOfTheDay.length > 50 ? tipOfTheDay.substring(0, 50) + "..." : tipOfTheDay;
       const fileName = `شرح معلومة: ${title}`;
       const found = await api.findFileByName(fileName);
       if (found) {
           setIsTipSaved(true);
           setSavedTipFile(found);
+      } else if (hasLocal) {
+          setIsTipSaved(true);
+          setSavedTipFile(null);
       } else {
           setIsTipSaved(false);
           setSavedTipFile(null);
@@ -319,54 +344,108 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
       checkTipStatus();
-      const interval = setInterval(checkTipStatus, 5000); // Check every 5s for updates (e.g. deletion)
+      const interval = setInterval(checkTipStatus, 5000);
       return () => clearInterval(interval);
   }, [checkTipStatus]);
 
   const handleExplainTip = async () => { 
-      if (isTipSaved && savedTipFile) {
-          navigate(`/editor/${savedTipFile.parentId}?fileId=${savedTipFile.id}`);
+      setIsExplainModalOpen(true); 
+      setIsDirectEditingTip(false);
+      const localMap = getSavedTipsMap();
+      if (localMap[tipOfTheDay]) {
+          setExplainContent(localMap[tipOfTheDay]);
+          setIsExplaining(false);
           return;
       }
-      setIsExplainModalOpen(true); 
+      if (isTipSaved && savedTipFile) {
+          setIsExplaining(true);
+          try {
+              const fileHtml = await api.getFileContent(savedTipFile.id);
+              if (fileHtml) {
+                  saveTipToLocalMap(tipOfTheDay, fileHtml);
+                  setExplainContent(fileHtml);
+                  setIsExplaining(false);
+                  return;
+              }
+          } catch (e) {}
+      }
       setIsExplaining(true); 
       setExplainContent(''); 
       try { 
           const result = await aiHelper.explainEngineeringConcept(tipOfTheDay); 
           setExplainContent(result.html); 
+          if (result.html && !result.html.includes('Emergency-Static-Brain') && !result.html.includes('Emergency-Quota-Protection')) {
+              saveTipToLocalMap(tipOfTheDay, result.html);
+              setIsTipSaved(true);
+          }
       } catch (e) { 
           setExplainContent("حدث خطأ أثناء تحميل الشرح."); 
       } finally { 
           setIsExplaining(false); 
       } 
   };
+
+  const handleUpdateTipContent = (newHtml: string) => {
+      setExplainContent(newHtml);
+      if (tipOfTheDay && newHtml) {
+          saveTipToLocalMap(tipOfTheDay, newHtml);
+          setIsTipSaved(true);
+      }
+      if (savedTipFile?.id) {
+          api.updateFileContent(savedTipFile.id, newHtml).catch(() => {});
+      }
+  };
   
   const handleSaveTipToArchive = async () => { 
       if (!explainContent) return; 
       setIsSavingToArchive(true); 
       try { 
+          saveTipToLocalMap(tipOfTheDay, explainContent);
+          setIsTipSaved(true);
           const title = tipOfTheDay.length > 50 ? tipOfTheDay.substring(0, 50) + "..." : tipOfTheDay; 
           const section = getArchiveSectionForCategory(tipKey);
-          const fileId = await api.saveToArchive(`شرح معلومة: ${title}`, explainContent, section); 
-          alert(`تم حفظ الشرح بنجاح في قسم: ${section}`); 
-          checkTipStatus(); // Update status immediately
+          await api.saveToArchive(`شرح معلومة: ${title}`, explainContent, section); 
+          alert(`تم حفظ المعلومة الهندسية بنجاح في قسم: ${section}`); 
+          checkTipStatus();
       } catch(e) { 
           alert("حدث خطأ أثناء الحفظ."); 
       } finally { 
           setIsSavingToArchive(false); 
       } 
   };
+
+  const handleDeleteSavedTip = async () => {
+      if (!window.confirm('هل أنت متأكد من حذف تقرير هذه المعلومة الهندسية؟')) return;
+      try {
+          if (tipOfTheDay) {
+              const map = getSavedTipsMap();
+              delete map[tipOfTheDay];
+              localStorage.setItem(SAVED_TIPS_STORAGE_KEY, JSON.stringify(map));
+          }
+          if (savedTipFile?.id) {
+              await api.deleteItem(savedTipFile.id);
+          }
+          setIsTipSaved(false);
+          setSavedTipFile(null);
+          setExplainContent('');
+          setIsTipReportMenuOpen(false);
+          setIsDirectEditingTip(false);
+          setIsExplainModalOpen(false);
+      } catch (e) {
+          console.error(e);
+      }
+  };
   
   const handleGenerateFreshTip = async () => { 
       setIsGeneratingFreshTip(true); 
       try { 
-          // Instantly pick next random tip from local database for instant switching
           const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 
           setTipKey(selected.key);
-          setIsTipSaved(false);
-          setSavedTipReport(null);
+          const localMap = getSavedTipsMap();
+          setIsTipSaved(Boolean(localMap[selected.tip]));
+          setSavedTipFile(null);
       } catch(e) { 
           const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
           setTipOfTheDay(selected.tip); 
@@ -631,19 +710,22 @@ const Dashboard: React.FC = () => {
                          <div className="flex justify-between items-start mb-3 relative z-10">
                              <h3 className="font-bold text-sm flex items-center gap-2">
                                  <i className="fa-solid fa-lightbulb text-yellow-300"></i> معلومة هندسية
-                                 {isTipSaved && (
-                                     <span className="bg-green-500/20 text-green-300 border border-green-500/30 text-[9px] px-2 py-0.5 rounded-full flex items-center gap-1 animate-pulse cursor-pointer hover:bg-green-500/30 transition" onClick={handleExplainTip} title="اضغط لعرض التفاصيل المحفوظة">
-                                         <i className="fa-solid fa-check-circle"></i> محفوظة
-                                     </span>
-                                 )}
                              </h3>
                              <span className="bg-white/20 text-[10px] px-2 py-0.5 rounded-full">{tipCategory}</span>
                          </div>
                          <p className="text-xs font-medium leading-relaxed mb-4 min-h-[50px] opacity-90 relative z-10">{tipOfTheDay}</p>
                          <div className="flex gap-2 relative z-10">
                              <button onClick={handleGenerateFreshTip} disabled={isGeneratingFreshTip} className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 transition"><i className={`fa-solid ${isGeneratingFreshTip ? 'fa-circle-notch fa-spin' : 'fa-rotate'}`}></i> معلومة جديدة</button>
-                             <button onClick={handleExplainTip} className={`flex-1 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 transition ${isTipSaved ? 'bg-green-500/20 hover:bg-green-500/30 text-green-100 border border-green-500/30' : 'bg-white/20 hover:bg-white/30 text-white'}`}>
-                                 <i className={`fa-solid ${isTipSaved ? 'fa-file-lines' : 'fa-book-open'}`}></i> {isTipSaved ? 'عرض التقرير' : 'تفاصيل شاملة'}
+                             <button
+                                 onClick={handleExplainTip}
+                                 className={`flex-1 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition ${
+                                     isTipSaved
+                                         ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-md border border-emerald-400'
+                                         : 'bg-white/20 hover:bg-white/30 text-white'
+                                 }`}
+                             >
+                                 <i className={`fa-solid ${isTipSaved ? 'fa-book-open-reader' : 'fa-book-open'}`}></i>
+                                 <span>{isTipSaved ? 'فتح المعلومة' : 'تفاصيل شاملة'}</span>
                              </button>
                          </div>
                      </div>
@@ -690,13 +772,157 @@ const Dashboard: React.FC = () => {
 
       {isExplainModalOpen && (
           <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center backdrop-blur-sm p-0 animate-fade-in">
-              {/* Full Width Modal Container without Margins */}
-              <div className="bg-white w-full h-full md:w-[98vw] md:h-[98vh] md:rounded-xl shadow-2xl overflow-hidden flex flex-col animate-scale-in border border-slate-200">
-                  <div className="bg-gradient-to-r from-indigo-900 to-purple-900 p-4 text-white flex justify-between items-center shrink-0">
-                      <div><h3 className="text-lg font-bold flex items-center gap-2"><i className="fa-solid fa-book-open text-yellow-400"></i> خبير المعلومات الهندسية</h3><p className="text-[10px] text-indigo-200 mt-0.5 opacity-90 hidden sm:block">{tipOfTheDay}</p></div><button onClick={() => setIsExplainModalOpen(false)} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition"><i className="fa-solid fa-times"></i></button>
+              <div className="bg-white w-full h-full flex flex-col animate-scale-in">
+                  <div className="bg-slate-900 px-3.5 py-2.5 text-white flex justify-between items-center shrink-0 relative shadow-md border-b border-slate-800">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1 ml-2">
+                          <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
+                              <i className="fa-solid fa-book-open text-xs text-white"></i>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                              <div className="text-[11px] sm:text-xs font-bold text-white truncate leading-tight !bg-transparent !border-0 !p-0 !m-0">
+                                  خبير المعلومات الهندسية
+                              </div>
+                              <p className="text-[9.5px] sm:text-[10px] text-emerald-400 font-medium mt-0.5 truncate">{tipOfTheDay}</p>
+                          </div>
+                      </div>
+                      <div className="flex items-center gap-2 relative shrink-0">
+                          {isDirectEditingTip && (
+                              <button
+                                  type="button"
+                                  onClick={() => setIsDirectEditingTip(false)}
+                                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition border border-emerald-400 shadow-sm shrink-0"
+                                  title="إنهاء التعديل المباشر"
+                              >
+                                  <i className="fa-solid fa-check text-sm font-bold"></i>
+                              </button>
+                          )}
+                          {!isExplaining && explainContent && (
+                              <button
+                                  type="button"
+                                  onClick={() => setIsTipReportMenuOpen(!isTipReportMenuOpen)}
+                                  className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition text-xs border ${
+                                      isTipReportMenuOpen
+                                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg'
+                                          : isDirectEditingTip
+                                              ? 'bg-indigo-500/30 border-indigo-400 text-indigo-200'
+                                              : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
+                                  }`}
+                                  title="خيارات التقرير"
+                              >
+                                  <i className="fa-solid fa-ellipsis-vertical text-base"></i>
+                              </button>
+                          )}
+                          <button
+                              type="button"
+                              onClick={() => {
+                                  setIsExplainModalOpen(false);
+                                  setIsTipReportMenuOpen(false);
+                                  setIsDirectEditingTip(false);
+                              }}
+                              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition border border-white/10"
+                              title="إغلاق"
+                          >
+                              <i className="fa-solid fa-times"></i>
+                          </button>
+
+                          {isTipReportMenuOpen && !isExplaining && explainContent && (
+                              <>
+                                  <div className="fixed inset-0 z-[100]" onClick={() => setIsTipReportMenuOpen(false)}></div>
+                                  <div className="absolute left-0 top-11 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[110] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                      <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                          <span className="text-[10px] font-bold text-slate-400">إجراءات التقرير</span>
+                                          <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                      </div>
+
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              setIsTipReportMenuOpen(false);
+                                              setIsDirectEditingTip(!isDirectEditingTip);
+                                          }}
+                                          className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold text-right ${
+                                              isDirectEditingTip
+                                                  ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400'
+                                                  : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                          }`}
+                                      >
+                                          <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                              <i className={`fa-solid ${isDirectEditingTip ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                          </div>
+                                          <div className="flex-1 text-right">
+                                              <div>{isDirectEditingTip ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
+                                              <div className="text-[10px] text-indigo-200 font-normal">حفظ تلقائي على التقرير</div>
+                                          </div>
+                                      </button>
+
+                                      <button
+                                          type="button"
+                                          onClick={async () => {
+                                              setIsTipReportMenuOpen(false);
+                                              if (!explainContent) return;
+                                              try {
+                                                  const archiveId = await api.getArchiveFolderId();
+                                                  const rootId = await api.ensureRootFolder();
+                                                  if (archiveId && rootId) {
+                                                      navigate(`/editor/${rootId}/${archiveId}`, { state: { initialContent: explainContent } });
+                                                  }
+                                              } catch (e) {
+                                                  alert("حدث خطأ.");
+                                              }
+                                          }}
+                                          className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                      >
+                                          <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                              <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                          </div>
+                                          <span>تعديل المستند</span>
+                                      </button>
+
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              setIsTipReportMenuOpen(false);
+                                              handlePrint(explainContent);
+                                          }}
+                                          className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                      >
+                                          <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                              <i className="fa-solid fa-print text-xs"></i>
+                                          </div>
+                                          <span>طباعة المستند</span>
+                                      </button>
+
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              setIsTipReportMenuOpen(false);
+                                              handleSaveTipToArchive();
+                                          }}
+                                          disabled={isSavingToArchive}
+                                          className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right disabled:opacity-50"
+                                      >
+                                          <div className="w-6 h-6 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0">
+                                              {isSavingToArchive ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-box-archive text-xs"></i>}
+                                          </div>
+                                          <span>حفظ في الأرشيف الهندسي</span>
+                                      </button>
+
+                                      <button
+                                          type="button"
+                                          onClick={handleDeleteSavedTip}
+                                          className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                      >
+                                          <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                              <i className="fa-solid fa-trash-can text-xs"></i>
+                                          </div>
+                                          <span>حذف التقرير</span>
+                                      </button>
+                                  </div>
+                              </>
+                          )}
+                      </div>
                   </div>
-                  {/* Content Area with P-0 to allow full width HTML */}
-                  <div className="flex-1 overflow-y-auto p-0 bg-white">
+                  <div className="flex-1 overflow-y-auto p-2 sm:p-6 bg-slate-50">
                       {isExplaining ? (
                           <div className="flex flex-col items-center justify-center h-full gap-4">
                               <div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
@@ -706,51 +932,16 @@ const Dashboard: React.FC = () => {
                               </div>
                           </div>
                       ) : (
-                          <>
-                            {/* Full Width Wrapper for injected HTML with minimal lateral margins and responsive tables */}
-                            <div 
-                                className="prose prose-sm max-w-none text-slate-800 leading-relaxed w-full px-2 py-3 sm:px-6 sm:py-5" 
-                                dangerouslySetInnerHTML={{ 
-                                    __html: (() => {
-                                        if (!explainContent) return '';
-                                        let html = explainContent;
-                                        try {
-                                            const parser = new DOMParser();
-                                            const doc = parser.parseFromString(html, 'text/html');
-                                            const tables = doc.querySelectorAll('table');
-                                            tables.forEach((table) => {
-                                                const parent = table.parentElement;
-                                                if (parent && !parent.classList.contains('table-responsive-wrapper')) {
-                                                    const wrapper = doc.createElement('div');
-                                                    wrapper.className = 'table-responsive-wrapper';
-                                                    parent.insertBefore(wrapper, table);
-                                                    wrapper.appendChild(table);
-                                                }
-                                            });
-                                            return doc.body.innerHTML;
-                                        } catch (e) {
-                                            return html.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
-                                        }
-                                    })()
-                                }}
-                            ></div>
-                          </>
+                          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-6 max-w-5xl mx-auto">
+                              <InteractiveReportViewer
+                                  htmlContent={explainContent}
+                                  onContentChange={handleUpdateTipContent}
+                                  isDirectEditing={isDirectEditingTip}
+                                  onDirectEditChange={setIsDirectEditingTip}
+                                  showFloatingEditBar={false}
+                              />
+                          </div>
                       )}
-                  </div>
-                  {/* Compact Bottom Action Bar - Fully Contained Within Screen */}
-                  <div className="p-2 sm:p-2.5 bg-slate-50 border-t border-slate-200 flex flex-wrap sm:flex-nowrap justify-center sm:justify-end shrink-0 gap-1.5 sm:gap-2">
-                      {!isExplaining && (
-                          <>
-                            <button onClick={handleSaveTipToArchive} disabled={isSavingToArchive} className="bg-teal-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-teal-700 transition flex items-center gap-1.5 shadow-sm disabled:opacity-50 text-xs">
-                                {isSavingToArchive ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-box-archive text-xs"></i>} حفظ
-                            </button>
-                            <button onClick={async () => { if (!explainContent) return; try { const archiveId = await api.getArchiveFolderId(); const rootId = await api.ensureRootFolder(); if (archiveId && rootId) { navigate(`/editor/${rootId}/${archiveId}`, { state: { initialContent: explainContent } }); } } catch (e) { alert("حدث خطأ."); } }} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition flex items-center gap-1.5 shadow-sm text-xs">
-                                <i className="fa-solid fa-pen-to-square text-xs"></i> تعديل
-                            </button>
-                            <button onClick={() => handlePrint(explainContent)} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-indigo-700 transition flex items-center gap-1.5 shadow-sm text-xs"><i className="fa-solid fa-print text-xs"></i> طباعة</button>
-                          </>
-                      )}
-                      <button onClick={() => setIsExplainModalOpen(false)} className="bg-white border border-slate-300 text-slate-700 px-4 py-1.5 rounded-lg font-bold hover:bg-slate-100 transition text-xs shadow-sm">إغلاق</button>
                   </div>
               </div>
           </div>

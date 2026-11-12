@@ -10,6 +10,7 @@ import { printService } from '../services/printService';
 import * as pdfjsLib from 'pdfjs-dist';
 import ImageEditor from './ImageEditor';
 import DwgViewer from './DwgViewer';
+import InteractiveReportViewer from './InteractiveReportViewer';
 
 // ... (Keep Imports and PDF Config) ...
 const pdfJs: any = pdfjsLib;
@@ -103,6 +104,8 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
+  const [isAnalysisMenuOpen, setIsAnalysisMenuOpen] = useState(false);
+  const [isDirectEditingAnalysis, setIsDirectEditingAnalysis] = useState(false);
   
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
   const [isHighResLoaded, setIsHighResLoaded] = useState(false);
@@ -705,67 +708,151 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       {/* Analysis Modal - UPDATED FOR FULL WIDTH */}
       {isAnalysisOpen && (
             <div className="fixed inset-0 z-[150] bg-white flex flex-col animate-scale-in">
-                <div className="bg-slate-900 p-4 text-white flex justify-between items-center shadow-lg shrink-0">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center shadow-sm border border-indigo-400"><i className="fa-solid fa-clipboard-check text-xl"></i></div>
-                        <div>
-                            <h3 className="font-bold text-lg">{isAudio ? 'تفريغ وتحليل التسجيل الصوتي' : 'تقرير المكتب الفني وضبط الجودة'}</h3>
-                            <p className="text-[10px] text-slate-300 opacity-90">{isAudio ? 'تحويل الصوت إلى نص وصياغة تقرير' : `تحليل فني ${isPdf ? 'للمستند' : 'للصورة'} بواسطة الذكاء الاصطناعي`}</p>
+                <div className="bg-slate-900 px-3.5 py-2.5 text-white flex justify-between items-center shadow-md shrink-0 relative border-b border-slate-800">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1 ml-2">
+                        <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0"><i className="fa-solid fa-clipboard-check text-xs text-white"></i></div>
+                        <div className="min-w-0 flex-1">
+                            <div className="font-bold text-[11px] sm:text-xs text-white truncate leading-tight !bg-transparent !border-0 !p-0 !m-0">{isAudio ? 'تفريغ وتحليل التسجيل الصوتي' : 'تقرير المكتب الفني وضبط الجودة'}</div>
+                            <p className="text-[9.5px] sm:text-[10px] text-emerald-400 font-medium mt-0.5 truncate">{isAudio ? 'تحويل الصوت إلى نص وصياغة تقرير' : `تحليل فني ${isPdf ? 'للمستند' : 'للصورة'} بواسطة الذكاء الاصطناعي`}</p>
                         </div>
                     </div>
-                    <button onClick={() => setIsAnalysisOpen(false)} className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"><i className="fa-solid fa-times"></i></button>
+                    <div className="flex items-center gap-2 relative shrink-0">
+                        {isDirectEditingAnalysis && (
+                            <button
+                                type="button"
+                                onClick={() => setIsDirectEditingAnalysis(false)}
+                                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition border border-emerald-400 shadow-sm shrink-0"
+                                title="إنهاء التعديل المباشر"
+                            >
+                                <i className="fa-solid fa-check text-sm font-bold"></i>
+                            </button>
+                        )}
+                        {!analyzing && analysisResult && (
+                            <button
+                                type="button"
+                                onClick={() => setIsAnalysisMenuOpen(!isAnalysisMenuOpen)}
+                                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition text-xs border ${
+                                    isAnalysisMenuOpen
+                                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg'
+                                        : isDirectEditingAnalysis
+                                            ? 'bg-indigo-500/30 border-indigo-400 text-indigo-200'
+                                            : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
+                                }`}
+                                title="خيارات التقرير"
+                            >
+                                <i className="fa-solid fa-ellipsis-vertical text-base"></i>
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setIsAnalysisOpen(false);
+                                setIsAnalysisMenuOpen(false);
+                                setIsDirectEditingAnalysis(false);
+                            }}
+                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition border border-white/10"
+                            title="إغلاق"
+                        >
+                            <i className="fa-solid fa-times"></i>
+                        </button>
+
+                        {isAnalysisMenuOpen && !analyzing && analysisResult && (
+                            <>
+                                <div className="fixed inset-0 z-[160]" onClick={() => setIsAnalysisMenuOpen(false)}></div>
+                                <div className="absolute left-0 top-11 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[170] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                    <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                        <span className="text-[10px] font-bold text-slate-400">إجراءات التقرير</span>
+                                        <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsAnalysisMenuOpen(false);
+                                            setIsDirectEditingAnalysis(!isDirectEditingAnalysis);
+                                        }}
+                                        className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold text-right ${
+                                            isDirectEditingAnalysis
+                                                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400'
+                                                : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                        }`}
+                                    >
+                                        <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                            <i className={`fa-solid ${isDirectEditingAnalysis ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                        </div>
+                                        <div className="flex-1 text-right">
+                                            <div>{isDirectEditingAnalysis ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
+                                            <div className="text-[10px] text-indigo-200 font-normal">حفظ تلقائي على التقرير</div>
+                                        </div>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsAnalysisMenuOpen(false);
+                                            handleEditAnalysis();
+                                        }}
+                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                    >
+                                        <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                        </div>
+                                        <span>تعديل المستند</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsAnalysisMenuOpen(false);
+                                            handlePrintAnalysis();
+                                        }}
+                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                    >
+                                        <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-print text-xs"></i>
+                                        </div>
+                                        <span>طباعة المستند</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (window.confirm('هل أنت متأكد من حذف هذا التقرير؟')) {
+                                                setIsAnalysisMenuOpen(false);
+                                                setIsDirectEditingAnalysis(false);
+                                                setAnalysisResult(null);
+                                                setIsAnalysisOpen(false);
+                                            }
+                                        }}
+                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                    >
+                                        <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-trash-can text-xs"></i>
+                                        </div>
+                                        <span>حذف التقرير</span>
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
                 <div className="flex-1 overflow-y-auto bg-white p-0">
                     {analyzing ? ( 
                         <div className="flex flex-col items-center justify-center h-full text-slate-500">
                             <div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                            <h3 className="text-xl font-bold mb-2">جاري {isAudio ? 'تفريغ وتحليل الصوت...' : 'إعداد التقرير الفني...'}</h3>
+                            <div className="text-xl font-bold mb-2">جاري {isAudio ? 'تفريغ وتحليل الصوت...' : 'إعداد التقرير الفني...'}</div>
                             <p className="text-sm">{isAudio ? 'قد تستغرق العملية بضع لحظات حسب مدة التسجيل' : `يتم تحليل ${isPdf ? 'بنود وشروط المستند' : 'العناصر الإنشائية والجودة'}`}</p>
                         </div> 
                     ) : ( 
-                        <div className="w-full min-h-full bg-white p-1 sm:p-2">
-                            <div 
-                                className="report-body w-full text-slate-900 leading-relaxed" 
-                                dangerouslySetInnerHTML={{ 
-                                    __html: (() => {
-                                        if (!analysisResult) return '';
-                                        let html = analysisResult;
-                                        try {
-                                            const parser = new DOMParser();
-                                            const doc = parser.parseFromString(html, 'text/html');
-                                            const tables = doc.querySelectorAll('table');
-                                            tables.forEach((table) => {
-                                                const parent = table.parentElement;
-                                                if (parent && !parent.classList.contains('table-responsive-wrapper')) {
-                                                    const wrapper = doc.createElement('div');
-                                                    wrapper.className = 'table-responsive-wrapper';
-                                                    parent.insertBefore(wrapper, table);
-                                                    wrapper.appendChild(table);
-                                                }
-                                            });
-                                            return doc.body.innerHTML;
-                                        } catch (e) {
-                                            return html.replace(/(<table[\s\S]*?<\/table>)/gi, '<div class="table-responsive-wrapper">$1</div>');
-                                        }
-                                    })()
-                                }}
-                            ></div>
+                        <div className="w-full min-h-full bg-slate-50 p-2 sm:p-6">
+                            <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow border border-slate-200 p-4 sm:p-8">
+                                <InteractiveReportViewer
+                                    htmlContent={analysisResult || ''}
+                                    showFloatingEditBar={false}
+                                    isDirectEditing={isDirectEditingAnalysis}
+                                    onDirectEditChange={setIsDirectEditingAnalysis}
+                                    onContentChange={(updatedHtml) => setAnalysisResult(updatedHtml)}
+                                />
+                            </div>
                         </div> 
                     )}
                 </div>
-                {!analyzing && ( 
-                    <div className="bg-white p-2.5 sm:p-3 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2 shrink-0 shadow-upper w-full max-w-full overflow-hidden no-print">
-                        <button onClick={handleEditAnalysis} className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-3.5 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 transition flex items-center gap-1.5 shadow-sm">
-                            <i className="fa-solid fa-pen-to-square text-xs"></i> تعديل
-                        </button>
-                        <button onClick={handlePrintAnalysis} className="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 transition flex items-center gap-1.5 shadow-md">
-                            <i className="fa-solid fa-print text-xs"></i> طباعة
-                        </button>
-                        <button onClick={() => setIsAnalysisOpen(false)} className="bg-slate-100 text-slate-700 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-200 transition">
-                            إغلاق
-                        </button>
-                    </div> 
-                )}
             </div>
       )}
     </div>

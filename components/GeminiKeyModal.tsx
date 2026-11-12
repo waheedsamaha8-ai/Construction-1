@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { syncGeminiKeysToCloud, syncGeminiKeysFromCloud } from '../services/ai/core';
 
 interface GeminiKeyModalProps {
   isOpen: boolean;
@@ -36,10 +37,13 @@ export const saveStoredGeminiKeys = (keys: string[]) => {
   if (cleaned.length > 0) {
     localStorage.setItem(STORAGE_KEYS_LIST, JSON.stringify(cleaned));
     localStorage.setItem(STORAGE_SINGLE_KEY, cleaned[0]);
+    syncGeminiKeysToCloud(cleaned, false).catch(() => {});
   } else {
     localStorage.removeItem(STORAGE_KEYS_LIST);
     localStorage.removeItem(STORAGE_SINGLE_KEY);
+    syncGeminiKeysToCloud([], true).catch(() => {});
   }
+  window.dispatchEvent(new CustomEvent('gemini_keys_updated'));
 };
 
 const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({ isOpen, onClose }) => {
@@ -54,6 +58,11 @@ const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({ isOpen, onClose }) => {
       setKeysList(loaded);
       setInputKey('');
       setMessage(null);
+      syncGeminiKeysFromCloud().then(synced => {
+        if (synced && synced.length > 0) {
+          setKeysList(synced);
+        }
+      }).catch(() => {});
     }
   }, [isOpen]);
 

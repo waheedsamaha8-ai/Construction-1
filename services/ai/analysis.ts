@@ -42,9 +42,7 @@ export const analysisService = {
                 
                 **STRICT REPORT STRUCTURE (HTML):**
                 
-                <div class="report-header">
-                    <h2>تقرير معاينة فنية (Technical Inspection Report)</h2>
-                </div>
+                <h1>تقرير معاينة فنية (Technical Inspection Report)</h1>
 
                 <h3>1. وصف الأعمال والملاحظات (Observations)</h3>
                 <div class="info-box editable-box">
@@ -116,9 +114,7 @@ export const analysisService = {
 
                 **STRICT REPORT STRUCTURE (HTML):**
 
-                <div class="report-header">
-                    <h2>تحليل فني للمستند (Technical Document Analysis)</h2>
-                </div>
+                <h1>تحليل فني للمستند (Technical Document Analysis)</h1>
 
                 <h3>1. ملخص المستند (Executive Summary)</h3>
                 <div class="info-box editable-box">
@@ -231,9 +227,7 @@ export const analysisService = {
 
                 **STRICT REPORT STRUCTURE (HTML):**
                 
-                <div class="report-header">
-                    <h2>تقرير مراجعة أبحاث التربة (Geotechnical Report Review)</h2>
-                </div>
+                <h1>تقرير مراجعة أبحاث التربة (Geotechnical Report Review)</h1>
 
                 <h3>1. وصف الموقع والجسات (Site & Boreholes)</h3>
                 <div class="info-box editable-box">
@@ -292,14 +286,17 @@ export const analysisService = {
                 </div>
 
                 <h3>4. التوصيات الإنشائية (Foundation Recommendations)</h3>
-                <div class="success-box editable-box">
-                    <table style="width:100%; border-collapse: collapse; margin: 5px 0;">
-                        <tr><td style="padding: 5px; font-weight: bold;">نوع الأساسات:</td><td>...</td></tr>
-                        <tr><td style="padding: 5px; font-weight: bold;">منسوب التأسيس:</td><td>...</td></tr>
-                        <tr><td style="padding: 5px; font-weight: bold;">جهد التربة (Net Allowable):</td><td>...</td></tr>
-                        <tr><td style="padding: 5px; font-weight: bold;">نوع الأسمنت:</td><td>...</td></tr>
-                    </table>
-                </div>
+                <table style="width:100%; border-collapse: collapse; margin: 10px 0;">
+                    <thead>
+                        <tr><th>البند الهندسي</th><th>التوصية المعتمدة</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>نوع الأساسات</td><td>...</td></tr>
+                        <tr><td>منسوب التأسيس</td><td>...</td></tr>
+                        <tr><td>جهد التربة المسموح (Net Allowable)</td><td>...</td></tr>
+                        <tr><td>نوع الأسمنت</td><td>...</td></tr>
+                    </tbody>
+                </table>
 
                 <h3>5. المرجع الكودي (Code Reference)</h3>
                 <div class="highlight-box editable-box">
@@ -326,9 +323,7 @@ export const analysisService = {
             4. **Strategic Recommendation:** One key advice for the owner.
 
             **STRUCTURE:**
-            <div class="report-header">
-                <h2>لوحة القيادة التنفيذية (Executive Dashboard)</h2>
-            </div>
+            <h1>لوحة القيادة التنفيذية (Executive Dashboard)</h1>
 
             <h3>1. الموقف المالي والتعاقدي (Financial Status)</h3>
             <div class="table-responsive">
@@ -379,15 +374,7 @@ export const analysisService = {
 
             **REQUIRED REPORT STRUCTURE (HTML):**
             
-            <div class="report-header">
-                <div class="right-side">
-                    <h2>تقرير الموقف التنفيذي (Site Progress Report)</h2>
-                    <p>استشاري الإشراف على التنفيذ</p>
-                </div>
-                <div class="left-side">
-                    <p>التاريخ: ${new Date().toLocaleDateString('ar-EG')}</p>
-                </div>
-            </div>
+            <h1>تقرير الموقف التنفيذي (Site Progress Report)</h1>
 
             <h3>1. حالة المشروع الحالية (Current Status)</h3>
             <div class="table-responsive">
@@ -491,10 +478,7 @@ export const analysisService = {
             
             **STRICT REPORT STRUCTURE (HTML):**
             
-            <div class="report-header">
-                <h2>${title}</h2>
-                <p>الفترة من: ${start} إلى: ${end}</p>
-            </div>
+            <h1>${title} (${start} - ${end})</h1>
 
             <h3>1. الموقف التنفيذي والمالي (Executive & Financial Status)</h3>
             <div class="info-box editable-box">
@@ -694,36 +678,29 @@ export const analysisService = {
         const unitPrice = Number(item.unitPrice) || 0;
 
         const itemHeaderSummaryHtml = `
-            <div class="info-box editable-box" style="background:#f8fafc; border:1px solid #cbd5e1; border-right:5px solid #1e3a8a; padding:14px 18px; border-radius:14px; margin-bottom:18px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-                    <div style="font-weight:900; color:#1e3a8a; font-size:15px;">
-                        📋 بيانات البند التعاقدية (بند ${item.itemCode || '-'}) - ${item.batchName || 'المقايسة العامة'}
-                    </div>
-                    <div style="font-size:12px; background:#e0e7ff; color:#3730a3; padding:4px 10px; border-radius:8px; font-weight:700;">
-                        الوحدة: ${item.unit || '-'} | الفئة: ${unitPrice.toLocaleString()} ج.م
-                    </div>
-                </div>
-                <div style="font-size:13.5px; color:#1e293b; line-height:1.7; margin-bottom:12px; background:#ffffff; padding:10px 14px; border-radius:10px; border:1px solid #e2e8f0;">
-                    <strong style="color:#0f172a;">بيان الأعمال:</strong> ${item.description || '-'}
-                </div>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; text-align:center;">
-                    <div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:8px 10px;">
-                        <div style="font-size:11px; color:#64748b; font-weight:700; margin-bottom:2px;">الكمية التعاقدية</div>
-                        <div style="font-size:15px; font-weight:900; color:#0f172a;">${contractQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#64748b;">${item.unit || ''}</span></div>
-                    </div>
-                    <div style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:8px 10px;">
-                        <div style="font-size:11px; color:#15803d; font-weight:700; margin-bottom:2px;">الكمية المنفذة</div>
-                        <div style="font-size:15px; font-weight:900; color:#166534;">${execQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#15803d;">${item.unit || ''}</span></div>
-                    </div>
-                    <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:10px; padding:8px 10px;">
-                        <div style="font-size:11px; color:#b45309; font-weight:700; margin-bottom:2px;">الكمية المتبقية</div>
-                        <div style="font-size:15px; font-weight:900; color:#92400e;">${remainingQty.toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#b45309;">${item.unit || ''}</span></div>
-                    </div>
-                    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:8px 10px;">
-                        <div style="font-size:11px; color:#1d4ed8; font-weight:700; margin-bottom:2px;">إجمالي القيمة</div>
-                        <div style="font-size:15px; font-weight:900; color:#1e40af;">${(contractQty * unitPrice).toLocaleString()} <span style="font-size:11px; font-weight:normal; color:#1d4ed8;">ج.م</span></div>
-                    </div>
-                </div>
+            <div class="table-responsive-wrapper" style="width:100%; overflow-x:auto; margin:0 0 10px 0; padding:0;">
+                <table class="boq-summary-mini-table" style="width:100%; min-width:420px; border-collapse:collapse; margin:0; border:1px solid #cbd5e1; background:#ffffff;">
+                    <thead>
+                        <tr>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">البند / القسم</th>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">الوحدة</th>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">التعاقدي</th>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">المنفذ</th>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">المتبقي</th>
+                            <th style="background:#f1f5f9; color:#1e3a8a; font-size:11px; font-weight:800; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">الفئة</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="font-size:11.5px; font-weight:800; color:#1e3a8a; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">بند (${item.itemCode || '-'}) - ${item.batchName || 'المقايسة العامة'}</td>
+                            <td style="font-size:11.5px; font-weight:700; color:#0f172a; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">${item.unit || '-'}</td>
+                            <td style="font-size:11.5px; font-weight:700; color:#0f172a; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">${contractQty.toLocaleString()}</td>
+                            <td style="font-size:11.5px; font-weight:700; color:#166534; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">${execQty.toLocaleString()}</td>
+                            <td style="font-size:11.5px; font-weight:700; color:#92400e; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">${remainingQty.toLocaleString()}</td>
+                            <td style="font-size:11.5px; font-weight:800; color:#1e3a8a; padding:5px 6px; text-align:center; border:1px solid #cbd5e1;">${unitPrice.toLocaleString()} ج.م</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         `;
 
@@ -731,9 +708,9 @@ export const analysisService = {
         if (reportType === 'materials') {
             specificInstructions = `
                 المطلوب إعداد: **تقرير تحليل الخامات والمواد التفصيلي للبند (Materials & Raw Materials Breakdown Report)**
-                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول دقيقة:
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول دقيقة ومختصرة دون تكرار منطوق البند:
                 1. **جدول معدلات استهلاك الخامات لكل (1 ${item.unit || 'وحدة'}) ولإجمالي الكمية التعاقدية (${contractQty} ${item.unit || ''}) والكمية المنفذة (${execQty} ${item.unit || ''}) والكمية المتبقية (${remainingQty} ${item.unit || ''}):**
-                   - الأعمدة: (م | اسم الخامة / المادة | وحدة القياس | المعدل لكل 1 ${item.unit || 'وحدة'} | نسبة الهالك القياسية % | الكمية المطلوبة للتعاقدي شاملة الهالك | الكمية المستهلكة للمنفذ | الكمية المطلوبة للمتبقي).
+                   - الأعمدة: (م | اسم الخامة / المادة | الوحدة | المعدل لكل 1 ${item.unit || 'وحدة'} | الهالك % | المطلوب للتعاقدي | المستهلك للمنفذ | المطلوب للمتبقي).
                 2. **المواصفات الفنية للخامات والمواد الموردة للموقع (وفق الكود المصري ECP):**
                    - اشتراطات القبول والفحص الظاهري والمعملية لكل خامة داخلة في البند.
                 3. **اشتراطات التشوين والتخزين السليم في الموقع:**
@@ -742,8 +719,8 @@ export const analysisService = {
         } else if (reportType === 'method_specs') {
             specificInstructions = `
                 المطلوب إعداد: **تقرير طريقة تنفيذ البند والمواصفات الفنية (Method Statement & Technical Specifications)**
-                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي:
-                1. **التوصيف الفني والاشتراطات المرجعية للبند (طبقاً للكود المصري ECP وأصول الصناعة):**
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي ومباشر دون إعادة كتابة منطوق البند:
+                1. **الاشتراطات الفنية المرجعية للبند (طبقاً للكود المصري ECP وأصول الصناعة):**
                    - المتطلبات الفنية الدقيقة ومواصفات المواد والمصنعية.
                 2. **التحضيرات والتجهيزات المسبقة قبل البدء (Pre-Execution Requirements):**
                    - تجهيز الموقع، الاعتمادات، المساحة، الشدات أو المناسيب، والمعدات اللازمة.
@@ -754,7 +731,7 @@ export const analysisService = {
         } else if (reportType === 'productivity_labor') {
             specificInstructions = `
                 المطلوب إعداد: **تقرير تحليل معدلات الإنتاج والعمالة والمعدات للبند (Productivity, Labor & Equipment Analysis)**
-                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول واضحة:
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML احترافي وجداول واضحة ومباشرة دون تكرار منطوق البند:
                 1. **تشكيل طاقم العمل القياسي (Standard Crew Composition) ومعدل الإنتاج اليومي:**
                    - جدول يوضح: (المهنة / التخصص | العدد بالطاقم | المهام الأساسية | إنتاجية الطاقم في اليوم بالوحدة ${item.unit || ''}).
                 2. **تحليل المعدات والآلات والأدوات المطلوبة للبند:**
@@ -766,7 +743,7 @@ export const analysisService = {
         } else if (reportType === 'inspection_quality') {
             specificInstructions = `
                 المطلوب إعداد: **نموذج فحص واستلام واشتراطات الجودة للبند (Inspection Request / ITP & QC Checklist)**
-                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML رسمي قابل للطباعة والتوقيع:
+                يجب أن يشمل التقرير الأقسام التالية بتنسيق HTML رسمي قابل للطباعة والتوقيع دون تكرار منطوق البند:
                 1. **جدول قائمة الفحص والاستلام الموقعي (Site Inspection Checklist):**
                    - الأعمدة: (م | عنصر الفحص والاشتراط الفني طبقاً للكود المصري | التفاوت المسموح به (Tolerance) | طريقة الفحص / القياس | النتيجة: مطابق / غير مطابق / ملاحظات).
                    - يشمل الفحص قبل التنفيذ (التحضير والخامات)، والفحص أثناء التنفيذ، والفحص النهائي عند الاستلام.
@@ -779,25 +756,23 @@ export const analysisService = {
 
         const prompt = `
             أنت استشاري هندسي ومدير مكتب فني وضبط جودة (30+ سنة خبرة في المشروعات الهندسية والكود المصري ECP).
-            المشروع: ${projectContext?.projectName || 'المشروع الهندسي'}
-            المقاول: ${projectContext?.contractor || '-'}
-            رقم البند: ${item.itemCode || '-'}
-            الحزمة / المقايسة: ${item.batchName || '-'}
-            بيان الأعمال: "${item.description}"
-            الوحدة: ${item.unit} | الكمية التعاقدية: ${contractQty} | الكمية المنفذة: ${execQty} | الكمية المتبقية: ${remainingQty} | الفئة: ${unitPrice} ج.م
+            بيانات استرشادية لك فقط لفهم طبيعة البند (لا تكررها ولا تعد كتابتها في التقرير):
+            - المشروع: ${projectContext?.projectName || 'المشروع الهندسي'} | المقاول: ${projectContext?.contractor || '-'}
+            - رقم البند: ${item.itemCode || '-'} (${item.batchName || '-'})
+            - منطوق البند للاسترشاد فقط: "${item.description}"
+            - الوحدة: ${item.unit} | الكمية التعاقدية: ${contractQty} | الكمية المنفذة: ${execQty} | الكمية المتبقية: ${remainingQty} | الفئة: ${unitPrice} ج.م
 
             ${specificInstructions}
 
-            قواعد التنسيق الهامة جداً (إلزامية لمنع تشويه الجداول):
-            - أخرج كود HTML نظيف فقط (بدون \`\`\`html أو \`\`\`).
-            - لا تُكرر جدول بيانات البند التعاقدي أبداً ولا تضع بيان الأعمال الطويل للبند داخل عمود جدول؛ فبيانات البند وترويسته معروضة تلقائياً في أعلى التقرير.
-            - تناسب عروض أعمدة الجداول (هام جداً جداً لمنع أن يكون الجدول طويلاً ومشوشاً):
-              * يجب أن تتناسب عروض الأعمدة مع حجم محتواها بدقة لمنع التواء الكلمات حرفياً على أسطر مفردة.
-              * الأعمدة الرقمية والقصيرة (مثل: م، الوحدة، الكمية، الفئة، النسبة، التفاوت، النتيجة) اجعلها ضيقة في المنتصف (width: 50px إلى 80px مع white-space: nowrap).
-              * الأعمدة النصية والتوصيفية (مثل: اسم الخامة والمواصفة، المهام، خطوات وطريقة التنفيذ، عنصر الفحص والاشتراط) يجب أن تأخذ المساحة الأكبر والعرض الكافي المريح (min-width: 250px).
-              * ضع كل جدول دائماً داخل حاوية سكرول متجاوبة: <div class="table-responsive-wrapper" style="width:100%; overflow-x:auto; margin:14px 0;"><table style="min-width:650px; width:100%; border-collapse:collapse;">...</table></div>
-            - استخدم صناديق تنبيه وملاحظات أنيقة (<div class="info-box editable-box">, <div class="success-box editable-box">, <div class="warning-box editable-box">).
-            - اجعل الأرقام والحسابات واقعية ومبنية على بيان الأعمال الفعلي والكميات الحقيقية المذكورة أعلاه.
+            قواعد صارمة وإلزامية (لمنع الإطالة والتكرار وتشوه الجداول):
+            1. **ممنوع منعاً باتاً إعادة كتابة منطوق البند الكامل أو نص بيان الأعمال في أي مكان بالتقرير** (لا في العنوان، ولا في المقدمة، ولا داخل الفقرات، ولا داخل الجداول). اكتفِ عند الحاجة بالإشارة المختصرة جداً لنوع العمل في كلمتين أو ثلاث (مثل: "بند رقم ${item.itemCode || '-'}" أو اسم العملية المختصر فقط) حتى لا يطول التقرير بدون فائدة.
+            2. لا تضع جدولاً لبيانات البند التعاقدية، لأن الترويسة المختصرة معروضة بالفعل أعلى التقرير. ادخل في صلب التحليل الهندسي مباشرة.
+            3. أخرج كود HTML نظيف فقط (بدون \`\`\`html أو \`\`\`).
+            4. تناسب عروض أعمدة الجداول:
+               - ضع كل جدول داخل: <div class="table-responsive-wrapper" style="width:100%; overflow-x:auto; margin:14px 0;"><table style="width:100%; border-collapse:collapse;">...</table></div>
+               - لا تضع خاصية white-space: nowrap أو min-width كبيرة على خلايا الجداول حتى تستجيب الجمل للتكسير التلقائي عند تعديل عروض الأعمدة.
+            5. استخدم صناديق تنبيه وملاحظات أنيقة (<div class="info-box editable-box">, <div class="success-box editable-box">, <div class="warning-box editable-box">).
+            6. اجعل جميع الأرقام والمعدلات والحسابات دقيقة ومبنية على الكميات الفعلية للبند.
         `;
 
         try {

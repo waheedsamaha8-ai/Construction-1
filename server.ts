@@ -30,6 +30,32 @@ if (fs.existsSync('.env')) {
   }
 }
 
+const SYNCED_KEYS_FILE = path.resolve(__dirname, '.synced_gemini_keys.json');
+const deadKeysSet = new Set<string>();
+
+const loadSyncedUserKeys = (): string[] => {
+  try {
+    if (fs.existsSync(SYNCED_KEYS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SYNCED_KEYS_FILE, 'utf-8'));
+      if (Array.isArray(parsed)) {
+        return parsed.map(k => String(k || '').trim()).filter(k => k.length > 10 && !deadKeysSet.has(k));
+      }
+    }
+  } catch (e) {}
+  return [];
+};
+
+const saveSyncedUserKeys = (keys: string[]) => {
+  try {
+    const existing = loadSyncedUserKeys();
+    const merged = [...new Set([...keys, ...existing])].filter(k => k && k.length > 10 && !deadKeysSet.has(k));
+    fs.writeFileSync(SYNCED_KEYS_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+    return merged;
+  } catch (e) {
+    return keys;
+  }
+};
+
 // --- MULTI-KEY ROTATION & API KEY SETUP ---
 const collectEnvKeys = (): string[] => {
   const envCandidates = [
@@ -39,17 +65,17 @@ const collectEnvKeys = (): string[] => {
     process.env.API_KEY,
     process.env.VITE_API_KEY,
   ];
-  const keys: string[] = [];
+  const keys: string[] = [...loadSyncedUserKeys()];
   for (const cand of envCandidates) {
     if (cand) {
-      const parts = cand.split(',').map(k => k.trim()).filter(k => k.length > 0);
+      const parts = cand.split(',').map(k => k.trim()).filter(k => k.length > 0 && !deadKeysSet.has(k));
       keys.push(...parts);
     }
   }
   return [...new Set(keys)];
 };
 
-const API_KEYS = collectEnvKeys();
+let API_KEYS = collectEnvKeys();
 let currentKeyIndex = API_KEYS.length > 0 ? Math.floor(Math.random() * API_KEYS.length) : 0;
 
 const getAiClient = (overrideKey?: string) => {
@@ -85,6 +111,17 @@ const normalizeModel = (model: string | undefined): string => {
 const app = express();
 const server = createHttpServer(app);
 
+// Enable CORS for Mobile PWA & GitHub Pages cross-origin requests
+app.use((req: Request, res: Response, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Gemini-Api-Key, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
+
 // Increase limits for large base64 files/audio
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
@@ -94,6 +131,27 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', serverTime: new Date().toISOString() });
 });
 
+// Cross-Device Gemini Key Sync Endpoint
+app.get('/api/gemini/keys', (_req: Request, res: Response) => {
+  const synced = loadSyncedUserKeys();
+  res.json({ keys: synced });
+});
+
+app.post('/api/gemini/keys', (req: Request, res: Response) => {
+  const incoming = Array.isArray(req.body?.keys) ? req.body.keys : [];
+  const cleaned = incoming.map((k: any) => String(k || '').trim()).filter((k: string) => k.length > 10);
+  if (cleaned.length === 0 && req.body?.clear === true) {
+    try {
+      if (fs.existsSync(SYNCED_KEYS_FILE)) fs.unlinkSync(SYNCED_KEYS_FILE);
+    } catch (e) {}
+    API_KEYS = collectEnvKeys();
+    return res.json({ keys: [] });
+  }
+  const merged = saveSyncedUserKeys(cleaned);
+  API_KEYS = collectEnvKeys();
+  res.json({ keys: merged });
+});
+
 // --- GEMINI GENERATE CONTENT ENDPOINT ---
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
   const { model: requestedModel, contents, config, cachedContent, apiKey: bodyKey, apiKeys: bodyKeys } = req.body;
@@ -101,25 +159,37 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
   const customUserKey = (headerKey || bodyKey || '').trim();
 
   const manualUserKeys: string[] = [];
-  if (customUserKey) manualUserKeys.push(customUserKey);
+  if (customUserKey && !deadKeysSet.has(customUserKey)) manualUserKeys.push(customUserKey);
   if (Array.isArray(bodyKeys)) {
     for (const k of bodyKeys) {
       const trimmed = String(k || '').trim();
-      if (trimmed && !manualUserKeys.includes(trimmed)) {
+      if (trimmed && !deadKeysSet.has(trimmed) && !manualUserKeys.includes(trimmed)) {
         manualUserKeys.push(trimmed);
       }
     }
   }
 
-  const liveEnvKeys = collectEnvKeys();
-  const activeEnvKeys = liveEnvKeys.length > 0 ? liveEnvKeys : API_KEYS;
+  // Persist any user-provided keys so mobile devices sharing this server automatically benefit
+  if (manualUserKeys.length > 0) {
+    saveSyncedUserKeys(manualUserKeys);
+  }
+
+  const syncedKeys = loadSyncedUserKeys();
+  for (const sk of syncedKeys) {
+    if (!manualUserKeys.includes(sk) && !deadKeysSet.has(sk)) {
+      manualUserKeys.push(sk);
+    }
+  }
+
+  API_KEYS = collectEnvKeys();
+  const activeEnvKeys = API_KEYS;
 
   const primaryModel = normalizeModel(requestedModel);
 
-  // Build candidate keys: try all manually entered user keys first, then fall back to server env keys
+  // Build candidate keys: try all manually entered / synced user keys first, then fall back to server env keys
   const keyCandidates: (string | undefined)[] = manualUserKeys.length > 0
     ? [...manualUserKeys, ...(activeEnvKeys.length > 0 ? [undefined] : [])]
-    : [undefined];
+    : (activeEnvKeys.length > 0 ? [undefined] : []);
 
   for (const candidateKey of keyCandidates) {
     // When using a user's manually entered AI Studio key, include standard public Gemini model IDs first
@@ -132,6 +202,15 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
       const maxAttempts = candidateKey ? 1 : Math.max(1, activeEnvKeys.length);
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const activeKeyUsed = candidateKey || (activeEnvKeys.length > 0 ? activeEnvKeys[currentKeyIndex % activeEnvKeys.length] : '');
+        if (!activeKeyUsed || deadKeysSet.has(activeKeyUsed)) {
+          if (!candidateKey && activeEnvKeys.length > 1) {
+            rotateKey();
+            continue;
+          }
+          break;
+        }
+
         // If config has tools (e.g., googleSearch), try with tools first, then retry once without tools if grounding quota is exhausted
         const hasSearchTool = Array.isArray(config?.tools) && config.tools.some((t: any) => t.googleSearch);
         const configVariants = hasSearchTool
@@ -140,7 +219,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
         for (const activeConfig of configVariants) {
           try {
-            const client = getAiClient(candidateKey);
+            const client = getAiClient(activeKeyUsed);
             const requestParams: any = {
               model,
               contents,
@@ -182,8 +261,12 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
               break;
             }
 
-            if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
-              if (!candidateKey && activeEnvKeys.length > 1) {
+            if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('api key not valid') || msg.includes('permission_denied') || msg.includes('leaked')) {
+              if (msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('leaked')) {
+                deadKeysSet.add(activeKeyUsed);
+                API_KEYS = collectEnvKeys();
+              }
+              if (!candidateKey && API_KEYS.length > 0) {
                 rotateKey();
               }
               break;
@@ -395,7 +478,7 @@ async function startServer() {
     const distPath = path.resolve(__dirname, 'dist');
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get('*', (_req: Request, res: Response) => {
+      app.get(/.*/, (_req: Request, res: Response) => {
         res.sendFile(path.resolve(distPath, 'index.html'));
       });
     } else {

@@ -39,14 +39,17 @@ const getPrintStyles = (marginCm: number = 0.5) => {
 
         .print-wrapper {
             width: 100% !important;
+            min-height: 96vh !important;
             border: none !important;
             margin: 0 !important;
             padding: 0 !important;
-            display: block;
+            display: flex !important;
+            flex-direction: column !important;
         }
 
         .content-body {
             width: 100% !important;
+            flex: 1 1 auto !important;
         }
 
         h1, h2, h3, h4, h5 { 
@@ -130,25 +133,25 @@ const getPrintStyles = (marginCm: number = 0.5) => {
             background-color: #1e3a8a !important; 
             color: #ffffff !important; 
             border-bottom: 4px solid #3b82f6 !important; 
-            padding: 18px 12px !important; 
+            padding: 14px 16px !important; 
             margin-bottom: 16px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: flex-start; 
+            display: flex !important; 
+            flex-direction: row !important;
+            justify-content: space-between !important; 
+            align-items: center !important; 
             width: 100%; 
-            direction: rtl;
+            direction: rtl !important;
         }
 
-        .print-header h1 { font-size: 28px; font-weight: 900; margin: 0; padding: 0; border: none !important; color: #ffffff !important; }
+        .print-header h1 { font-size: 20px; font-weight: 900; margin: 0; padding: 0; border: none !important; color: #ffffff !important; }
         .print-header p, .print-header div, .print-header span, .print-header strong { font-weight: 800; color: #ffffff !important; }
         
         .print-footer { 
-            margin-top: 30px;
+            margin-top: auto !important;
             text-align: center; 
             border-top: 2px solid #e2e8f0; 
-            padding-top: 15px; 
-            padding-bottom: 10px;
-            font-size: 14px; /* Was 13px */
+            padding: 10px 14px;
+            font-size: 13px;
             font-weight: 800; 
             color: #000 !important; 
             background: white; 
@@ -187,6 +190,7 @@ const getPrintStyles = (marginCm: number = 0.5) => {
 };
 
 export interface PrintOptions {
+    date?: string;
     subtitle?: string; 
     footerText?: string; 
     margins?: { x: string, y: string };
@@ -200,6 +204,12 @@ export interface PrintOptions {
     showFooter?: boolean;
     headerColor?: string;
     footerColor?: string;
+    fontSizes?: {
+        title?: string;
+        subtitle?: string;
+        meta?: string;
+        footer?: string;
+    };
 }
 
 const isLightColor = (hex?: string): boolean => {
@@ -305,12 +315,12 @@ export const printService = {
     },
 
     printReport: (bodyContent: string, reportTitle: string, projectRef?: string, options: PrintOptions = {}) => {
-        const dateStr = new Date().toLocaleDateString('en-CA'); 
+        const dateStr = options.date || new Date().toLocaleDateString('en-CA'); 
         const refStr = projectRef || `AI-${Date.now().toString().slice(-6)}`;
         const subtitle = options.subtitle || "تقرير هندسي استشاري";
         const footerText = options.footerText || "تم إعداد هذا التقرير بواسطة الذكاء الاصطناعي - تحت إشراف المهندس / وحيد سماحة";
-        const dateLabel = options.labels?.date || "Date:";
-        const refLabel = options.labels?.ref || "Ref:";
+        const dateLabel = options.labels?.date || "التاريخ:";
+        const refLabel = options.labels?.ref || "المرجع:";
 
         const {
             showHeader = true,
@@ -320,37 +330,42 @@ export const printService = {
             showRef = true,
             showFooter = true,
             headerColor = '#1e3a8a',
-            footerColor = '#ffffff'
+            footerColor = '#ffffff',
+            fontSizes
         } = options;
 
         const paddingStyle = options.margins ? `padding: ${options.margins.y} ${options.margins.x};` : '';
         const headerTextColor = isLightColor(headerColor) ? '#0f172a' : '#ffffff';
         const footerTextColor = isLightColor(footerColor) ? '#000000' : '#ffffff';
+        const titleFs = fontSizes?.title || '18px';
+        const subtitleFs = fontSizes?.subtitle || '13px';
+        const metaFs = fontSizes?.meta || '12px';
+        const footerFs = fontSizes?.footer || '13px';
 
         let headerHTML = '';
         if (showHeader && (showTitle || showSubtitle || showDate || showRef)) {
             let titleBlock = '';
             if (showTitle || showSubtitle) {
                 titleBlock = `
-                    <div style="color: ${headerTextColor} !important;">
-                        ${showTitle ? `<h1 style="margin:0; font-size: 32px; color: ${headerTextColor} !important;">${reportTitle}</h1>` : ''}
-                        ${showSubtitle ? `<p style="margin:8px 0 0 0; font-size: 18px; color: ${headerTextColor} !important;">${subtitle}</p>` : ''}
+                    <div style="text-align: right; flex: 1; color: ${headerTextColor} !important;">
+                        ${showTitle ? `<h1 style="margin:0; font-size: ${titleFs}; text-align: right; color: ${headerTextColor} !important;">${reportTitle}</h1>` : ''}
+                        ${showSubtitle ? `<p style="margin:4px 0 0 0; font-size: ${subtitleFs}; text-align: right; color: ${headerTextColor} !important;">${subtitle}</p>` : ''}
                     </div>
                 `;
             }
             let metaBlock = '';
             if (showDate || showRef) {
                 metaBlock = `
-                    <div style="text-align: left; font-size: 15px; color: ${headerTextColor} !important;">
-                        ${showDate ? `<p style="margin:0; color: ${headerTextColor} !important;" dir="auto"><strong style="color: ${headerTextColor} !important;">${dateLabel}</strong> ${dateStr}</p>` : ''}
-                        ${showRef ? `<p style="margin:0; color: ${headerTextColor} !important;" dir="auto"><strong style="color: ${headerTextColor} !important;">${refLabel}</strong> ${refStr}</p>` : ''}
+                    <div style="text-align: left; direction: rtl; margin-right: auto; font-size: ${metaFs}; color: ${headerTextColor} !important;">
+                        ${showDate ? `<p style="margin:0; text-align: left; font-size: ${metaFs}; color: ${headerTextColor} !important;" dir="rtl"><strong style="color: ${headerTextColor} !important;">${dateLabel}</strong> ${dateStr}</p>` : ''}
+                        ${showRef ? `<p style="margin:0; text-align: left; font-size: ${metaFs}; color: ${headerTextColor} !important;" dir="rtl"><strong style="color: ${headerTextColor} !important;">${refLabel}</strong> ${refStr}</p>` : ''}
                     </div>
                 `;
             }
             headerHTML = `<div class="print-header" style="background-color: ${headerColor} !important; color: ${headerTextColor} !important;">${titleBlock}${metaBlock}</div>`;
         }
 
-        const footerHTML = showFooter ? `<div class="print-footer" style="background-color: ${footerColor} !important; color: ${footerTextColor} !important;" dir="auto">${footerText}</div>` : '';
+        const footerHTML = showFooter ? `<div class="print-footer" style="background-color: ${footerColor} !important; color: ${footerTextColor} !important; font-size: ${footerFs};" dir="auto">${footerText}</div>` : '';
 
         const wrappedHTML = `
             ${headerHTML}

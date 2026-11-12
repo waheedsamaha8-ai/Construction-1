@@ -3,7 +3,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { aiHelper } from '../services/aiHelper';
 import { api } from '../services/api';
+import { printService } from '../services/printService';
 import { ReportGenerator, wrapTablesInHtml } from '../services/reportGenerator';
+import InteractiveReportViewer from './InteractiveReportViewer';
 
 interface InstantExpertProps {
     onClose: () => void;
@@ -39,6 +41,8 @@ const InstantExpert: React.FC<InstantExpertProps> = ({ onClose }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [attachment, setAttachment] = useState<File | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [activeMenuMessageIdx, setActiveMenuMessageIdx] = useState<number | null>(null);
+    const [directEditingMessageIdx, setDirectEditingMessageIdx] = useState<number | null>(null);
     
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -174,52 +178,184 @@ const InstantExpert: React.FC<InstantExpertProps> = ({ onClose }) => {
 
             {/* Chat Area - Full Width & Height */}
             <div className="flex-1 overflow-y-auto p-2 sm:p-4 bg-slate-50 space-y-6">
-                {messages.map((msg, idx) => (
-                    <div key={idx} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        {/* 
-                           Message Bubble Styling:
-                           - w-full: Full width usage
-                           - text-base: Larger font size for reading 
-                           - No generic styling constraints, let HTML content drive layout
-                        */}
-                        <div className={`w-full p-4 rounded-xl shadow-sm border ${
-                            msg.role === 'user' 
-                            ? 'bg-white border-slate-200 text-slate-800' // User message simple white box
-                            : 'bg-transparent border-none p-0' // Expert message is transparent container for Boxes
-                        }`}>
-                            {msg.role === 'user' && <div className="font-bold text-slate-900 mb-1 flex items-center gap-2"><i className="fa-solid fa-user text-slate-400"></i> أنت:</div>}
-                            
-                            {/* Render HTML Content with Prose for proper typography */}
-                            <div className={`prose prose-lg max-w-none text-slate-800 leading-relaxed ${msg.role === 'user' ? 'text-base' : ''}`} dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(msg.content) }}></div>
+                {messages.map((msg, idx) => {
+                    const isDirectEditingThis = directEditingMessageIdx === idx;
+                    const isMenuOpenForThis = activeMenuMessageIdx === idx;
+                    return (
+                        <div key={idx} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`w-full p-4 rounded-xl shadow-sm border ${
+                                msg.role === 'user' 
+                                ? 'bg-white border-slate-200 text-slate-800'
+                                : 'bg-white border-slate-200 p-3 sm:p-5'
+                            }`}>
+                                {msg.role === 'user' && <div className="font-bold text-slate-900 mb-1 flex items-center gap-2"><i className="fa-solid fa-user text-slate-400"></i> أنت:</div>}
+                                
+                                {msg.role === 'expert' && idx > 0 && (
+                                    <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <div className="w-7 h-7 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0">
+                                                <i className="fa-solid fa-user-graduate text-xs"></i>
+                                            </div>
+                                            <span className="font-bold text-xs sm:text-sm text-slate-800 truncate !bg-transparent !border-0 !p-0 !m-0">تقرير المستشار الهندسي</span>
+                                            {msg.isSaved && (
+                                                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
+                                                    <i className="fa-solid fa-check text-[9px]"></i> محفوظ في الأرشيف
+                                                </span>
+                                            )}
+                                        </div>
 
-                            {/* Expert Action Buttons */}
-                            {msg.role === 'expert' && idx > 0 && (
-                                <div className="flex justify-end gap-2 mt-3 pt-3 border-t border-slate-200/50">
-                                    <button 
-                                        onClick={() => handleEditResponse(msg.content, msg.savedFileId)}
-                                        className="text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1 border border-indigo-200"
-                                    >
-                                        <i className="fa-solid fa-pen-to-square"></i> تعديل كخطاب
-                                    </button>
-                                    
-                                    {!msg.isSaved ? (
-                                        <button 
-                                            onClick={() => handleSaveResponse(idx, msg.content)}
-                                            disabled={isSaving}
-                                            className="text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1 border border-teal-200 disabled:opacity-50"
-                                        >
-                                            {isSaving ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-box-archive"></i>} حفظ في الأرشيف
-                                        </button>
-                                    ) : (
-                                        <span className="text-xs font-bold text-green-600 bg-green-50 px-3 py-1.5 rounded-lg border border-green-200 flex items-center gap-1 cursor-default">
-                                            <i className="fa-solid fa-check"></i> تم الحفظ
-                                        </span>
-                                    )}
-                                </div>
-                            )}
+                                        <div className="flex items-center gap-1.5 relative shrink-0">
+                                            {isDirectEditingThis && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setDirectEditingMessageIdx(null)}
+                                                    className="w-8 h-8 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition text-xs shadow-sm"
+                                                    title="إنهاء التعديل المباشر"
+                                                >
+                                                    <i className="fa-solid fa-check"></i>
+                                                </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveMenuMessageIdx(isMenuOpenForThis ? null : idx)}
+                                                className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${
+                                                    isMenuOpenForThis
+                                                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-md'
+                                                        : isDirectEditingThis
+                                                            ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
+                                                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                                                }`}
+                                                title="خيارات التقرير"
+                                            >
+                                                <i className="fa-solid fa-ellipsis-vertical text-sm"></i>
+                                            </button>
+
+                                            {isMenuOpenForThis && (
+                                                <>
+                                                    <div className="fixed inset-0 z-[2100]" onClick={() => setActiveMenuMessageIdx(null)}></div>
+                                                    <div className="absolute left-0 top-9 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[2150] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                                        <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                                            <span className="text-[10px] font-bold text-slate-400">إجراءات التقرير</span>
+                                                            <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                                        </div>
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setActiveMenuMessageIdx(null);
+                                                                setDirectEditingMessageIdx(isDirectEditingThis ? null : idx);
+                                                            }}
+                                                            className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold text-right ${
+                                                                isDirectEditingThis
+                                                                    ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400'
+                                                                    : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                                            }`}
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                                                <i className={`fa-solid ${isDirectEditingThis ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                                            </div>
+                                                            <div className="flex-1 text-right">
+                                                                <div>{isDirectEditingThis ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
+                                                                <div className="text-[10px] text-indigo-200 font-normal">حفظ تلقائي على التقرير</div>
+                                                            </div>
+                                                        </button>
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setActiveMenuMessageIdx(null);
+                                                                handleEditResponse(msg.content, msg.savedFileId);
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                                            </div>
+                                                            <span>تعديل المستند</span>
+                                                        </button>
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setActiveMenuMessageIdx(null);
+                                                                printService.printReport(msg.content, 'تقرير المستشار الهندسي', 'EXP-AI');
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-print text-xs"></i>
+                                                            </div>
+                                                            <span>طباعة المستند</span>
+                                                        </button>
+
+                                                        {!msg.isSaved && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setActiveMenuMessageIdx(null);
+                                                                    handleSaveResponse(idx, msg.content);
+                                                                }}
+                                                                disabled={isSaving}
+                                                                className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right disabled:opacity-50"
+                                                            >
+                                                                <div className="w-6 h-6 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0">
+                                                                    {isSaving ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-box-archive text-xs"></i>}
+                                                                </div>
+                                                                <span>حفظ في الأرشيف الهندسي</span>
+                                                            </button>
+                                                        )}
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={async () => {
+                                                                setActiveMenuMessageIdx(null);
+                                                                if (!window.confirm('هل أنت متأكد من حذف هذا التقرير؟')) return;
+                                                                if (msg.savedFileId) {
+                                                                    try { await api.deleteItem(msg.savedFileId); } catch (e) {}
+                                                                }
+                                                                if (isDirectEditingThis) setDirectEditingMessageIdx(null);
+                                                                setMessages(prev => prev.filter((_, i) => i !== idx));
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-trash-can text-xs"></i>
+                                                            </div>
+                                                            <span>حذف التقرير</span>
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Render HTML Content with InteractiveReportViewer for expert reports */}
+                                {msg.role === 'expert' && idx > 0 ? (
+                                    <InteractiveReportViewer
+                                        htmlContent={msg.content}
+                                        showFloatingEditBar={false}
+                                        isDirectEditing={isDirectEditingThis}
+                                        onDirectEditChange={(val) => setDirectEditingMessageIdx(val ? idx : null)}
+                                        onContentChange={(updatedHtml) => {
+                                            setMessages(prev => prev.map((m, i) => i === idx ? { ...m, content: updatedHtml } : m));
+                                            if (msg.savedFileId) {
+                                                const title = `استشارة هندسية - ${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`;
+                                                const fullReport = ReportGenerator.buildReport(title, updatedHtml, {
+                                                    subtitle: "تقرير الخبير الهندسي (قوانين وأكواد)",
+                                                    footerText: "تم الحفظ من الخبير الفوري"
+                                                });
+                                                api.updateFileContent(msg.savedFileId, fullReport).catch(() => {});
+                                            }
+                                        }}
+                                    />
+                                ) : (
+                                    <div className={`prose prose-lg max-w-none text-slate-800 leading-relaxed ${msg.role === 'user' ? 'text-base' : ''}`} dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(msg.content) }}></div>
+                                )}
+                            </div>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
                 
                 {isLoading && (
                     <div className="w-full flex justify-center py-8">

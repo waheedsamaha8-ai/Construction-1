@@ -11,6 +11,7 @@ import ProjectReportModal from './ProjectReportModal';
 import { ReportGenerator } from '../services/reportGenerator';
 import { Project, ProjectLog, ProjectPayment, BOQItem, BOQItemReportType, BOQItemSavedReport, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
 import html2canvas from 'html2canvas';
+import InteractiveReportViewer, { formatInteractiveReportHtml, applyTableColumnWidthToHtml } from './InteractiveReportViewer';
 
 interface ProjectMasterDataProps {
     projectId: string;
@@ -58,58 +59,7 @@ const normalizePaymentsList = (payments: any[] = []): ProjectPayment[] => {
 };
 
 const enhanceReportHtml = (rawHtml: string): string => {
-    if (!rawHtml) return '';
-    try {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(rawHtml, 'text/html');
-        const tables = doc.querySelectorAll('table');
-        tables.forEach((table) => {
-            table.style.minWidth = '680px';
-            table.style.width = '100%';
-            table.style.borderCollapse = 'collapse';
-
-            // Wrap table in responsive wrapper if not already wrapped
-            if (!table.parentElement?.classList.contains('table-responsive-wrapper')) {
-                const wrapper = doc.createElement('div');
-                wrapper.className = 'table-responsive-wrapper';
-                wrapper.style.width = '100%';
-                wrapper.style.overflowX = 'auto';
-                wrapper.style.webkitOverflowScrolling = 'touch';
-                wrapper.style.margin = '14px 0';
-                table.parentNode?.insertBefore(wrapper, table);
-                wrapper.appendChild(table);
-            }
-
-            const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
-            if (headerRow) {
-                const cells = Array.from(headerRow.children) as HTMLElement[];
-                cells.forEach((cell) => {
-                    const text = cell.textContent?.trim() || '';
-                    if (!cell.style.width || cell.style.width === 'auto') {
-                        if (
-                            text.includes('بيان الأعمال') ||
-                            text.includes('الوصف') ||
-                            text.includes('المواصفات') ||
-                            text.includes('طريقة التنفيذ') ||
-                            text.includes('خطوات') ||
-                            text.includes('عنصر الفحص')
-                        ) {
-                            cell.style.width = '42%';
-                            cell.style.minWidth = '260px';
-                        } else if (text === 'م' || text === 'رقم' || text === '#' || text.includes('الوحدة')) {
-                            cell.style.width = '8%';
-                            cell.style.minWidth = '50px';
-                            cell.style.textAlign = 'center';
-                            cell.style.whiteSpace = 'nowrap';
-                        }
-                    }
-                });
-            }
-        });
-        return doc.body.innerHTML;
-    } catch (e) {
-        return rawHtml;
-    }
+    return formatInteractiveReportHtml(rawHtml);
 };
 
 export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onProjectUpdated, onOpenAI }: ProjectMasterDataProps) {
@@ -375,6 +325,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     
     // Soil Viewer & Editing States
     const [selectedReport, setSelectedReport] = useState<EngineeringReportItem | null>(null);
+    const [isSelectedReportMenuOpen, setIsSelectedReportMenuOpen] = useState(false);
+    const [isDirectEditingSelectedReport, setIsDirectEditingSelectedReport] = useState(false);
     const [reportToDeleteId, setReportToDeleteId] = useState<string | null>(null);
     // NEW: Report Renaming States
     const [renamingReportId, setRenamingReportId] = useState<string | null>(null);
@@ -1755,11 +1707,22 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
     ];
 
+    const isEmergencyFallbackReport = (html?: string): boolean => {
+        if (!html) return true;
+        return (
+            html.includes('Emergency-Quota-Protection') ||
+            html.includes('Emergency-Static-Brain') ||
+            html.includes('وضع الاستمرارية الهندسية') ||
+            html.includes('وضع الطوارئ (Offline Mode)') ||
+            html.includes('تعذر توليد التقرير حالياً')
+        );
+    };
+
     const handleBoqItemReportButtonClick = async (targetItem: BOQItem, reportType: BOQItemReportType, forceRegenerate: boolean = false) => {
         if (!targetItem || generatingBoqReportInfo) return;
 
         const existingSaved = targetItem.savedReports?.[reportType];
-        if (existingSaved && existingSaved.content && !forceRegenerate) {
+        if (existingSaved && existingSaved.content && !isEmergencyFallbackReport(existingSaved.content) && !forceRegenerate) {
             setViewingBoqReportItem(targetItem);
             setViewingBoqReport(existingSaved);
             return;
@@ -1775,6 +1738,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 contractor: masterData.projectContractor || initialProjectData?.contractor || '',
                 location: initialProjectData?.location || ''
             });
+
+            if (isEmergencyFallbackReport(htmlContent)) {
+                window.dispatchEvent(new CustomEvent('open_gemini_key_modal'));
+                return;
+            }
 
             const savedReportObj: BOQItemSavedReport = {
                 type: reportType,
@@ -1845,36 +1813,42 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         triggerAutoSave(newData);
     };
 
+    const handleDeleteBoqItemReport = () => {
+        if (!viewingBoqReport) return;
+        const targetItem = viewingBoqReportItem || editingBoqItem;
+        if (!targetItem) return;
+
+        const updatedSavedReports = { ...(targetItem.savedReports || {}) };
+        delete updatedSavedReports[viewingBoqReport.type];
+
+        const updatedItem: BOQItem = {
+            ...targetItem,
+            savedReports: updatedSavedReports
+        };
+
+        if (editingBoqItem && editingBoqItem.id === targetItem.id) {
+            setEditingBoqItem(updatedItem);
+        }
+
+        const newData = {
+            ...masterData,
+            boqItems: masterData.boqItems.map(item => item.id === updatedItem.id ? updatedItem : item)
+        };
+        setMasterData(newData);
+        triggerAutoSave(newData);
+
+        setIsBoqReportMenuOpen(false);
+        setIsDirectEditingReport(false);
+        setViewingBoqReport(null);
+        setViewingBoqReportItem(null);
+    };
+
     const applyColumnWidth = (tableIdx: number, colIdx: number, percent: number | 'auto') => {
         if (!viewingBoqReport) return;
-        try {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(viewingBoqReport.content, 'text/html');
-            const tables = doc.querySelectorAll('table');
-            const targetTable = tables[tableIdx];
-            if (!targetTable) return;
-
-            const rows = targetTable.querySelectorAll('tr');
-            rows.forEach(row => {
-                const cells = row.children;
-                const targetCell = cells[colIdx] as HTMLElement;
-                if (targetCell) {
-                    if (percent === 'auto') {
-                        targetCell.style.width = 'auto';
-                        targetCell.style.minWidth = '';
-                    } else {
-                        targetCell.style.width = `${percent}%`;
-                        targetCell.style.minWidth = `${percent * 6}px`;
-                    }
-                }
-            });
-
-            const updatedHtml = doc.body.innerHTML;
-            handleUpdateReportContent(updatedHtml);
-            setEditingColumnModal(null);
-        } catch (e) {
-            console.error("Failed to apply column width:", e);
-        }
+        const currentHtml = reportEditableContentRef.current ? reportEditableContentRef.current.innerHTML : viewingBoqReport.content;
+        const updatedHtml = applyTableColumnWidthToHtml(currentHtml, tableIdx, colIdx, percent);
+        handleUpdateReportContent(updatedHtml);
+        setEditingColumnModal(null);
     };
 
     const handleReportContentClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -2781,7 +2755,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                           {/* 4 AI Engineering Report Icon Buttons for BOQ Item */}
                                           <div className="flex items-center gap-2 pt-1 pb-0.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
                                               {BOQ_ITEM_REPORT_BUTTONS.map((btn) => {
-                                                  const isSaved = Boolean(item.savedReports?.[btn.type]?.content);
+                                                  const savedContent = item.savedReports?.[btn.type]?.content;
+                                                  const isSaved = Boolean(savedContent && !isEmergencyFallbackReport(savedContent));
                                                   const isGeneratingThis = generatingBoqReportInfo?.itemId === item.id && generatingBoqReportInfo?.type === btn.type;
                                                   return (
                                                       <button
@@ -3535,19 +3510,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             {viewingBoqReport && (viewingBoqReportItem || editingBoqItem) && (
                                 <div className="fixed inset-0 z-[1750] bg-slate-900 flex flex-col w-screen h-screen overflow-hidden animate-fade-in">
                                     {/* Modal Header */}
-                                    <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between gap-2.5 shrink-0 relative border-b border-slate-800 shadow-lg">
-                                        {/* Right side: Title + Status */}
-                                        <div className="min-w-0 flex-1">
-                                            <h3 className="font-bold text-xs sm:text-base text-white truncate">{viewingBoqReport.title}</h3>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                                                    <i className="fa-solid fa-cloud-arrow-up"></i> محفوظ في زر البند
-                                                </span>
-                                                {!isDirectEditingReport && (
-                                                    <span className="text-[10px] text-slate-400 hidden sm:inline-block">
-                                                        • انقر على رأس أي عمود لتعديل عرضه بالـ %
+                                    <div className="bg-slate-900 text-white px-3.5 py-2.5 flex items-center justify-between gap-2.5 shrink-0 relative border-b border-slate-800 shadow-md">
+                                        {/* Right side: Icon + Title + Status */}
+                                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                            <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
+                                                <i className="fa-solid fa-file-contract text-xs text-white"></i>
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="font-bold text-[11px] sm:text-xs text-white truncate leading-tight !bg-transparent !border-0 !p-0 !m-0">{viewingBoqReport.title}</div>
+                                                <div className="flex items-center gap-1.5 mt-0.5 truncate">
+                                                    <span className="text-[9.5px] sm:text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+                                                        <i className="fa-solid fa-cloud-arrow-up text-[9px]"></i> محفوظ في زر البند
                                                     </span>
-                                                )}
+                                                </div>
                                             </div>
                                         </div>
 
@@ -3661,27 +3636,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 <i className={`fa-solid ${isDirectEditingReport ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
                                                             </div>
                                                             <div className="flex-1 text-right">
-                                                                <div>{isDirectEditingReport ? 'إنهاء التعديل المباشر' : 'تعديل مباشر على التقرير والجداول'}</div>
+                                                                <div>{isDirectEditingReport ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
                                                                 <div className="text-[10px] text-indigo-200 font-normal">
-                                                                    {isDirectEditingReport ? 'العودة لوضع القراءة' : 'تعديل فوري وحفظ تلقائي'}
+                                                                    {isDirectEditingReport ? 'العودة لوضع القراءة' : 'تعديل فوري وحفظ تلقائي على التقرير'}
                                                                 </div>
                                                             </div>
-                                                        </button>
-
-                                                        {/* Print Button */}
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setIsBoqReportMenuOpen(false);
-                                                                handlePrintBoqItemReport(viewingBoqReport);
-                                                            }}
-                                                            disabled={Boolean(generatingBoqReportInfo)}
-                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
-                                                        >
-                                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
-                                                                <i className="fa-solid fa-print text-xs"></i>
-                                                            </div>
-                                                            <span>طباعة التقرير (PDF)</span>
                                                         </button>
 
                                                         {/* Open in Letter Editor */}
@@ -3697,7 +3656,23 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                             <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
                                                                 <i className="fa-solid fa-pen-to-square text-xs"></i>
                                                             </div>
-                                                            <span>تعديل في خطاب</span>
+                                                            <span>تعديل المستند</span>
+                                                        </button>
+
+                                                        {/* Print Button */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsBoqReportMenuOpen(false);
+                                                                handlePrintBoqItemReport(viewingBoqReport);
+                                                            }}
+                                                            disabled={Boolean(generatingBoqReportInfo)}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-print text-xs"></i>
+                                                            </div>
+                                                            <span>طباعة المستند</span>
                                                         </button>
 
                                                         {/* Regenerate Button */}
@@ -3719,6 +3694,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 )}
                                                             </div>
                                                             <span>إعادة توليد بالذكاء الاصطناعي</span>
+                                                        </button>
+
+                                                        {/* Delete Report Button */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleDeleteBoqItemReport}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-trash-can text-xs"></i>
+                                                            </div>
+                                                            <span>حذف التقرير</span>
                                                         </button>
                                                     </div>
                                                 </>
@@ -3769,15 +3756,30 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             }`}
                                         >
                                             <style>{`
-                                                .report-content { font-size: 13.5px !important; color: #1e293b !important; line-height: 1.7 !important; }
-                                                .report-content .table-responsive-wrapper { width: 100% !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; margin: 14px 0 !important; border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; }
-                                                .report-content table { min-width: 680px !important; width: 100% !important; border-collapse: collapse !important; margin: 8px 0 !important; font-size: 13px !important; table-layout: auto !important; }
-                                                .report-content th, .report-content td { border: 1px solid #cbd5e1 !important; padding: 10px 14px !important; line-height: 1.6 !important; vertical-align: middle !important; word-break: normal !important; }
-                                                .report-content th { background-color: #f1f5f9 !important; color: #1e3a8a !important; font-weight: 800 !important; text-align: center !important; cursor: pointer !important; position: relative !important; user-select: none !important; transition: all 0.15s ease !important; }
+                                                .report-content { font-size: 13px !important; color: #1e293b !important; line-height: 1.65 !important; width: 100% !important; max-width: 100% !important; }
+                                                .report-content .report-container, .report-content .report-body { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; border: none !important; }
+                                                .report-content .report-header { display: none !important; }
+                                                .report-content p, .report-content li, .report-content div { font-size: 13px !important; line-height: 1.65 !important; }
+                                                .report-content .table-responsive-wrapper { width: 100% !important; max-width: 100% !important; overflow-x: auto !important; overflow-y: hidden !important; -webkit-overflow-scrolling: touch !important; touch-action: pan-x pan-y !important; margin: 12px 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; padding: 0 0 6px 0 !important; box-shadow: none !important; display: block !important; }
+                                                .report-content table, .report-content .editable-table { width: 100% !important; min-width: 580px !important; table-layout: auto !important; border-collapse: collapse !important; margin: 0 !important; font-size: 12.5px !important; border: 1px solid #cbd5e1 !important; background: #ffffff !important; }
+                                                .report-content th, .report-content td { border: 1px solid #cbd5e1 !important; padding: 8px 10px !important; line-height: 1.55 !important; vertical-align: middle !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; word-wrap: normal !important; hyphens: none !important; }
+                                                .report-content th { background-color: #f1f5f9 !important; color: #1e3a8a !important; font-weight: 800 !important; font-size: 12.5px !important; text-align: center !important; cursor: pointer !important; position: relative !important; user-select: none !important; transition: all 0.15s ease !important; }
+                                                .report-content th * { color: #1e3a8a !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
                                                 .report-content th:hover { background-color: #e0e7ff !important; color: #3730a3 !important; }
-                                                .report-content td { text-align: right; }
-                                                .report-content td:first-child, .report-content th:first-child { width: 50px !important; text-align: center !important; white-space: nowrap !important; }
-                                                .report-content h2, .report-content h3, .report-content h4 { color: #1e3a8a !important; font-weight: 800 !important; margin-top: 16px !important; margin-bottom: 8px !important; }
+                                                .report-content td { text-align: right !important; font-size: 12.5px !important; color: #0f172a !important; }
+                                                .report-content td * { white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
+                                                .report-content tr:nth-child(even) td { background-color: #f8fafc !important; }
+                                                .report-content table.boq-summary-mini-table { min-width: 420px !important; margin: 0 !important; }
+                                                .report-content table.boq-summary-mini-table th { padding: 5px 6px !important; font-size: 11px !important; font-weight: 800 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; }
+                                                .report-content table.boq-summary-mini-table td { padding: 5px 6px !important; font-size: 11.5px !important; font-weight: 700 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; background-color: #ffffff !important; }
+                                                .report-content h1 { color: #1e3a8a !important; font-size: 15px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: center !important; background: transparent !important; border: none !important; border-bottom: 2px solid #1e3a8a !important; border-radius: 0 !important; padding: 0 0 8px 0 !important; margin: 6px 0 12px 0 !important; width: 100% !important; display: block !important; }
+                                                .report-content h2 { color: #1e3a8a !important; font-size: 14px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1.5px solid #cbd5e1 !important; border-right: 4px solid #1e3a8a !important; border-radius: 0 !important; padding: 2px 8px 6px 0 !important; margin: 14px 0 8px 0 !important; width: 100% !important; display: block !important; }
+                                                .report-content h3,
+                                                .report-content h4 { color: #1e3a8a !important; font-size: 13px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1px solid #e2e8f0 !important; border-right: 3px solid #3b82f6 !important; border-radius: 0 !important; padding: 2px 8px 4px 0 !important; margin: 10px 0 6px 0 !important; width: 100% !important; display: block !important; }
+                                                .report-content .info-box { background-color: #eff6ff !important; border: 1px solid #bfdbfe !important; border-right: 4px solid #2563eb !important; color: #1e3a8a !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                                .report-content .success-box { background-color: #f0fdf4 !important; border: 1px solid #bbf7d0 !important; border-right: 4px solid #16a34a !important; color: #14532d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                                .report-content .warning-box { background-color: #fef2f2 !important; border: 1px solid #fecaca !important; border-right: 4px solid #dc2626 !important; color: #7f1d1d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                                .report-content .cost-box, .report-content .highlight-box { background-color: #fffbeb !important; border: 1px solid #fde68a !important; border-right: 4px solid #d97706 !important; color: #78350f !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
                                                 .report-content.is-editable td:focus,
                                                 .report-content.is-editable th:focus,
                                                 .report-content.is-editable p:focus,
@@ -4052,29 +4054,154 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             {/* Full Screen Report Overlay */}
                             {selectedReport && (
                                 <div className="fixed inset-0 z-[1700] bg-white animate-scale-in flex flex-col">
-                                    <div className="bg-slate-900 text-white p-4 flex justify-between items-center shadow-md shrink-0">
-                                        <div className="flex items-center gap-3">
-                                            <button onClick={() => setSelectedReport(null)} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button>
-                                            <h3 className="font-bold text-sm sm:text-base truncate max-w-[200px] sm:max-w-md">{selectedReport.title}</h3>
+                                    <div className="bg-slate-900 text-white px-3.5 py-2.5 flex justify-between items-center shadow-md shrink-0 relative border-b border-slate-800">
+                                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                            <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
+                                                <i className="fa-solid fa-file-contract text-xs text-white"></i>
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="font-bold text-[11px] sm:text-xs text-white truncate leading-tight !bg-transparent !border-0 !p-0 !m-0">{selectedReport.title}</div>
+                                                <div className="text-[9.5px] sm:text-[10px] font-medium text-emerald-400 flex items-center gap-1 mt-0.5 truncate">
+                                                    <i className="fa-solid fa-cloud-arrow-up text-[9px]"></i>
+                                                    <span>حفظ تلقائي للتعديلات وعروض الأعمدة</span>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div className="flex gap-2">
-                                            <button onClick={() => handleEditReport(selectedReport)} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm flex items-center gap-2">
-                                                <i className="fa-solid fa-pen-to-square"></i> <span className="hidden sm:inline">تعديل كخطاب</span>
+                                        <div className="flex items-center gap-2 relative shrink-0">
+                                            {isDirectEditingSelectedReport && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setIsDirectEditingSelectedReport(false)}
+                                                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition border border-emerald-400 shadow-sm shrink-0"
+                                                    title="إنهاء التعديل المباشر"
+                                                >
+                                                    <i className="fa-solid fa-check text-sm font-bold"></i>
+                                                </button>
+                                            )}
+
+                                            {/* 3-dots menu button */}
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsSelectedReportMenuOpen(!isSelectedReportMenuOpen)}
+                                                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition text-xs border ${
+                                                    isSelectedReportMenuOpen
+                                                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg'
+                                                        : isDirectEditingSelectedReport
+                                                            ? 'bg-indigo-500/30 border-indigo-400 text-indigo-200'
+                                                            : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
+                                                }`}
+                                                title="خيارات التقرير"
+                                            >
+                                                <i className="fa-solid fa-ellipsis-vertical text-base"></i>
                                             </button>
+
+                                            {/* Close button */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedReport(null);
+                                                    setIsSelectedReportMenuOpen(false);
+                                                    setIsDirectEditingSelectedReport(false);
+                                                }}
+                                                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition text-xs border border-white/10"
+                                                title="إغلاق"
+                                            >
+                                                <i className="fa-solid fa-times text-sm"></i>
+                                            </button>
+
+                                            {isSelectedReportMenuOpen && (
+                                                <>
+                                                    <div className="fixed inset-0 z-[1750]" onClick={() => setIsSelectedReportMenuOpen(false)}></div>
+                                                    <div className="absolute left-0 top-11 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[1800] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                                        <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
+                                                            <span className="text-[10px] font-bold text-slate-400">إجراءات التقرير</span>
+                                                            <i className="fa-solid fa-file-lines text-[10px] text-indigo-400"></i>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsSelectedReportMenuOpen(false);
+                                                                setIsDirectEditingSelectedReport(!isDirectEditingSelectedReport);
+                                                            }}
+                                                            className={`w-full px-3 py-2.5 rounded-xl text-white flex items-center gap-2.5 transition text-xs font-bold text-right ${
+                                                                isDirectEditingSelectedReport
+                                                                    ? 'bg-emerald-600 hover:bg-emerald-500 shadow-md ring-1 ring-emerald-400'
+                                                                    : 'bg-indigo-600 hover:bg-indigo-500 shadow-sm'
+                                                            }`}
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-white/20 text-white flex items-center justify-center shrink-0">
+                                                                <i className={`fa-solid ${isDirectEditingSelectedReport ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                                            </div>
+                                                            <div className="flex-1 text-right">
+                                                                <div>{isDirectEditingSelectedReport ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</div>
+                                                                <div className="text-[10px] text-indigo-200 font-normal">حفظ تلقائي على نفس التقرير</div>
+                                                            </div>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsSelectedReportMenuOpen(false);
+                                                                handleEditReport(selectedReport);
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                                            </div>
+                                                            <span>تعديل المستند</span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsSelectedReportMenuOpen(false);
+                                                                printService.printHtmlContent(selectedReport.content, selectedReport.title);
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-print text-xs"></i>
+                                                            </div>
+                                                            <span>طباعة المستند</span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                const idToDelete = selectedReport.id;
+                                                                setIsSelectedReportMenuOpen(false);
+                                                                setSelectedReport(null);
+                                                                setReportToDeleteId(idToDelete);
+                                                            }}
+                                                            className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold text-right border-t border-slate-700/60 mt-1"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                                                <i className="fa-solid fa-trash-can text-xs"></i>
+                                                            </div>
+                                                            <span>حذف التقرير</span>
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
-                                    {/* UPDATED: FULL WIDTH CONTAINER WITH DYNAMIC TABLE STYLES */}
-                                    <div className="flex-1 overflow-y-auto bg-white p-0">
-                                        <div className="w-full min-h-full p-0 md:p-4">
-                                            <style>{`
-                                                .report-content table { width: 100% !important; display: table !important; table-layout: auto !important; }
-                                                .report-content td, .report-content th { word-wrap: break-word; white-space: normal !important; overflow-wrap: break-word; max-width: 100%; }
-                                                .report-content img { max-width: 100% !important; height: auto !important; }
-                                            `}</style>
-                                            <div 
-                                                className="prose prose-sm max-w-none text-slate-800 leading-relaxed w-full report-content"
-                                                dangerouslySetInnerHTML={{ __html: selectedReport.content }}
-                                            ></div>
+                                    {/* UPDATED: FULL WIDTH CONTAINER WITH INTERACTIVE REPORT VIEWER */}
+                                    <div className="flex-1 overflow-y-auto bg-slate-50 p-2 sm:p-6">
+                                        <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow border border-slate-200 p-4 sm:p-8">
+                                            <InteractiveReportViewer
+                                                htmlContent={selectedReport.content}
+                                                showFloatingEditBar={false}
+                                                isDirectEditing={isDirectEditingSelectedReport}
+                                                onDirectEditChange={setIsDirectEditingSelectedReport}
+                                                onContentChange={(updatedHtml) => {
+                                                    const updatedReport = { ...selectedReport, content: updatedHtml };
+                                                    setSelectedReport(updatedReport);
+                                                    const newData = {
+                                                        ...masterData,
+                                                        engineeringReports: (masterData.engineeringReports || []).map(r => r.id === updatedReport.id ? updatedReport : r)
+                                                    };
+                                                    setMasterData(newData);
+                                                    triggerAutoSave(newData);
+                                                }}
+                                            />
                                         </div>
                                     </div>
                                 </div>

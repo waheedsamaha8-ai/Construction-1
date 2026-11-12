@@ -18,6 +18,7 @@ import ProjectMasterData from '../components/ProjectMasterData';
 import { DwgController, openDwgInExternalApp } from '../components/DwgController'; 
 import { ReportGenerator } from '../services/reportGenerator'; // IMPORT GENERATOR
 import VideoThumbnail from '../components/VideoThumbnail';
+import InteractiveReportViewer from '../components/InteractiveReportViewer';
 
 // ... (ArchiveSummaryCard, CategoryCard, FileGridCard, ArchiveFullViewer, SkeletonRow components remain unchanged) ...
 const ArchiveSummaryCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
@@ -95,26 +96,117 @@ const wrapTablesInHtml = (html: string) => {
     }
 };
 
-const ArchiveFullViewer: React.FC<{ item: FileItem, onClose: () => void, onEdit: (content: string) => void }> = ({ item, onClose, onEdit }) => {
+const ArchiveFullViewer: React.FC<{
+    item: FileItem;
+    onClose: () => void;
+    onEdit: (content: string) => void;
+    onDelete?: (item: FileItem) => void;
+    onContentUpdated?: (itemId: string, newContent: string) => void;
+}> = ({ item, onClose, onEdit, onDelete, onContentUpdated }) => {
     const [content, setContent] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
-    useEffect(() => { let active = true; const fetchContent = async () => { try { if (item.content) { if(active) { setContent(item.content); setLoading(false); } return; } const text = await api.getFileContent(item.id); if(active) { setContent(text); } } catch (e) { if(active) setContent('<div class="p-10 text-center text-red-500 font-bold">فشل تحميل المحتوى</div>'); } finally { if(active) setLoading(false); } }; fetchContent(); return () => { active = false; }; }, [item.id, item.content]);
-    const handlePrint = () => { const bodyContent = content.replace(/<!DOCTYPE html>[\s\S]*<body>/, '').replace(/<\/body>[\s\S]*<\/html>/, ''); printService.printReport(bodyContent, item.name.replace('.html', '')); };
+    const [isDirectEditing, setIsDirectEditing] = useState(false);
+    const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
+    useEffect(() => {
+        let active = true;
+        const fetchContent = async () => {
+            try {
+                if (item.content) {
+                    if (active) {
+                        setContent(item.content);
+                        setLoading(false);
+                    }
+                    return;
+                }
+                const text = await api.getFileContent(item.id);
+                if (active) {
+                    setContent(text);
+                }
+            } catch (e) {
+                if (active) setContent('<div class="p-10 text-center text-red-500 font-bold">فشل تحميل المحتوى</div>');
+            } finally {
+                if (active) setLoading(false);
+            }
+        };
+        fetchContent();
+        return () => {
+            active = false;
+        };
+    }, [item.id, item.content]);
+
+    const handlePrint = () => {
+        const bodyContent = content
+            .replace(/<!DOCTYPE html>[\s\S]*<body>/, '')
+            .replace(/<\/body>[\s\S]*<\/html>/, '');
+        printService.printReport(bodyContent, item.name.replace('.html', ''));
+    };
+
+    const handleContentChange = async (updatedHtml: string) => {
+        setContent(updatedHtml);
+        setAutoSaveStatus('saving');
+        onContentUpdated?.(item.id, updatedHtml);
+        try {
+            await api.updateFileContent(item.id, updatedHtml);
+            setAutoSaveStatus('saved');
+            setTimeout(() => setAutoSaveStatus('idle'), 2000);
+        } catch (err) {
+            console.warn('Auto-save archive document warning:', err);
+            setAutoSaveStatus('idle');
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in">
-            <div className="bg-slate-900 text-white px-3 py-2.5 flex justify-between items-center shadow-md z-20 shrink-0">
+            <div className="bg-slate-900 text-white px-3.5 py-2.5 flex justify-between items-center shadow-md z-20 shrink-0 border-b border-slate-800">
                 <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1 ml-2">
                     <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
-                        <i className="fa-solid fa-file-contract text-xs"></i>
+                        <i className="fa-solid fa-file-contract text-xs text-white"></i>
                     </div>
-                    <h3 className="font-bold text-xs sm:text-sm truncate max-w-[200px] sm:max-w-md">{item.name.replace('.html', '')}</h3>
+                    <div className="min-w-0 flex-1">
+                        <div className="font-bold text-[11px] sm:text-xs text-white truncate leading-tight !bg-transparent !border-0 !p-0 !m-0">
+                            {item.name.replace('.html', '')}
+                        </div>
+                        <div className="text-[9.5px] sm:text-[10px] font-medium text-emerald-400 flex items-center gap-1 mt-0.5 truncate">
+                            {autoSaveStatus === 'saving' ? (
+                                <>
+                                    <i className="fa-solid fa-circle-notch fa-spin text-[9px]"></i>
+                                    <span>جاري الحفظ التلقائي...</span>
+                                </>
+                            ) : autoSaveStatus === 'saved' ? (
+                                <>
+                                    <i className="fa-solid fa-check-double text-[9px]"></i>
+                                    <span>تم الحفظ التلقائي على نفس التقرير</span>
+                                </>
+                            ) : (
+                                <>
+                                    <i className="fa-solid fa-cloud-arrow-up text-[9px]"></i>
+                                    <span>محفوظ في الأرشيف الهندسي</span>
+                                </>
+                            )}
+                        </div>
+                    </div>
                 </div>
                 <div className="flex gap-1.5 items-center relative shrink-0">
+                    {isDirectEditing && (
+                        <button
+                            type="button"
+                            onClick={() => setIsDirectEditing(false)}
+                            className="w-8 h-8 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition shadow-sm border border-emerald-400"
+                            title="إنهاء التعديل المباشر"
+                        >
+                            <i className="fa-solid fa-check text-xs"></i>
+                        </button>
+                    )}
                     <button
                         onClick={() => setShowActionsMenu(prev => !prev)}
-                        className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${showActionsMenu ? 'bg-teal-600 text-white border-teal-400' : 'bg-white/10 hover:bg-white/20 text-white border-white/10'}`}
-                        title="خيارات المستند"
+                        className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${
+                            showActionsMenu
+                                ? 'bg-teal-600 text-white border-teal-400'
+                                : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
+                        }`}
+                        title="خيارات التقرير"
                     >
                         <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
                     </button>
@@ -129,33 +221,82 @@ const ArchiveFullViewer: React.FC<{ item: FileItem, onClose: () => void, onEdit:
                     {showActionsMenu && (
                         <>
                             <div className="fixed inset-0 z-[90]" onClick={() => setShowActionsMenu(false)}></div>
-                            <div className="absolute left-0 top-10 w-52 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
+                            <div className="absolute left-0 top-10 w-56 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
+                                {/* 1. Direct Edit Button */}
                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        setIsDirectEditing(!isDirectEditing);
+                                    }}
+                                    disabled={loading}
+                                    className={`w-full px-3 py-2.5 rounded-xl flex items-center gap-2.5 transition text-xs font-bold text-right disabled:opacity-50 ${
+                                        isDirectEditing
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-800 hover:bg-purple-600 text-white'
+                                    }`}
+                                >
+                                    <div
+                                        className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
+                                            isDirectEditing
+                                                ? 'bg-white/20 text-white'
+                                                : 'bg-purple-500/20 text-purple-300'
+                                        }`}
+                                    >
+                                        <i className={`fa-solid ${isDirectEditing ? 'fa-check' : 'fa-file-pen'} text-xs`}></i>
+                                    </div>
+                                    <span>{isDirectEditing ? 'إنهاء التعديل المباشر' : 'التعديل المباشر'}</span>
+                                </button>
+
+                                {/* 2. Edit Document in Letter Editor */}
+                                <button
+                                    type="button"
                                     onClick={() => {
                                         setShowActionsMenu(false);
                                         onEdit(content);
                                     }}
                                     disabled={loading}
-                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50"
+                                    className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-indigo-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
                                 >
-                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-indigo-400 flex items-center justify-center shrink-0">
+                                    <div className="w-6 h-6 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
                                         <i className="fa-solid fa-pen-to-square text-xs"></i>
                                     </div>
                                     <span>تعديل المستند</span>
                                 </button>
+
+                                {/* 3. Print Document */}
                                 <button
+                                    type="button"
                                     onClick={() => {
                                         setShowActionsMenu(false);
                                         handlePrint();
                                     }}
                                     disabled={loading}
-                                    className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50"
+                                    className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right"
                                 >
-                                    <div className="w-7 h-7 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center shrink-0">
+                                    <div className="w-6 h-6 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0">
                                         <i className="fa-solid fa-print text-xs"></i>
                                     </div>
                                     <span>طباعة المستند</span>
                                 </button>
+
+                                {/* 4. Delete Document */}
+                                {onDelete && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setShowActionsMenu(false);
+                                            onDelete(item);
+                                        }}
+                                        disabled={loading}
+                                        className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-red-600 text-red-300 hover:text-white flex items-center gap-2.5 transition text-xs font-bold disabled:opacity-50 text-right border-t border-slate-700/60 mt-1"
+                                    >
+                                        <div className="w-6 h-6 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-trash-can text-xs"></i>
+                                        </div>
+                                        <span>حذف التقرير</span>
+                                    </button>
+                                )}
                             </div>
                         </>
                     )}
@@ -170,7 +311,15 @@ const ArchiveFullViewer: React.FC<{ item: FileItem, onClose: () => void, onEdit:
                         </div>
                     </div>
                 ) : (
-                    <div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-4xl mx-auto" dangerouslySetInnerHTML={{ __html: wrapTablesInHtml(content) }} />
+                    <div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-5xl mx-auto">
+                        <InteractiveReportViewer
+                            htmlContent={content}
+                            isDirectEditing={isDirectEditing}
+                            onDirectEditChange={setIsDirectEditing}
+                            showFloatingEditBar={false}
+                            onContentChange={handleContentChange}
+                        />
+                    </div>
                 )}
             </div>
         </div>
@@ -260,9 +409,10 @@ export default function ProjectFolder() {
               const archiveId = await api.getArchiveFolderId();
               if (currentFolderId === archiveId) {
                   setCurrentFolderName(ARCHIVE_FOLDER_NAME);
-                  // Force refresh contents to ensure subfolders are visible
                   const fresh = await api.getContents(archiveId, true);
                   setItems(fresh);
+                  const enriched = await api.enrichItemCounts(fresh, archiveId);
+                  setItems(enriched);
               }
           } catch(e) {}
       };
@@ -364,11 +514,9 @@ export default function ProjectFolder() {
 
           startTransition(() => { setItems(folderData); setLoading(false); }); 
           
-          if (!api.isGuest()) { 
-              api.enrichItemCounts(folderData).then(enrichedItems => { 
-                  if (currentFolderId === (folderId || projectId || '')) startTransition(() => setItems(enrichedItems)); 
-              }); 
-          } 
+          api.enrichItemCounts(folderData, currentFolderId).then(enrichedItems => { 
+              if (currentFolderId === (folderId || projectId || '')) startTransition(() => setItems(enrichedItems)); 
+          }); 
       } catch(e) { 
           setLoading(false); 
       } 
@@ -487,20 +635,17 @@ export default function ProjectFolder() {
   const handleBack = async () => { 
       // Archive Logic
       if (isArchiveRoute || isArchiveRoot || isArchiveSection) {
-          if (currentFolderId === folderId && isArchiveRoute) {
-              navigate('/');
-              return;
-          }
           if (currentFolderName === ARCHIVE_FOLDER_NAME) {
               navigate('/');
               return;
           }
-          if (currentParentId) {
-             navigate(`/archive/${currentParentId}`, { state: { folderName: '...' } });
-             return;
+          const parentArchiveId = currentParentId || location.state?.parentId || (await api.getArchiveFolderId().catch(() => ''));
+          if (parentArchiveId && parentArchiveId !== currentFolderId) {
+              navigate(`/archive/${parentArchiveId}`, { state: { folderName: ARCHIVE_FOLDER_NAME } });
+              return;
           }
-           navigate('/');
-           return;
+          navigate('/');
+          return;
       }
 
       // 1. If we are at the project root or have no ID, go to Home
@@ -619,7 +764,21 @@ export default function ProjectFolder() {
 
   const handlePdfChoice = async (mode: 'file' | 'images') => { setShowPdfModeModal(false); if (!pendingPdfFile) return; if (mode === 'file') { setIsUploading(true); setUploadStatusMsg("جاري رفع ملف PDF..."); await performUpload(pendingPdfFile, true, false, '', 0); } else { setIsUploading(true); setUploadStatusMsg("جاري تحويل PDF إلى صور..."); try { const folderName = pendingPdfFile.name.replace('.pdf', ''); const newFolder = await api.createFolder(currentFolderId, folderName); const images = await imageUtils.convertPdfToImages(pendingPdfFile, (curr, total) => { setUploadStatusMsg(`جاري تحويل صفحة ${curr} من ${total}`); setUploadProgress((curr/total)*50); }); for (let i = 0; i < images.length; i++) { setUploadStatusMsg(`جاري رفع صورة ${i + 1} من ${images.length}`); await api.uploadFile(newFolder.id, images[i], (p) => { setUploadProgress(50 + ((i / images.length) * 50) + (p * 0.5 / images.length)); }); } fetchContents(); } catch (e) { alert("فشل معالجة ملف PDF"); console.error(e); } finally { setIsUploading(false); setUploadStatusMsg(''); } } setPendingPdfFile(null); };
   const handleCreateFolder = async () => { if (!newFolderName.trim()) return; try { await api.createFolder(currentFolderId, newFolderName); setModalMode('none'); setNewFolderName(''); fetchContents(); } catch (e) { alert("فشل إنشاء المجلد"); } };
-  const handleItemClick = (item: FileItem) => { if (item.type === ItemType.FOLDER) { navigate(`/project/${projectId}/${item.id}`, { state: { folderName: item.name } }); } else { if (item.mimeType === 'text/html' || item.name.endsWith('.html')) { navigate(`/editor/${projectId}/${item.parentId}?fileId=${item.id}`); } else { setPreviewItem(item); } } };
+  const handleItemClick = (item: FileItem) => { 
+      if (item.type === ItemType.FOLDER) { 
+          if (isArchiveRoute || isArchiveRoot || isArchiveSection) {
+              navigate(`/archive/${item.id}`, { state: { folderName: item.name, parentId: currentFolderId } });
+          } else {
+              navigate(`/project/${projectId}/${item.id}`, { state: { folderName: item.name } }); 
+          }
+      } else { 
+          if (item.mimeType === 'text/html' || item.name.endsWith('.html')) { 
+              setSelectedArchiveItem(item); 
+          } else { 
+              setPreviewItem(item); 
+          } 
+      } 
+  };
   
   const handleShare = async (item: FileItem) => {
       if (item.type === ItemType.FOLDER) {
@@ -849,7 +1008,7 @@ export default function ProjectFolder() {
             </div>
         </div> 
       )}
-      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.fileCount !== undefined && i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'grid' && isMediaFolder ? 'grid grid-cols-3 gap-1 md:gap-2' : (viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-2 md:grid-cols-4 gap-3')}> {sortedItems.map(item => {
+      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'grid' && isMediaFolder ? 'grid grid-cols-3 gap-1 md:gap-2' : (viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-2 md:grid-cols-4 gap-3')}> {sortedItems.map(item => {
           if (viewMode === 'grid' && isMediaFolder && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
               const mime = (item.mimeType || '').toLowerCase();
               const name = item.name.toLowerCase();
@@ -992,7 +1151,25 @@ export default function ProjectFolder() {
           onOpenAI={() => setShowAI(true)}
       />
       
-      {selectedArchiveItem && <ArchiveFullViewer item={selectedArchiveItem} onClose={() => setSelectedArchiveItem(null)} onEdit={(c) => navigate(`/editor/${projectId}/${currentFolderId}`, {state:{initialContent:c}})} />}
+      {selectedArchiveItem && (
+          <ArchiveFullViewer
+              item={selectedArchiveItem}
+              onClose={() => setSelectedArchiveItem(null)}
+              onEdit={(c) =>
+                  navigate(`/editor/${projectId || 'archive'}/${currentFolderId}?fileId=${selectedArchiveItem.id}`, {
+                      state: { initialContent: c, filename: selectedArchiveItem.name.replace('.html', '') }
+                  })
+              }
+              onDelete={(itemToDelete) => {
+                  setSelectedArchiveItem(null);
+                  handleDeleteItemClick(itemToDelete.id, itemToDelete.name);
+              }}
+              onContentUpdated={(itemId, newHtml) => {
+                  setItems(prev => prev.map(i => (i.id === itemId ? { ...i, content: newHtml } : i)));
+                  setSelectedArchiveItem(prev => (prev && prev.id === itemId ? { ...prev, content: newHtml } : prev));
+              }}
+          />
+      )}
       {previewItem && ( <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} /> )}
       {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} onClose={() => setShowAI(false)} onProjectUpdated={(updated) => setCurrentProject(updated)} />}
     </Layout>
