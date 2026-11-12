@@ -944,6 +944,37 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         }
                     });
 
+                    // رفع وضبط أيقونة المشروع وأيقونة التقويم ليكونا في منتصف الشكل تماماً عند التصدير
+                    const buildingContainer = clonedEl.querySelector('.share-only-project-name > div:first-child') as HTMLElement | null;
+                    const buildingIcon = clonedEl.querySelector('.share-only-project-name .fa-building') as HTMLElement | null;
+                    if (buildingContainer) {
+                        buildingContainer.style.marginTop = '0px';
+                        buildingContainer.style.display = 'flex';
+                        buildingContainer.style.alignItems = 'center';
+                        buildingContainer.style.justifyContent = 'center';
+                        buildingContainer.style.padding = '0';
+                    }
+                    if (buildingIcon) {
+                        buildingIcon.style.display = 'inline-block';
+                        buildingIcon.style.lineHeight = '1';
+                        buildingIcon.style.transform = 'translateY(-6px)';
+                    }
+
+                    const calendarContainer = clonedEl.querySelector('.log-calendar-icon') as HTMLElement | null;
+                    const calendarIcon = clonedEl.querySelector('.log-calendar-icon .fa-calendar-day') as HTMLElement | null;
+                    if (calendarContainer) {
+                        calendarContainer.style.marginTop = '0px';
+                        calendarContainer.style.display = 'flex';
+                        calendarContainer.style.alignItems = 'center';
+                        calendarContainer.style.justifyContent = 'center';
+                        calendarContainer.style.padding = '0';
+                    }
+                    if (calendarIcon) {
+                        calendarIcon.style.display = 'inline-block';
+                        calendarIcon.style.lineHeight = '1';
+                        calendarIcon.style.transform = 'translateY(-6px)';
+                    }
+
                     const shareHideIcons = clonedEl.querySelectorAll('.share-hide-icon');
                     shareHideIcons.forEach((el) => {
                         (el as HTMLElement).style.display = 'none';
@@ -3449,194 +3480,26 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <input type="date" className="bg-white border border-blue-200 text-xs rounded-lg px-2 py-1.5 outline-none text-slate-700 font-bold w-24 shrink-0" value={masterData.logDate} onChange={(e) => setMasterData({...masterData, logDate: e.target.value})} />
                                     <button onClick={isRecording ? stopRecording : () => startRecording('log')} className={`w-8 h-8 rounded-lg flex items-center justify-center transition shadow-sm shrink-0 ${isRecording && voiceTarget === 'log' ? 'bg-red-500 text-white animate-pulse' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`} title={isRecording && voiceTarget === 'log' ? 'إيقاف التسجيل' : 'تسجيل صوتي'}><i className={`fa-solid ${isRecording && voiceTarget === 'log' ? 'fa-stop' : 'fa-microphone'} text-xs`}></i></button>
                                     
-                                    {/* خانة نوع العمل: بكامل عرض المساحة بين زر المايك وزر الكاميرا وقائمة منسدلة بدون تمدد */}
-                                    <div className="relative flex-1 min-w-0">
-                                        <button 
-                                            type="button"
-                                            onClick={() => setIsWorkCategoryDropdownOpen(prev => !prev)} 
-                                            className={`w-full h-8 px-2.5 rounded-lg text-xs font-bold transition flex items-center justify-between gap-1 border shadow-xs overflow-hidden ${
-                                                selectedWorkCategory 
-                                                    ? 'bg-amber-500 text-white border-amber-600 shadow-amber-200/50' 
-                                                    : 'bg-white border-blue-200 text-slate-700 hover:bg-slate-50'
-                                            }`}
-                                            title={selectedWorkCategory ? `نوع العمل المختار: ${selectedWorkCategory}` : "اختيار أو إضافة نوع العمل"}
+                                    {/* خانة نوع العمل: قائمة منسدلة قياسية متطابقة تماماً مع وضع التعديل وتمنع تمرير الخلفية عند فتحها */}
+                                    <div className="flex-1 min-w-0">
+                                        <select
+                                            value={selectedWorkCategory}
+                                            onChange={(e) => {
+                                                if (e.target.value === '__MANAGE__') {
+                                                    setShowWorkCategoryModal(true);
+                                                } else {
+                                                    setSelectedWorkCategory(e.target.value);
+                                                }
+                                            }}
+                                            className="w-full h-8 px-2 text-xs bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none focus:ring-2 focus:ring-amber-500 truncate"
+                                            title="اختر نوع العمل"
                                         >
-                                            <span className="truncate flex-1 text-right text-xs leading-none">
-                                                {selectedWorkCategory || 'نوع العمل...'}
-                                            </span>
-                                            <div className="flex items-center gap-1 shrink-0">
-                                                {selectedWorkCategory && (
-                                                    <span 
-                                                        onClick={(e) => { e.stopPropagation(); setSelectedWorkCategory(''); }}
-                                                        className="w-4 h-4 rounded-full bg-white/20 hover:bg-white/40 flex items-center justify-center text-[10px] leading-none text-white cursor-pointer mr-0.5"
-                                                        title="إلغاء التحديد"
-                                                    >
-                                                        ×
-                                                    </span>
-                                                )}
-                                                <i className={`fa-solid fa-chevron-down text-[9px] transition-transform ${isWorkCategoryDropdownOpen ? 'rotate-180' : ''} ${selectedWorkCategory ? 'text-white/80' : 'text-slate-400'}`}></i>
-                                            </div>
-                                        </button>
-
-                                        {/* Dropdown Menu */}
-                                        {isWorkCategoryDropdownOpen && (
-                                            <>
-                                                <div 
-                                                    className="fixed inset-0 z-40" 
-                                                    onClick={() => setIsWorkCategoryDropdownOpen(false)}
-                                                />
-                                                <div className="absolute top-full mt-1.5 right-0 left-0 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 p-1.5 flex flex-col gap-1 max-h-64 overflow-y-auto custom-scrollbar min-w-[200px] animate-scale-in">
-                                                    {/* إضافة نوع عمل جديد */}
-                                                    <div className="flex gap-1 items-center pb-1.5 border-b border-slate-100">
-                                                        <input
-                                                            type="text"
-                                                            placeholder="إضافة نوع عمل جديد..."
-                                                            value={newCustomCategoryInput}
-                                                            onChange={(e) => setNewCustomCategoryInput(e.target.value)}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Enter' && newCustomCategoryInput.trim()) {
-                                                                    e.preventDefault();
-                                                                    handleAddCustomWorkCategory(newCustomCategoryInput);
-                                                                    setIsWorkCategoryDropdownOpen(false);
-                                                                }
-                                                            }}
-                                                            className="flex-1 text-[10px] px-2 py-1 rounded-lg border border-slate-200 outline-none focus:border-amber-500 font-bold text-slate-800"
-                                                        />
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                if (newCustomCategoryInput.trim()) {
-                                                                    handleAddCustomWorkCategory(newCustomCategoryInput);
-                                                                    setIsWorkCategoryDropdownOpen(false);
-                                                                }
-                                                            }}
-                                                            disabled={!newCustomCategoryInput.trim()}
-                                                            className="px-2 py-1 bg-amber-500 text-white rounded-lg text-[10px] font-bold hover:bg-amber-600 disabled:opacity-40 shrink-0 transition"
-                                                            title="إضافة وتحديد"
-                                                        >
-                                                            إضافة
-                                                        </button>
-                                                    </div>
-
-                                                    {/* خيار إلغاء التحديد */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setSelectedWorkCategory('');
-                                                            setIsWorkCategoryDropdownOpen(false);
-                                                        }}
-                                                        className={`text-right text-[10px] px-2 py-1 rounded-lg transition font-bold flex items-center justify-between ${
-                                                            !selectedWorkCategory ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:bg-slate-50'
-                                                        }`}
-                                                    >
-                                                        <span>بدون تصنيف (عام)</span>
-                                                        {!selectedWorkCategory && <i className="fa-solid fa-check text-slate-600 text-[9px]"></i>}
-                                                    </button>
-
-                                                    {/* قائمة الأنواع */}
-                                                    <div className="flex flex-col gap-0.5 pt-0.5">
-                                                        {allWorkCategories.map((cat) => {
-                                                            const isSelected = selectedWorkCategory === cat.name;
-                                                            const isCustom = customWorkCategories.includes(cat.name);
-                                                            const isEditingThis = editingCategoryName === cat.name;
-
-                                                            if (isEditingThis) {
-                                                                return (
-                                                                    <div key={cat.name} className="flex items-center gap-1 p-1 bg-amber-50 rounded-lg border border-amber-200">
-                                                                        <input
-                                                                            type="text"
-                                                                            value={editCategoryInputValue}
-                                                                            onChange={(e) => setEditCategoryInputValue(e.target.value)}
-                                                                            onKeyDown={(e) => {
-                                                                                if (e.key === 'Enter') {
-                                                                                    handleUpdateCustomWorkCategory(cat.name, editCategoryInputValue);
-                                                                                } else if (e.key === 'Escape') {
-                                                                                    setEditingCategoryName(null);
-                                                                                }
-                                                                            }}
-                                                                            autoFocus
-                                                                            className="flex-1 text-[10px] px-1.5 py-0.5 rounded bg-white border border-amber-300 font-bold text-slate-800 outline-none"
-                                                                        />
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => handleUpdateCustomWorkCategory(cat.name, editCategoryInputValue)}
-                                                                            className="w-5 h-5 rounded bg-emerald-600 text-white flex items-center justify-center text-[9px] hover:bg-emerald-700"
-                                                                            title="حفظ التعديل"
-                                                                        >
-                                                                            <i className="fa-solid fa-check"></i>
-                                                                        </button>
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => setEditingCategoryName(null)}
-                                                                            className="w-5 h-5 rounded bg-slate-200 text-slate-600 flex items-center justify-center text-[9px] hover:bg-slate-300"
-                                                                            title="إلغاء"
-                                                                        >
-                                                                            <i className="fa-solid fa-times"></i>
-                                                                        </button>
-                                                                    </div>
-                                                                );
-                                                            }
-
-                                                            return (
-                                                                <div
-                                                                    key={cat.name}
-                                                                    className={`flex items-center justify-between px-2 py-1 rounded-lg text-[10px] font-bold transition group ${
-                                                                        isSelected ? 'bg-amber-500 text-white' : 'text-slate-700 hover:bg-amber-50'
-                                                                    }`}
-                                                                >
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => {
-                                                                            setSelectedWorkCategory(cat.name);
-                                                                            setIsWorkCategoryDropdownOpen(false);
-                                                                        }}
-                                                                        className="flex-1 text-right truncate cursor-pointer text-[10px]"
-                                                                        title={cat.name}
-                                                                    >
-                                                                        <span className="truncate text-[10px]">{cat.name}</span>
-                                                                    </button>
-
-                                                                    <div className="flex items-center gap-1 shrink-0 mr-1">
-                                                                        {isCustom && (
-                                                                            <>
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        setEditingCategoryName(cat.name);
-                                                                                        setEditCategoryInputValue(cat.name);
-                                                                                    }}
-                                                                                    className={`w-4 h-4 rounded flex items-center justify-center text-[8px] transition ${
-                                                                                        isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
-                                                                                    }`}
-                                                                                    title="تعديل هذا النوع"
-                                                                                >
-                                                                                    <i className="fa-solid fa-pen text-[7px]"></i>
-                                                                                </button>
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        handleDeleteCustomWorkCategory(cat.name);
-                                                                                    }}
-                                                                                    className={`w-4 h-4 rounded flex items-center justify-center text-[8px] transition ${
-                                                                                        isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
-                                                                                    }`}
-                                                                                    title="حذف هذا النوع"
-                                                                                >
-                                                                                    <i className="fa-solid fa-trash text-[7px]"></i>
-                                                                                </button>
-                                                                            </>
-                                                                        )}
-                                                                        {isSelected && <i className="fa-solid fa-check text-[9px] text-white"></i>}
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            </>
-                                        )}
+                                            <option value="">⚙️ اختر نوع العمل (اختياري)...</option>
+                                            {allWorkCategories.map(cat => (
+                                                <option key={cat.name} value={cat.name}>{cat.name}</option>
+                                            ))}
+                                            <option value="__MANAGE__">➕ إضافة / إدارة أنواع الأعمال...</option>
+                                        </select>
                                     </div>
 
                                     <button onClick={() => setSourceModal({ type: 'log', title: 'رفع صورة لليومية' })} className="w-8 h-8 rounded-lg bg-white border border-blue-200 text-blue-700 hover:bg-blue-50 transition flex items-center justify-center shadow-sm shrink-0" title="رفع صورة لليومية">
@@ -6093,7 +5956,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between gap-1">
-                                                <span className="text-xs font-black text-slate-900 group-hover:text-emerald-950">إرسال اليومية كصورة</span>
+                                                <span className="text-[10px] font-black text-slate-900 group-hover:text-emerald-950">إرسال اليومية كصورة</span>
                                                 <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-md font-bold">عالية الدقة</span>
                                             </div>
                                             <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
@@ -6113,7 +5976,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between gap-1">
-                                                <span className="text-xs font-black text-slate-900 group-hover:text-blue-950">إرسال كرسالة نصية مع الصور</span>
+                                                <span className="text-[10px] font-black text-slate-900 group-hover:text-blue-950">إرسال كرسالة نصية مع الصور</span>
                                                 {whatsappShareModalLog.images && whatsappShareModalLog.images.length > 0 && (
                                                     <span className="text-[9px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-md font-bold">
                                                         {whatsappShareModalLog.images.length} صور
