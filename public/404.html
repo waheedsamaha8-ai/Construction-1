@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مدير مشروعات التشييد برو</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        text-align: center;
+        padding: 20px;
+      }
+      .card {
+        background: #1e293b;
+        padding: 30px;
+        border-radius: 20px;
+        border: 1px solid #334155;
+        max-width: 400px;
+        box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+      }
+      .btn {
+        display: inline-block;
+        background: #f59e0b;
+        color: #0f172a;
+        font-weight: bold;
+        padding: 12px 24px;
+        border-radius: 12px;
+        text-decoration: none;
+        margin-top: 16px;
+      }
+    </style>
+    <script>
+      // GitHub Pages SPA router redirection:
+      // Redirect from 404 to the app root within the same repository or domain
+      (function() {
+        var path = window.location.pathname;
+        var segments = path.split('/').filter(Boolean);
+        // If hosted on https://username.github.io/reponame/
+        if (window.location.hostname.endsWith('github.io') && segments.length >= 1) {
+          var repo = segments[0];
+          window.location.replace('/' + repo + '/');
+        } else {
+          // If at root or custom domain, redirect to root
+          window.location.replace('/');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="card">
+      <div style="font-size: 40px; margin-bottom: 10px;">🏗️</div>
+      <h2 style="margin: 0 0 10px 0;">مدير المشروعات</h2>
+      <p style="color: #94a3b8; font-size: 14px; margin: 0 0 16px 0;">جاري فتح التطبيق وتوجيهك للصفحة الرئيسية...</p>
+      <a class="btn" href="./">فتح التطبيق مباشرة</a>
+    </div>
+  </body>
+</html>

@@ -24,7 +24,7 @@ export default defineConfig(() => {
           },
           includeAssets: ['favicon.ico', 'icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
           manifest: {
-            id: '/',
+            id: './',
             name: 'مدير مشروعات التشييد برو',
             short_name: 'مدير المشروعات',
             description: 'نظام إدارة المشروعات الهندسي المتكامل',
@@ -32,14 +32,14 @@ export default defineConfig(() => {
             background_color: '#f1f5f9',
             display: 'standalone',
             orientation: 'portrait',
-            start_url: '/',
-            scope: '/',
+            start_url: './',
+            scope: './',
             icons: [
               {
                 src: 'icon.svg',
                 sizes: 'any',
                 type: 'image/svg+xml',
-                purpose: 'any maskable'
+                purpose: 'any'
               },
               {
                 src: 'pwa-192x192.png',
