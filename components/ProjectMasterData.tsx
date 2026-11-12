@@ -280,11 +280,32 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             return [];
         }
     });
+    const [deletedDefaultCategories, setDeletedDefaultCategories] = useState<string[]>(() => {
+        try {
+            const saved = localStorage.getItem(`deleted_work_cats_${projectId}`);
+            return saved ? JSON.parse(saved) : [];
+        } catch {
+            return [];
+        }
+    });
+    const [renamedDefaultCategories, setRenamedDefaultCategories] = useState<Record<string, string>>(() => {
+        try {
+            const saved = localStorage.getItem(`renamed_work_cats_${projectId}`);
+            return saved ? JSON.parse(saved) : {};
+        } catch {
+            return {};
+        }
+    });
 
     const handleAddCustomWorkCategory = (categoryName: string) => {
         const trimmed = categoryName.trim();
         if (!trimmed) return;
-        if (!customWorkCategories.includes(trimmed) && !DEFAULT_WORK_CATEGORIES.some(c => c.name === trimmed)) {
+        const matchedDefault = DEFAULT_WORK_CATEGORIES.find(c => c.name === trimmed);
+        if (matchedDefault && deletedDefaultCategories.includes(matchedDefault.name)) {
+            const nextDeleted = deletedDefaultCategories.filter(n => n !== matchedDefault.name);
+            setDeletedDefaultCategories(nextDeleted);
+            try { localStorage.setItem(`deleted_work_cats_${projectId}`, JSON.stringify(nextDeleted)); } catch (e) {}
+        } else if (!customWorkCategories.includes(trimmed) && !DEFAULT_WORK_CATEGORIES.some(c => (renamedDefaultCategories[c.name] || c.name) === trimmed && !deletedDefaultCategories.includes(c.name))) {
             const updated = [...customWorkCategories, trimmed];
             setCustomWorkCategories(updated);
             try {
@@ -298,55 +319,75 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setShowWorkCategoryModal(false);
     };
 
-    const handleUpdateCustomWorkCategory = (oldName: string, newName: string) => {
+    const handleRenameWorkCategory = (cat: { name: string; originalName: string; isCustom: boolean }, newName: string) => {
         const trimmed = newName.trim();
-        if (!trimmed || trimmed === oldName) {
+        if (!trimmed || trimmed === cat.name) {
             setEditingCategoryName(null);
+            setEditCategoryInputValue('');
             return;
         }
-        const updated = customWorkCategories.map(c => c === oldName ? trimmed : c);
-        setCustomWorkCategories(updated);
-        try {
-            localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated));
-        } catch (e) {
-            console.error(e);
+        if (cat.isCustom) {
+            const updated = customWorkCategories.map(c => c === cat.name ? trimmed : c);
+            setCustomWorkCategories(updated);
+            try { localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated)); } catch (e) {}
+        } else {
+            const updatedMap = { ...renamedDefaultCategories, [cat.originalName]: trimmed };
+            setRenamedDefaultCategories(updatedMap);
+            try { localStorage.setItem(`renamed_work_cats_${projectId}`, JSON.stringify(updatedMap)); } catch (e) {}
         }
-        if (selectedWorkCategory === oldName) {
-            setSelectedWorkCategory(trimmed);
+
+        if (selectedWorkCategory === cat.name) setSelectedWorkCategory(trimmed);
+        if (tempEditLogWorkCategory === cat.name) setTempEditLogWorkCategory(trimmed);
+
+        // Update existing logs with this category and auto-save immediately
+        const hasAffectedLogs = masterData.logs.some(l => l.workCategory === cat.name);
+        if (hasAffectedLogs) {
+            const updatedLogs = masterData.logs.map(l => l.workCategory === cat.name ? { ...l, workCategory: trimmed } : l);
+            const newData = { ...masterData, logs: updatedLogs };
+            setMasterData(newData);
+            triggerAutoSave(newData);
         }
-        // Update existing logs with this category
-        const updatedLogs = masterData.logs.map(l => l.workCategory === oldName ? { ...l, workCategory: trimmed } : l);
-        const newData = { ...masterData, logs: updatedLogs };
-        setMasterData(newData);
-        triggerAutoSave(newData);
 
         setEditingCategoryName(null);
         setEditCategoryInputValue('');
     };
 
-    const handleDeleteCustomWorkCategory = (categoryName: string) => {
-        const updated = customWorkCategories.filter(c => c !== categoryName);
-        setCustomWorkCategories(updated);
-        try {
-            localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated));
-        } catch (e) {
-            console.error(e);
+    const handleDeleteWorkCategory = (cat: { name: string; originalName: string; isCustom: boolean }) => {
+        if (cat.isCustom) {
+            const updated = customWorkCategories.filter(c => c !== cat.name);
+            setCustomWorkCategories(updated);
+            try { localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated)); } catch (e) {}
+        } else {
+            const updatedDeleted = Array.from(new Set([...deletedDefaultCategories, cat.originalName]));
+            setDeletedDefaultCategories(updatedDeleted);
+            try { localStorage.setItem(`deleted_work_cats_${projectId}`, JSON.stringify(updatedDeleted)); } catch (e) {}
         }
-        if (selectedWorkCategory === categoryName) {
-            setSelectedWorkCategory('');
+        if (selectedWorkCategory === cat.name) setSelectedWorkCategory('');
+        if (tempEditLogWorkCategory === cat.name) setTempEditLogWorkCategory('');
+        if (editingCategoryName === cat.name) {
+            setEditingCategoryName(null);
+            setEditCategoryInputValue('');
         }
     };
 
     const allWorkCategories = useMemo(() => {
-        const standard = DEFAULT_WORK_CATEGORIES.map(c => ({ ...c, isCustom: false }));
+        const standard = DEFAULT_WORK_CATEGORIES
+            .filter(c => !deletedDefaultCategories.includes(c.name))
+            .map(c => ({
+                ...c,
+                originalName: c.name,
+                name: renamedDefaultCategories[c.name] || c.name,
+                isCustom: false
+            }));
         const custom = customWorkCategories.map(name => ({
             name,
+            originalName: name,
             icon: 'fa-trowel',
             stage: 'بنود مخصصة إضافية',
             isCustom: true
         }));
         return [...standard, ...custom];
-    }, [customWorkCategories]);
+    }, [customWorkCategories, deletedDefaultCategories, renamedDefaultCategories]);
 
     const filteredWorkCategories = useMemo(() => {
         if (!workCategorySearch.trim()) return allWorkCategories;
@@ -475,126 +516,81 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
         setMasterData(prev => ({
             ...prev,
-            fullDescription: initialProjectData.fullDescription || prev.fullDescription || '',
-            logs: (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0) 
-                ? sortLogs(initialProjectData.executionLogs) 
+            fullDescription: initialProjectData.fullDescription !== undefined ? initialProjectData.fullDescription : prev.fullDescription,
+            logs: initialProjectData.executionLogs !== undefined
+                ? sortLogs(initialProjectData.executionLogs)
                 : prev.logs,
-            payments: (initialProjectData.payments && initialProjectData.payments.length > 0) 
-                ? normalizePaymentsList(initialProjectData.payments) 
+            payments: initialProjectData.payments !== undefined
+                ? normalizePaymentsList(initialProjectData.payments)
                 : prev.payments,
-            boqItems: (initialProjectData.boqItems && initialProjectData.boqItems.length > 0) 
-                ? normalizeBoqList(initialProjectData.boqItems) 
+            boqItems: initialProjectData.boqItems !== undefined
+                ? normalizeBoqList(initialProjectData.boqItems)
                 : prev.boqItems,
-            engineeringReports: (initialProjectData.engineeringReports && initialProjectData.engineeringReports.length > 0) 
-                ? initialProjectData.engineeringReports 
+            engineeringReports: initialProjectData.engineeringReports !== undefined
+                ? initialProjectData.engineeringReports
                 : prev.engineeringReports,
-            soilReport: initialProjectData.soilReportAnalysis || prev.soilReport || '',
-            rfis: (initialProjectData.rfis && initialProjectData.rfis.length > 0) ? initialProjectData.rfis : prev.rfis,
-            submittals: (initialProjectData.submittals && initialProjectData.submittals.length > 0) ? initialProjectData.submittals : prev.submittals,
-            correspondence: (initialProjectData.correspondence && initialProjectData.correspondence.length > 0) ? initialProjectData.correspondence : prev.correspondence,
-            checklists: (initialProjectData.checklists && initialProjectData.checklists.length > 0) ? initialProjectData.checklists : prev.checklists,
-            ncrs: (initialProjectData.ncrs && initialProjectData.ncrs.length > 0) ? initialProjectData.ncrs : prev.ncrs
+            soilReport: initialProjectData.soilReportAnalysis !== undefined
+                ? initialProjectData.soilReportAnalysis
+                : (prev.soilReport || ''),
+            rfis: initialProjectData.rfis !== undefined ? initialProjectData.rfis : prev.rfis,
+            submittals: initialProjectData.submittals !== undefined ? initialProjectData.submittals : prev.submittals,
+            correspondence: initialProjectData.correspondence !== undefined ? initialProjectData.correspondence : prev.correspondence,
+            checklists: initialProjectData.checklists !== undefined ? initialProjectData.checklists : prev.checklists,
+            ncrs: initialProjectData.ncrs !== undefined ? initialProjectData.ncrs : prev.ncrs
         }));
         setLoading(false);
     }, [initialProjectData]);
 
     const applyProjectDataToState = (proj: Project, isInitialLocal = false) => {
         if (!proj) return;
-        const isCurrentlyEditing = !isInitialLocal && (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 15000));
+        const projTime = Number(proj.updatedAt) || 0;
+        const isStaleRemote = !isInitialLocal && (isSavingRef.current || (projTime > 0 && projTime < lastLocalEditRef.current));
+        if (isStaleRemote) return;
 
         setMasterData(prev => {
-            // If user is actively editing, only backfill tabs that are currently empty in state
-            if (isCurrentlyEditing) {
-                const remoteBoq = normalizeBoqList(proj.boqItems || []);
-                const remotePayments = normalizePaymentsList(proj.payments || []);
-                const remoteLogs = sortLogs(proj.executionLogs || []);
-                return {
-                    ...prev,
-                    boqItems: prev.boqItems.length === 0 && remoteBoq.length > 0 ? remoteBoq : prev.boqItems,
-                    payments: prev.payments.length === 0 && remotePayments.length > 0 ? remotePayments : prev.payments,
-                    logs: prev.logs.length === 0 && remoteLogs.length > 0 ? remoteLogs : prev.logs,
-                    engineeringReports: prev.engineeringReports.length === 0 && (proj.engineeringReports || []).length > 0 ? (proj.engineeringReports || []) : prev.engineeringReports
-                };
-            }
-
-            const remoteLogs = proj.executionLogs || [];
-            const logMap = new Map<string, ProjectLog>();
-            remoteLogs.forEach(l => { if (l && l.id) logMap.set(l.id, l); });
+            // Preserve local base64 images if remote copy stripped them for Firestore size
+            const prevLogImagesById = new Map<string, string[]>();
             (prev.logs || []).forEach(l => {
-                if (l && l.id) {
-                    const rem = logMap.get(l.id);
-                    const images = (l.images && l.images.length > 0) ? l.images : (rem?.images || []);
-                    logMap.set(l.id, { ...(rem || {}), ...l, images });
-                }
+                if (l?.id && l.images && l.images.length > 0) prevLogImagesById.set(l.id, l.images);
             });
-            const mergedLogs = sortLogs(Array.from(logMap.values()));
 
-            const remotePayments = normalizePaymentsList(proj.payments || []);
-            const prevPayments = normalizePaymentsList(prev.payments || []);
-            let mergedPayments: ProjectPayment[] = [];
-            if (remotePayments.length > 0 && prevPayments.length === 0) {
-                mergedPayments = remotePayments;
-            } else {
-                const paymentMap = new Map<string, ProjectPayment>();
-                prevPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-                remotePayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-                mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            }
+            const incomingLogs = proj.executionLogs !== undefined
+                ? sortLogs(proj.executionLogs.map(l => {
+                    if (!l) return l;
+                    const preserved = (!l.images || l.images.length === 0) ? (prevLogImagesById.get(l.id) || []) : l.images;
+                    return { ...l, images: preserved };
+                }))
+                : prev.logs;
 
-            const remoteBoq = normalizeBoqList(proj.boqItems || []);
-            const prevBoq = normalizeBoqList(prev.boqItems || []);
-            let mergedBoq: BOQItem[] = [];
-            if (remoteBoq.length > 0 && prevBoq.length === 0) {
-                mergedBoq = remoteBoq;
-            } else {
-                const boqMap = new Map<string, BOQItem>();
-                prevBoq.forEach(b => {
-                    if (b) {
-                        const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
-                        boqMap.set(key, b);
-                    }
-                });
-                remoteBoq.forEach(b => {
-                    if (b) {
-                        const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
-                        const existing = boqMap.get(key);
-                        const mergedSavedReports = (existing?.savedReports || b.savedReports)
-                            ? { ...(existing?.savedReports || {}), ...(b.savedReports || {}) }
-                            : undefined;
-                        boqMap.set(key, mergedSavedReports ? { ...b, savedReports: mergedSavedReports } : b);
-                    }
-                });
-                mergedBoq = Array.from(boqMap.values());
-            }
+            const incomingPayments = proj.payments !== undefined
+                ? normalizePaymentsList(proj.payments)
+                : prev.payments;
 
-            const remoteReports = proj.engineeringReports || [];
-            const reportMap = new Map<string, EngineeringReportItem>();
-            (prev.engineeringReports || []).forEach(r => { if (r && r.id) reportMap.set(r.id, r); });
-            remoteReports.forEach(r => { if (r && r.id) reportMap.set(r.id, r); });
-            const mergedReports = Array.from(reportMap.values());
-
-            const mergeArr = <T extends { id: string }>(prevArr: T[] = [], remoteArr: T[] = []): T[] => {
-                const map = new Map<string, T>();
-                prevArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
-                remoteArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
-                return Array.from(map.values());
-            };
+            const prevBoqMap = new Map<string, BOQItem>();
+            (prev.boqItems || []).forEach(b => { if (b?.id) prevBoqMap.set(b.id, b); });
+            const incomingBoq = proj.boqItems !== undefined
+                ? normalizeBoqList(proj.boqItems).map(b => {
+                    const old = b?.id ? prevBoqMap.get(b.id) : undefined;
+                    if (old?.savedReports && !b.savedReports) return { ...b, savedReports: old.savedReports };
+                    return b;
+                })
+                : prev.boqItems;
 
             return {
                 ...prev,
                 projectName: proj.name || prev.projectName || '',
                 projectContractor: proj.contractor || prev.projectContractor || '',
-                fullDescription: proj.fullDescription || prev.fullDescription || '',
-                logs: mergedLogs,
-                payments: mergedPayments,
-                boqItems: mergedBoq.length > 0 ? mergedBoq : prevBoq,
-                engineeringReports: mergedReports.length > 0 ? mergedReports : (prev.engineeringReports || []),
-                soilReport: proj.soilReportAnalysis || prev.soilReport || '',
-                rfis: mergeArr(prev.rfis, proj.rfis),
-                submittals: mergeArr(prev.submittals, proj.submittals),
-                correspondence: mergeArr(prev.correspondence, proj.correspondence),
-                checklists: mergeArr(prev.checklists, proj.checklists),
-                ncrs: mergeArr(prev.ncrs, proj.ncrs)
+                fullDescription: proj.fullDescription !== undefined ? proj.fullDescription : prev.fullDescription,
+                logs: incomingLogs,
+                payments: incomingPayments,
+                boqItems: incomingBoq,
+                engineeringReports: proj.engineeringReports !== undefined ? proj.engineeringReports : (prev.engineeringReports || []),
+                soilReport: proj.soilReportAnalysis !== undefined ? proj.soilReportAnalysis : (prev.soilReport || ''),
+                rfis: proj.rfis !== undefined ? proj.rfis : prev.rfis,
+                submittals: proj.submittals !== undefined ? proj.submittals : prev.submittals,
+                correspondence: proj.correspondence !== undefined ? proj.correspondence : prev.correspondence,
+                checklists: proj.checklists !== undefined ? proj.checklists : prev.checklists,
+                ncrs: proj.ncrs !== undefined ? proj.ncrs : prev.ncrs
             };
         });
     };
@@ -649,9 +645,32 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             };
             load();
 
+            const handleOnline = () => {
+                api.sync.processQueue().catch(() => {});
+            };
+            if (typeof window !== 'undefined') {
+                window.addEventListener('online', handleOnline);
+            }
+
+            // Listen to BroadcastChannel for instant cross-tab / cross-component sync
+            let bc: BroadcastChannel | null = null;
+            if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+                bc = new BroadcastChannel('construction_app_sync_channel');
+                bc.onmessage = (ev) => {
+                    if (isSavingRef.current) return;
+                    if (ev.data?.type === 'PROJECTS_UPDATED' && Array.isArray(ev.data.projects)) {
+                        const matched = ev.data.projects.find((p: Project) => p.id === projectId);
+                        if (matched) {
+                            applyProjectDataToState(matched, false);
+                            if (onProjectUpdated) onProjectUpdated(matched);
+                        }
+                    }
+                };
+            }
+
             if (!api.isGuest()) {
                 const unsubscribe = api.subscribeToProject(projectId, (updatedProject) => {
-                    if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 2000)) {
+                    if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 1000)) {
                         return;
                     }
                     if (updatedProject) {
@@ -660,29 +679,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     }
                 });
 
-                // Listen to BroadcastChannel for instant cross-tab / cross-component sync
-                let bc: BroadcastChannel | null = null;
-                if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-                    bc = new BroadcastChannel('construction_app_sync_channel');
-                    bc.onmessage = (ev) => {
-                        if (isSavingRef.current || (Date.now() - lastLocalEditRef.current < 2000)) return;
-                        if (ev.data?.type === 'PROJECTS_UPDATED' && Array.isArray(ev.data.projects)) {
-                            const matched = ev.data.projects.find((p: Project) => p.id === projectId);
-                            if (matched) {
-                                applyProjectDataToState(matched, false);
-                                if (onProjectUpdated) onProjectUpdated(matched);
-                            }
-                        }
-                    };
-                }
-
                 return () => {
                     isCancelled = true;
                     unsubscribe();
                     if (bc) bc.close();
+                    if (typeof window !== 'undefined') window.removeEventListener('online', handleOnline);
                 };
             }
-            return () => { isCancelled = true; };
+            return () => {
+                isCancelled = true;
+                if (bc) bc.close();
+                if (typeof window !== 'undefined') window.removeEventListener('online', handleOnline);
+            };
         }
     }, [isOpen, projectId]);
 
@@ -714,20 +722,21 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             });
             // Immediately flush sync queue for instant cloud synchronization
             api.sync.processQueue().catch(() => {});
-            if (savedProject && onProjectUpdated) {
-                onProjectUpdated(savedProject);
+            if (savedProject) {
+                lastLocalEditRef.current = Number(savedProject.updatedAt) || Date.now();
+                if (onProjectUpdated) onProjectUpdated(savedProject);
             }
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1500);
+            setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } catch (e) {
             console.error("Auto save failed", e);
             api.sync.processQueue().catch(() => {});
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1500);
+            setTimeout(() => setAutoSaveStatus('idle'), 1200);
         } finally {
             setTimeout(() => {
                 isSavingRef.current = false;
-            }, 800);
+            }, 150);
         }
     };
 
@@ -2960,15 +2969,30 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     // Delete Report
-    const confirmDeleteReport = () => {
+    const confirmDeleteReport = async () => {
         if (!reportToDeleteId) return;
+        const idToDelete = reportToDeleteId;
+        const targetReport = masterData.engineeringReports.find(r => r.id === idToDelete);
+        const remainingReports = idToDelete === 'legacy'
+            ? masterData.engineeringReports
+            : masterData.engineeringReports.filter(r => r.id !== idToDelete);
+
+        const shouldClearSoilReport =
+            idToDelete === 'legacy' ||
+            (targetReport && (
+                targetReport.type === 'soil' ||
+                (targetReport.title && targetReport.title.includes('جسات')) ||
+                (masterData.soilReport && targetReport.content === masterData.soilReport)
+            ));
+
         const newData = {
             ...masterData,
-            engineeringReports: masterData.engineeringReports.filter(r => r.id !== reportToDeleteId)
+            engineeringReports: remainingReports,
+            ...(shouldClearSoilReport ? { soilReport: '' } : {})
         };
         setMasterData(newData);
         setReportToDeleteId(null);
-        triggerAutoSave(newData);
+        await triggerAutoSave(newData, { _allowEmptyReports: true });
     };
 
     // Save Logic
@@ -3563,13 +3587,20 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 <div className="mb-2">
                                                     <select
                                                         value={tempEditLogWorkCategory}
-                                                        onChange={(e) => setTempEditLogWorkCategory(e.target.value)}
+                                                        onChange={(e) => {
+                                                            if (e.target.value === '__MANAGE__') {
+                                                                setShowWorkCategoryModal(true);
+                                                            } else {
+                                                                setTempEditLogWorkCategory(e.target.value);
+                                                            }
+                                                        }}
                                                         className="w-full p-2 text-xs bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none"
                                                     >
                                                         <option value="">⚙️ اختر نوع العمل (اختياري)...</option>
                                                         {allWorkCategories.map(cat => (
                                                             <option key={cat.name} value={cat.name}>{cat.name}</option>
                                                         ))}
+                                                        <option value="__MANAGE__">➕ إضافة / إدارة أنواع الأعمال...</option>
                                                     </select>
                                                 </div>
 
@@ -4732,7 +4763,17 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 <div className="relative z-10">
                                                     <div className="flex justify-between items-start mb-2">
                                                         <div className="w-10 h-10 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center text-lg font-bold"><i className="fa-solid fa-file-contract"></i></div>
-                                                        <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold">قديم</span>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold">قديم</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); setReportToDeleteId('legacy'); }}
+                                                                className="w-7 h-7 rounded-full hover:bg-red-50 text-slate-300 hover:text-red-500 flex items-center justify-center transition border border-transparent hover:border-red-100"
+                                                                title="حذف التقرير"
+                                                            >
+                                                                <i className="fa-solid fa-trash text-[10px]"></i>
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                     <h3 className="font-bold text-slate-800 text-sm mb-1">تقرير الجسات الأساسي</h3>
                                                     <p className="text-[10px] text-slate-400 line-clamp-2">التقرير المحفوظ سابقاً في بيانات المشروع.</p>
@@ -5831,50 +5872,101 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                 ) : (
                                     filteredWorkCategories.map((cat, idx) => {
                                         const isSelected = selectedWorkCategory === cat.name;
+                                        const isEditingThis = editingCategoryName === cat.name;
                                         return (
                                             <div
-                                                key={idx}
+                                                key={cat.originalName || idx}
                                                 onClick={() => {
+                                                    if (isEditingThis) return;
                                                     setSelectedWorkCategory(cat.name);
                                                     setShowWorkCategoryModal(false);
                                                 }}
-                                                className={`p-2.5 rounded-2xl border-2 cursor-pointer transition flex items-center justify-between gap-3 ${
+                                                className={`p-2.5 rounded-2xl border-2 cursor-pointer transition flex items-center justify-between gap-2 ${
                                                     isSelected 
                                                         ? 'bg-amber-500 text-white border-amber-600 shadow-md' 
                                                         : 'bg-white text-slate-800 border-slate-200 hover:border-amber-400 hover:bg-amber-50/60'
                                                 }`}
                                             >
-                                                <div className="flex items-center gap-2 min-w-0">
+                                                <div className="flex items-center gap-2 min-w-0 flex-1">
                                                     <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
                                                         isSelected ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
                                                     }`}>
                                                         <i className={`fa-solid ${cat.icon || 'fa-layer-group'} text-[11px]`}></i>
                                                     </div>
-                                                    <div className="min-w-0">
-                                                        <h4 className="text-[11px] font-bold leading-tight">{cat.name}</h4>
-                                                        {cat.stage && (
-                                                            <span className={`text-[9px] font-medium ${isSelected ? 'text-amber-100' : 'text-slate-400'}`}>
-                                                                {cat.stage}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-1.5 shrink-0">
-                                                    {cat.isCustom && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleDeleteCustomWorkCategory(cat.name);
-                                                            }}
-                                                            className={`w-6 h-6 rounded flex items-center justify-center text-[10px] transition ${
-                                                                isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
-                                                            }`}
-                                                            title="حذف هذا البند المخصص"
-                                                        >
-                                                            <i className="fa-solid fa-trash"></i>
-                                                        </button>
+                                                    {isEditingThis ? (
+                                                        <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                                                            <input
+                                                                type="text"
+                                                                value={editCategoryInputValue}
+                                                                onChange={(e) => setEditCategoryInputValue(e.target.value)}
+                                                                onKeyDown={(e) => {
+                                                                    if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        handleRenameWorkCategory(cat, editCategoryInputValue);
+                                                                    } else if (e.key === 'Escape') {
+                                                                        setEditingCategoryName(null);
+                                                                        setEditCategoryInputValue('');
+                                                                    }
+                                                                }}
+                                                                autoFocus
+                                                                className="flex-1 min-w-0 px-2 py-1 text-[11px] font-bold bg-white text-slate-900 border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleRenameWorkCategory(cat, editCategoryInputValue)}
+                                                                className="w-6 h-6 rounded-md bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center text-[10px] shrink-0"
+                                                                title="حفظ التعديل"
+                                                            >
+                                                                <i className="fa-solid fa-check"></i>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => { setEditingCategoryName(null); setEditCategoryInputValue(''); }}
+                                                                className="w-6 h-6 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 flex items-center justify-center text-[10px] shrink-0"
+                                                                title="إلغاء"
+                                                            >
+                                                                <i className="fa-solid fa-times"></i>
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="min-w-0">
+                                                            <h4 className="text-[11px] font-bold leading-tight truncate">{cat.name}</h4>
+                                                            {cat.stage && (
+                                                                <span className={`text-[9px] font-medium block truncate ${isSelected ? 'text-amber-100' : 'text-slate-400'}`}>
+                                                                    {cat.stage}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     )}
+                                                </div>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setEditingCategoryName(cat.name);
+                                                            setEditCategoryInputValue(cat.name);
+                                                        }}
+                                                        className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition ${
+                                                            isSelected ? 'text-white/90 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+                                                        }`}
+                                                        title="تعديل نوع العمل"
+                                                    >
+                                                        <i className="fa-solid fa-pen"></i>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleDeleteWorkCategory(cat);
+                                                        }}
+                                                        className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] transition ${
+                                                            isSelected ? 'text-white/90 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
+                                                        }`}
+                                                        title="حذف نوع العمل"
+                                                    >
+                                                        <i className="fa-solid fa-trash"></i>
+                                                    </button>
                                                     <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
                                                         isSelected ? 'border-white bg-white text-amber-600' : 'border-slate-300'
                                                     }`}>

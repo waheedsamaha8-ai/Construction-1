@@ -811,104 +811,97 @@ function mergeProjectData(localP: Project | undefined, remoteP: Project): Projec
     const remoteTime = Number(remoteP.updatedAt) || 0;
     const localIsNewer = localTime > 0 && (localTime >= remoteTime || (Date.now() - localTime < 25000));
 
-    // Merge executionLogs (keep local base64 images if remote stripped them for size)
+    // Merge executionLogs (keep local base64 images if remote stripped them, without resurrecting deleted logs)
     const localLogs = localP.executionLogs || [];
     const remoteLogs = remoteP.executionLogs || [];
     let mergedLogs: ProjectLog[] = [];
-    if (localIsNewer && (localP as any)._allowEmptyLogs) {
-        mergedLogs = [...localLogs].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (localIsNewer) {
+        if ((localP as any)._allowEmptyLogs || localLogs.length > 0) {
+            const remoteById = new Map<string, ProjectLog>();
+            remoteLogs.forEach(l => { if (l && l.id) remoteById.set(l.id, l); });
+            mergedLogs = localLogs.map(l => {
+                if (!l) return l;
+                const rem = l.id ? remoteById.get(l.id) : undefined;
+                const images = (l.images && l.images.length > 0) ? l.images : (rem?.images || []);
+                return { ...l, images };
+            }).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        } else {
+            mergedLogs = [...remoteLogs].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        }
     } else {
-        const logMap = new Map<string, ProjectLog>();
-        const olderLogs = localIsNewer ? remoteLogs : localLogs;
-        const newerLogs = localIsNewer ? localLogs : remoteLogs;
-        olderLogs.forEach(l => { if (l && (l.id || l.content)) logMap.set(l.id || `${l.date}_${l.content}`, l); });
-        newerLogs.forEach(l => {
-            if (l && (l.id || l.content)) {
-                const key = l.id || `${l.date}_${l.content}`;
-                const existing = logMap.get(key);
-                const images = (l.images && l.images.length > 0) ? l.images : (existing?.images || []);
-                logMap.set(key, { ...existing, ...l, images });
-            }
-        });
-        mergedLogs = Array.from(logMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        if ((remoteP as any)._allowEmptyLogs || remoteLogs.length > 0) {
+            const localById = new Map<string, ProjectLog>();
+            localLogs.forEach(l => { if (l && l.id) localById.set(l.id, l); });
+            mergedLogs = remoteLogs.map(l => {
+                if (!l) return l;
+                const loc = l.id ? localById.get(l.id) : undefined;
+                const images = (l.images && l.images.length > 0) ? l.images : (loc?.images || []);
+                return { ...l, images };
+            }).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        } else {
+            mergedLogs = [...localLogs].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        }
     }
 
-    // Payments: NEVER let an empty local array wipe out remote payments unless explicitly deleted
+    // Payments: respect newer list & explicit deletions without letting unloaded empty arrays overwrite
     const localPayments = normalizePayments(localP.payments);
     const remotePayments = normalizePayments(remoteP.payments);
     let mergedPayments: ProjectPayment[] = [];
-    if (localIsNewer && (localP as any)._allowEmptyPayments) {
-        mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    } else if (localPayments.length === 0 && remotePayments.length > 0) {
-        mergedPayments = remotePayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    } else if (remotePayments.length === 0 && localPayments.length > 0) {
-        mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (localIsNewer) {
+        if ((localP as any)._allowEmptyPayments || localPayments.length > 0) {
+            mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        } else {
+            mergedPayments = remotePayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        }
     } else {
-        const paymentMap = new Map<string, ProjectPayment>();
-        const olderPayments = localIsNewer ? remotePayments : localPayments;
-        const newerPayments = localIsNewer ? localPayments : remotePayments;
-        olderPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-        newerPayments.forEach(p => { if (p && p.id) paymentMap.set(p.id, p); });
-        mergedPayments = Array.from(paymentMap.values()).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        if ((remoteP as any)._allowEmptyPayments || remotePayments.length > 0) {
+            mergedPayments = remotePayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        } else {
+            mergedPayments = localPayments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        }
     }
 
-    // BOQ Items: NEVER let an empty local array wipe out remote BOQ items unless explicitly deleted
+    // BOQ Items: respect newer list & explicit deletions
     const localBoq = normalizeBoqItems(localP.boqItems);
     const remoteBoq = normalizeBoqItems(remoteP.boqItems);
     let mergedBoq: BOQItem[] = [];
-    if (localIsNewer && (localP as any)._allowEmptyBoq) {
-        mergedBoq = localBoq;
-    } else if (localBoq.length === 0 && remoteBoq.length > 0) {
-        mergedBoq = remoteBoq;
-    } else if (remoteBoq.length === 0 && localBoq.length > 0) {
-        mergedBoq = localBoq;
+    if (localIsNewer) {
+        if ((localP as any)._allowEmptyBoq || localBoq.length > 0) {
+            mergedBoq = localBoq;
+        } else {
+            mergedBoq = remoteBoq;
+        }
     } else {
-        const boqMap = new Map<string, BOQItem>();
-        const olderBoq = localIsNewer ? remoteBoq : localBoq;
-        const newerBoq = localIsNewer ? localBoq : remoteBoq;
-        olderBoq.forEach(b => {
-            if (b) {
-                const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
-                boqMap.set(key, b);
-            }
-        });
-        newerBoq.forEach(b => {
-            if (b) {
-                const key = b.id || `${b.batchId || 'default'}_${b.itemCode || ''}_${b.description || ''}`;
-                boqMap.set(key, b);
-            }
-        });
-        mergedBoq = Array.from(boqMap.values());
+        if ((remoteP as any)._allowEmptyBoq || remoteBoq.length > 0) {
+            mergedBoq = remoteBoq;
+        } else {
+            mergedBoq = localBoq;
+        }
     }
 
-    // Engineering Reports
+    // Engineering Reports: respect newer list & explicit deletions so deleted reports NEVER return
     const localReports = localP.engineeringReports || [];
     const remoteReports = remoteP.engineeringReports || [];
     let mergedReports: EngineeringReportItem[] = [];
-    if (localIsNewer && (localP as any)._allowEmptyReports) {
-        mergedReports = localReports;
-    } else if (localReports.length === 0 && remoteReports.length > 0) {
-        mergedReports = remoteReports;
-    } else if (remoteReports.length === 0 && localReports.length > 0) {
-        mergedReports = localReports;
+    if (localIsNewer) {
+        if ((localP as any)._allowEmptyReports || localReports.length > 0) {
+            mergedReports = localReports;
+        } else {
+            mergedReports = remoteReports;
+        }
     } else {
-        const reportMap = new Map<string, EngineeringReportItem>();
-        const olderRep = localIsNewer ? remoteReports : localReports;
-        const newerRep = localIsNewer ? localReports : remoteReports;
-        olderRep.forEach(r => { if (r && (r.id || r.title)) reportMap.set(r.id || r.title, r); });
-        newerRep.forEach(r => { if (r && (r.id || r.title)) reportMap.set(r.id || r.title, r); });
-        mergedReports = Array.from(reportMap.values());
+        if ((remoteP as any)._allowEmptyReports || remoteReports.length > 0) {
+            mergedReports = remoteReports;
+        } else {
+            mergedReports = localReports;
+        }
     }
 
     const mergeById = <T extends { id: string }>(localArr: T[] = [], remoteArr: T[] = []): T[] => {
-        if (localArr.length === 0 && remoteArr.length > 0) return remoteArr;
-        if (remoteArr.length === 0 && localArr.length > 0) return localArr;
-        const map = new Map<string, T>();
-        const olderArr = localIsNewer ? remoteArr : localArr;
-        const newerArr = localIsNewer ? localArr : remoteArr;
-        olderArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
-        newerArr.forEach(i => { if (i && i.id) map.set(i.id, i); });
-        return Array.from(map.values());
+        if (localIsNewer) {
+            return (localArr.length > 0 || remoteArr.length === 0) ? localArr : remoteArr;
+        }
+        return (remoteArr.length > 0 || localArr.length === 0) ? remoteArr : localArr;
     };
 
     const mergedRfis = mergeById(localP.rfis, remoteP.rfis);
@@ -922,8 +915,8 @@ function mergeProjectData(localP: Project | undefined, remoteP: Project): Projec
         ...localP,
         ...(localIsNewer ? localP : remoteP),
         updatedAt: Math.max(localTime, remoteTime),
-        fullDescription: localIsNewer ? (localP.fullDescription ?? remoteP.fullDescription ?? '') : (remoteP.fullDescription || localP.fullDescription || ''),
-        soilReportAnalysis: localIsNewer ? (localP.soilReportAnalysis ?? remoteP.soilReportAnalysis ?? '') : (remoteP.soilReportAnalysis || localP.soilReportAnalysis || ''),
+        fullDescription: localIsNewer ? (localP.fullDescription !== undefined ? localP.fullDescription : (remoteP.fullDescription || '')) : (remoteP.fullDescription !== undefined ? remoteP.fullDescription : (localP.fullDescription || '')),
+        soilReportAnalysis: localIsNewer ? (localP.soilReportAnalysis !== undefined ? localP.soilReportAnalysis : (remoteP.soilReportAnalysis || '')) : (remoteP.soilReportAnalysis !== undefined ? remoteP.soilReportAnalysis : (localP.soilReportAnalysis || '')),
         executionLogs: mergedLogs,
         payments: mergedPayments,
         boqItems: mergedBoq,
@@ -1701,6 +1694,10 @@ export const api = {
               safeUpdates.engineeringReports = existing.engineeringReports;
           }
       }
+      if (Array.isArray(safeUpdates.boqItems) && safeUpdates.boqItems.length > 0) safeUpdates._allowEmptyBoq = false;
+      if (Array.isArray(safeUpdates.payments) && safeUpdates.payments.length > 0) safeUpdates._allowEmptyPayments = false;
+      if (Array.isArray(safeUpdates.executionLogs) && safeUpdates.executionLogs.length > 0) safeUpdates._allowEmptyLogs = false;
+      if (Array.isArray(safeUpdates.engineeringReports) && safeUpdates.engineeringReports.length > 0) safeUpdates._allowEmptyReports = false;
 
       // Apply updates on top of existing
       const rawMerged: Project = {
@@ -1719,13 +1716,21 @@ export const api = {
 
       const updatedProject = enrichProjectWithAI(rawMerged);
 
-      // 1. Instant local persistence (0ms)
+      // 1. Instant local persistence (0ms) + instant cross-tab broadcast
       try {
           await dbService.putItem('projects', updatedProject);
           const cached = this.getSyncProjects();
           const merged = cached.some(p => p.id === id) ? cached.map(p => p.id === id ? updatedProject : p) : [updatedProject, ...cached];
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, merged);
           updateCache('projects_list', merged);
+          if (typeof window !== 'undefined') {
+              if ('BroadcastChannel' in window) {
+                  const bc = new BroadcastChannel('construction_app_sync_channel');
+                  bc.postMessage({ type: 'PROJECTS_UPDATED', projects: [updatedProject] });
+                  bc.close();
+              }
+              window.dispatchEvent(new CustomEvent('project_data_changed', { detail: updatedProject }));
+          }
       } catch (e) {}
 
       // 2. Cloud Firestore persistence (SetDoc with merge & 1MB size guard)
@@ -1814,7 +1819,12 @@ export const api = {
           const project = await dbService.getItem<Project>('projects', projectId);
           if (project && project.executionLogs) {
               newLogs = project.executionLogs.filter(l => l.id !== logId);
-              await dbService.putItem('projects', { ...project, executionLogs: newLogs, updatedAt: now });
+              const updatedProj = { ...project, executionLogs: newLogs, _allowEmptyLogs: newLogs.length === 0, updatedAt: now } as Project;
+              await dbService.putItem('projects', updatedProj);
+              const cached = this.getSyncProjects();
+              const merged = cached.some(p => p.id === projectId) ? cached.map(p => p.id === projectId ? updatedProj : p) : cached;
+              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, merged);
+              updateCache('projects_list', merged);
           }
       } catch(e) {}
 
@@ -1824,15 +1834,18 @@ export const api = {
               await deleteDoc(logRef);
               const projectRef = doc(db, "projects", projectId);
               const lightLogs = newLogs.map(l => ({ ...l, images: (l.images || []).filter(img => !img.startsWith('data:') || img.length < 60000) }));
-              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(lightLogs), updatedAt: now }, { merge: true });
+              await setDoc(projectRef, { executionLogs: sanitizeForFirestore(lightLogs), _allowEmptyLogs: newLogs.length === 0, updatedAt: now }, { merge: true });
           } catch (e: any) { 
-              if (e.code !== 'permission-denied') console.warn("Firestore sync failed");
+              if (e.code !== 'permission-denied') console.warn("Firestore sync failed"); 
           }
       }
   },
   async updateProjectMasterData(id: string, data: any): Promise<any> { 
       const executionLogs = data.executionLogs || data.logs;
       const updates: any = { ...data };
+      if (updates.soilReport !== undefined && updates.soilReportAnalysis === undefined) {
+          updates.soilReportAnalysis = updates.soilReport;
+      }
       delete updates.logs;
       delete updates.newLog;
       delete updates.logDate;
