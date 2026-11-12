@@ -1355,51 +1355,84 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const rowsHtml = itemsList.length > 0 ? Array.from(groupedForPrint.entries()).map(([batchName, groupItems]) => {
             const groupSubtotal = groupItems.reduce((s, i) => s + (Number(i.totalValue) || 0), 0);
             const groupHeaderRow = `
-                <tr style="background:#eef2ff; color:#1e1b4b; font-weight:900;">
-                    <td colspan="8" style="text-align:right; padding:8px 12px; font-size:14px;">
-                        📂 ${batchName} (${groupItems.length} بند)
-                    </td>
-                    <td colspan="3" style="text-align:left; padding:8px 12px; font-size:13px;">
-                        إجمالي المقايسة: ${groupSubtotal.toLocaleString()} ج.م
-                    </td>
-                </tr>
+                <tbody style="page-break-inside: avoid; break-inside: avoid;">
+                    <tr style="background:#e0e7ff !important; color:#1e1b4b !important; font-weight:900;">
+                        <td colspan="4" style="text-align:right !important; padding:6px 10px !important; font-size:12.5px !important; border:1.5px solid #000 !important;">
+                            📂 ${batchName} (${groupItems.length} بند)
+                        </td>
+                        <td colspan="3" style="text-align:left !important; padding:6px 10px !important; font-size:12px !important; border:1.5px solid #000 !important;">
+                            إجمالي المقايسة: ${groupSubtotal.toLocaleString()} ج.م
+                        </td>
+                    </tr>
+                </tbody>
             `;
-            const itemRows = groupItems.map((it) => `
-                <tr>
-                    <td>${serialCounter++}</td>
-                    <td style="font-family: monospace;">${it.itemCode || '-'}</td>
-                    <td style="text-align: right;">${it.description || ''}</td>
-                    <td>${it.unit || '-'}</td>
-                    <td>${(it.contractQuantity || 0).toLocaleString()}</td>
-                    <td>${(it.prevQuantity || 0).toLocaleString()}</td>
-                    <td style="background:#f0fdf4; color:#166534;">${(it.currQuantity || 0).toLocaleString()}</td>
-                    <td style="background:#eff6ff; color:#1e40af;">${(it.totalQuantity || 0).toLocaleString()}</td>
-                    <td>${(it.unitPrice || 0).toLocaleString()}</td>
-                    <td>${it.completionRatio || 100}%</td>
-                    <td style="font-weight:900;">${(it.totalValue || 0).toLocaleString()}</td>
-                </tr>
-            `).join('');
-            return groupHeaderRow + itemRows;
-        }).join('') : `<tr><td colspan="11">مستخلص إجمالي بدون تفصيل بنود</td></tr>`;
+            const itemBlocks = groupItems.map((it) => {
+                const idx = serialCounter++;
+                return `
+                    <tbody class="ipc-item-block" style="page-break-inside: avoid !important; break-inside: avoid !important;">
+                        <tr class="ipc-item-desc-row">
+                            <td colspan="7" style="text-align:right !important; padding:6px 10px !important; background:#f1f5f9 !important; font-size:12.5px !important; font-weight:800 !important; line-height:1.5 !important; border:1.5px solid #000 !important; border-bottom:1px dashed #475569 !important; word-break:normal !important; overflow-wrap:break-word !important;">
+                                <span style="display:inline-block; background:#1e3a8a !important; color:#ffffff !important; padding:1px 8px; border-radius:4px; font-size:11.5px; font-weight:900; margin-left:6px;">
+                                    م(${idx}) - بند (${it.itemCode || '-'})
+                                </span>
+                                ${it.unit ? `<span style="display:inline-block; background:#e2e8f0 !important; color:#0f172a !important; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:800; margin-left:6px;">الوحدة: ${it.unit}</span>` : ''}
+                                <span style="color:#000 !important; font-weight:800;">${it.description || '-'}</span>
+                            </td>
+                        </tr>
+                        <tr class="ipc-item-nums-row">
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#ffffff !important;">
+                                <div style="font-size:9.5px !important; color:#334155 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">الكمية التعاقدية</div>
+                                <div style="font-size:11.5px !important; font-weight:900 !important; color:#000 !important; text-align:center !important;">${(it.contractQuantity || 0).toLocaleString()} ${it.unit || ''}</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#ffffff !important;">
+                                <div style="font-size:9.5px !important; color:#334155 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">السابقة</div>
+                                <div style="font-size:11.5px !important; font-weight:800 !important; color:#000 !important; text-align:center !important;">${(it.prevQuantity || 0).toLocaleString()}</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#f0fdf4 !important;">
+                                <div style="font-size:9.5px !important; color:#166534 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">الحالية</div>
+                                <div style="font-size:11.5px !important; font-weight:900 !important; color:#166534 !important; text-align:center !important;">${(it.currQuantity || 0).toLocaleString()}</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#eff6ff !important;">
+                                <div style="font-size:9.5px !important; color:#1e40af !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">الإجمالية</div>
+                                <div style="font-size:11.5px !important; font-weight:900 !important; color:#1e40af !important; text-align:center !important;">${(it.totalQuantity || 0).toLocaleString()}</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#ffffff !important;">
+                                <div style="font-size:9.5px !important; color:#334155 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">الفئة</div>
+                                <div style="font-size:11.5px !important; font-weight:800 !important; color:#000 !important; text-align:center !important;">${(it.unitPrice || 0).toLocaleString()}</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#ffffff !important;">
+                                <div style="font-size:9.5px !important; color:#334155 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">النسبة</div>
+                                <div style="font-size:11.5px !important; font-weight:800 !important; color:#000 !important; text-align:center !important;">${it.completionRatio || 100}%</div>
+                            </td>
+                            <td style="padding:5px 4px !important; text-align:center !important; border:1px solid #000 !important; border-bottom:2px solid #000 !important; background:#fefce8 !important;">
+                                <div style="font-size:9.5px !important; color:#713f12 !important; font-weight:800 !important; margin-bottom:2px !important; text-align:center !important;">الإجمالي</div>
+                                <div style="font-size:12px !important; font-weight:900 !important; color:#000 !important; text-align:center !important;">${(it.totalValue || 0).toLocaleString()} ج.م</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                `;
+            }).join('');
+            return groupHeaderRow + itemBlocks;
+        }).join('') : `<tbody><tr><td colspan="7" style="padding:8px; font-size:13px;">مستخلص إجمالي بدون تفصيل بنود</td></tr></tbody>`;
 
         const logsEvidenceHtml = relatedLogs.length > 0 ? `
-            <h3 style="margin-top: 24px;">📸 بيان توثيق الأعمال من سجل اليوميات المرتبطة ببنود المستخلص (${relatedLogs.length} يومية)</h3>
-            <table>
+            <h3 style="margin-top: 18px; font-size: 15px !important;">📸 بيان توثيق الأعمال من سجل اليوميات المرتبطة ببنود المستخلص (${relatedLogs.length} يومية)</h3>
+            <table class="ipc-a4-table" style="width:100% !important; max-width:100% !important; table-layout:fixed !important; border-collapse:collapse !important;">
                 <thead>
                     <tr>
-                        <th style="width: 15%;">رقم البند</th>
-                        <th style="width: 18%;">تاريخ اليومية</th>
-                        <th>بيان الأعمال المنفذة بالموقع</th>
-                        <th style="width: 15%;">المرفقات</th>
+                        <th style="width: 14%; font-size:11.5px !important; padding:6px 4px !important;">رقم البند</th>
+                        <th style="width: 16%; font-size:11.5px !important; padding:6px 4px !important;">تاريخ اليومية</th>
+                        <th style="width: 55%; font-size:11.5px !important; padding:6px 6px !important;">بيان الأعمال المنفذة بالموقع</th>
+                        <th style="width: 15%; font-size:11.5px !important; padding:6px 4px !important;">المرفقات</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${relatedLogs.slice(0, 20).map(r => `
                         <tr>
-                            <td>بند (${r.itemCode})</td>
-                            <td>${r.log.date}</td>
-                            <td style="text-align: right;">${r.log.content}</td>
-                            <td>${r.log.images?.length ? `${r.log.images.length} صورة موقع` : 'سجل نصي'}</td>
+                            <td style="font-size:11.5px !important; padding:5px 4px !important;">بند (${r.itemCode})</td>
+                            <td style="font-size:11.5px !important; padding:5px 4px !important;">${r.log.date}</td>
+                            <td style="text-align: right !important; font-size:11.5px !important; padding:5px 6px !important; word-break:normal; overflow-wrap:break-word;">${r.log.content}</td>
+                            <td style="font-size:11.5px !important; padding:5px 4px !important;">${r.log.images?.length ? `${r.log.images.length} صورة موقع` : 'سجل نصي'}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -1407,80 +1440,107 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         ` : '';
 
         const bodyHtml = `
-            <div class="info-box" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
-                <div>
-                    <div><strong>اسم المشروع:</strong> ${projName}</div>
-                    <div><strong>المقاول المنفذ:</strong> ${contractorName}</div>
+            <style>
+                .ipc-print-root {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    box-sizing: border-box !important;
+                    overflow: hidden !important;
+                }
+                .ipc-a4-table {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    min-width: 0 !important;
+                    table-layout: fixed !important;
+                    border-collapse: collapse !important;
+                    margin: 8px 0 14px 0 !important;
+                    border: 1.5px solid #000 !important;
+                }
+                .ipc-a4-table th, .ipc-a4-table td {
+                    box-sizing: border-box !important;
+                    word-break: normal !important;
+                    overflow-wrap: break-word !important;
+                }
+            </style>
+            <div class="ipc-print-root">
+                <div class="info-box" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:12px; padding:8px 12px !important; font-size:13px !important;">
+                    <div>
+                        <div style="margin-bottom:2px;"><strong>اسم المشروع:</strong> ${projName}</div>
+                        <div style="margin-bottom:0;"><strong>المقاول المنفذ:</strong> ${contractorName}</div>
+                    </div>
+                    <div>
+                        <div style="margin-bottom:2px;"><strong>رقم المستخلص:</strong> مستخلص جاري رقم (${pay.invoiceNumber || '-'})</div>
+                        <div style="margin-bottom:0;"><strong>تاريخ المستخلص:</strong> ${pay.date}</div>
+                    </div>
                 </div>
-                <div>
-                    <div><strong>رقم المستخلص:</strong> مستخلص جاري رقم (${pay.invoiceNumber || '-'})</div>
-                    <div><strong>تاريخ المستخلص:</strong> ${pay.date}</div>
-                </div>
-            </div>
 
-            <h3>1. جدول حصر كميات وقيم البنود المنفذة</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>م</th>
-                        <th>رقم البند</th>
-                        <th>بيان الأعمال</th>
-                        <th>الوحدة</th>
-                        <th>التعاقدية</th>
-                        <th>السابقة</th>
-                        <th>الحالية</th>
-                        <th>الإجمالية</th>
-                        <th>الفئة (ج.م)</th>
-                        <th>نسبة الصرف</th>
-                        <th>إجمالي القيمة (ج.م)</th>
-                    </tr>
-                </thead>
-                <tbody>
+                <h3 style="font-size:15px !important; margin:10px 0 6px 0 !important;">1. جدول حصر كميات وقيم البنود المنفذة</h3>
+                <table class="ipc-a4-table">
+                    <colgroup>
+                        <col style="width: 15%;" />
+                        <col style="width: 12%;" />
+                        <col style="width: 12%;" />
+                        <col style="width: 13%;" />
+                        <col style="width: 14%;" />
+                        <col style="width: 11%;" />
+                        <col style="width: 23%;" />
+                    </colgroup>
+                    <thead>
+                        <tr style="background:#cbd5e1 !important;">
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">الكمية التعاقدية</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">السابقة</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">الحالية</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">الإجمالية</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">الفئة</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">النسبة</th>
+                            <th style="padding:6px 4px !important; font-size:11.5px !important; font-weight:900 !important;">الإجمالي</th>
+                        </tr>
+                    </thead>
                     ${rowsHtml}
-                </tbody>
-            </table>
+                </table>
 
-            <h3>2. الملخص المالي وحساب الاستقطاعات والصافي المستحق</h3>
-            <table>
-                <tbody>
-                    <tr>
-                        <td style="text-align:right; width:60%; background:#f8fafc;"><strong>إجمالي قيمة الأعمال التراكمية حتى تاريخه</strong></td>
-                        <td style="font-size:20px;"><strong>${(pay.cumulativeAmount || 0).toLocaleString()} ج.م</strong></td>
-                    </tr>
-                    <tr>
-                        <td style="text-align:right; background:#f8fafc;"><strong>إجمالي أعمال المستخلص الجاري (قبل الاستقطاعات)</strong></td>
-                        <td style="font-size:20px; color:#1e40af;"><strong>${grossWork.toLocaleString()} ج.م</strong></td>
-                    </tr>
-                    ${retAmt > 0 ? `
-                    <tr>
-                        <td style="text-align:right; color:#991b1b;">(-) خصم تأمين ضمان أعمال (${pay.retentionPercent || 0}%)</td>
-                        <td style="color:#991b1b;">- ${retAmt.toLocaleString()} ج.م</td>
-                    </tr>` : ''}
-                    ${advAmt > 0 ? `
-                    <tr>
-                        <td style="text-align:right; color:#991b1b;">(-) استرداد دفعة مقدمة (${pay.advanceDeductionPercent || 0}%)</td>
-                        <td style="color:#991b1b;">- ${advAmt.toLocaleString()} ج.م</td>
-                    </tr>` : ''}
-                    ${taxAmt > 0 ? `
-                    <tr>
-                        <td style="text-align:right; color:#991b1b;">(-) ضرائب ودمغات واستقطاعات أخرى (${pay.taxesAndOtherPercent || 0}%)</td>
-                        <td style="color:#991b1b;">- ${taxAmt.toLocaleString()} ج.م</td>
-                    </tr>` : ''}
-                    <tr style="background:#dcfce7;">
-                        <td style="text-align:right; font-size:22px; color:#14532d;"><strong>صافي المستحق للصرف للمقاول في هذا المستخلص</strong></td>
-                        <td style="font-size:24px; font-weight:900; color:#14532d;"><strong>${netPayable.toLocaleString()} ج.م</strong></td>
-                    </tr>
-                </tbody>
-            </table>
+                <h3 style="font-size:15px !important; margin:14px 0 6px 0 !important;">2. الملخص المالي وحساب الاستقطاعات والصافي المستحق</h3>
+                <table class="ipc-a4-table">
+                    <tbody>
+                        <tr>
+                            <td style="text-align:right !important; width:65%; padding:6px 10px !important; font-size:13px !important; background:#f8fafc !important;"><strong>إجمالي قيمة الأعمال التراكمية حتى تاريخه</strong></td>
+                            <td style="width:35%; padding:6px 10px !important; font-size:14px !important;"><strong>${(pay.cumulativeAmount || 0).toLocaleString()} ج.م</strong></td>
+                        </tr>
+                        <tr>
+                            <td style="text-align:right !important; padding:6px 10px !important; font-size:13px !important; background:#f8fafc !important;"><strong>إجمالي أعمال المستخلص الجاري (قبل الاستقطاعات)</strong></td>
+                            <td style="padding:6px 10px !important; font-size:14px !important; color:#1e40af !important;"><strong>${grossWork.toLocaleString()} ج.م</strong></td>
+                        </tr>
+                        ${retAmt > 0 ? `
+                        <tr>
+                            <td style="text-align:right !important; padding:6px 10px !important; font-size:12.5px !important; color:#991b1b !important;">(-) خصم تأمين ضمان أعمال (${pay.retentionPercent || 0}%)</td>
+                            <td style="padding:6px 10px !important; font-size:13px !important; color:#991b1b !important;">- ${retAmt.toLocaleString()} ج.م</td>
+                        </tr>` : ''}
+                        ${advAmt > 0 ? `
+                        <tr>
+                            <td style="text-align:right !important; padding:6px 10px !important; font-size:12.5px !important; color:#991b1b !important;">(-) استرداد دفعة مقدمة (${pay.advanceDeductionPercent || 0}%)</td>
+                            <td style="padding:6px 10px !important; font-size:13px !important; color:#991b1b !important;">- ${advAmt.toLocaleString()} ج.م</td>
+                        </tr>` : ''}
+                        ${taxAmt > 0 ? `
+                        <tr>
+                            <td style="text-align:right !important; padding:6px 10px !important; font-size:12.5px !important; color:#991b1b !important;">(-) ضرائب ودمغات واستقطاعات أخرى (${pay.taxesAndOtherPercent || 0}%)</td>
+                            <td style="padding:6px 10px !important; font-size:13px !important; color:#991b1b !important;">- ${taxAmt.toLocaleString()} ج.م</td>
+                        </tr>` : ''}
+                        <tr style="background:#dcfce7 !important;">
+                            <td style="text-align:right !important; padding:8px 10px !important; font-size:14px !important; color:#14532d !important;"><strong>صافي المستحق للصرف للمقاول في هذا المستخلص</strong></td>
+                            <td style="padding:8px 10px !important; font-size:16px !important; font-weight:900 !important; color:#14532d !important;"><strong>${netPayable.toLocaleString()} ج.م</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
 
-            ${pay.note ? `<div class="highlight-box"><strong>ملاحظات المستخلص:</strong> ${pay.note}</div>` : ''}
-            ${logsEvidenceHtml}
+                ${pay.note ? `<div class="highlight-box" style="font-size:12.5px !important; padding:8px 10px !important;"><strong>ملاحظات المستخلص:</strong> ${pay.note}</div>` : ''}
+                ${logsEvidenceHtml}
 
-            <div style="margin-top:40px; display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; text-align:center; page-break-inside:avoid;">
-                <div style="border-top:2px solid #000; padding-top:10px;"><strong>المقاول المنفذ</strong><br/><span style="font-size:14px;">${contractorName}</span></div>
-                <div style="border-top:2px solid #000; padding-top:10px;"><strong>مهندس التنفيذ / الحصر</strong></div>
-                <div style="border-top:2px solid #000; padding-top:10px;"><strong>المكتب الفني / المراجعة</strong></div>
-                <div style="border-top:2px solid #000; padding-top:10px;"><strong>اعتماد الاستشاري / المدير</strong></div>
+                <div style="margin-top:28px; display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; text-align:center; page-break-inside:avoid; font-size:12.5px !important;">
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>المقاول المنفذ</strong><br/><span style="font-size:11.5px;">${contractorName}</span></div>
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>مهندس التنفيذ / الحصر</strong></div>
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>المكتب الفني / المراجعة</strong></div>
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>اعتماد الاستشاري / المدير</strong></div>
+                </div>
             </div>
         `;
 
@@ -1992,11 +2052,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const projName = masterData.projectName || initialProjectData?.name || 'المشروع';
         const contractorName = masterData.projectContractor || initialProjectData?.contractor || '-';
         printService.printReport(
-            report.content,
+            enhanceReportHtml(report.content),
             report.title,
             `BOQ-${item.itemCode || '1'}-${report.type.toUpperCase()}`,
             {
-                subtitle: `مشروع: ${projName} | المقاول: ${contractorName}`
+                subtitle: `مشروع: ${projName} | المقاول: ${contractorName}`,
+                showHeader: false,
+                showFooter: false
             }
         );
     };
@@ -4154,7 +4216,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                             type="button"
                                                             onClick={() => {
                                                                 setIsSelectedReportMenuOpen(false);
-                                                                printService.printHtmlContent(selectedReport.content, selectedReport.title);
+                                                                printService.printReport(
+                                                                    enhanceReportHtml(selectedReport.content),
+                                                                    selectedReport.title,
+                                                                    'GEO-REP',
+                                                                    { showHeader: false, showFooter: false }
+                                                                );
                                                             }}
                                                             className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
                                                         >

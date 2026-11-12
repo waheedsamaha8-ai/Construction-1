@@ -260,29 +260,39 @@ export const printService = {
                     ${contentHTML}
                 </div>
                 <script>
-                    window.onload = function() {
-                        const images = document.getElementsByTagName('img');
-                        let loaded = 0;
-                        if (images.length === 0) {
-                            window.parent.postMessage({ type: 'PRINT_READY', id: window.frameElement.id }, '*');
-                        } else {
-                            for (let i = 0; i < images.length; i++) {
-                                if (images[i].complete) {
-                                    loaded++;
-                                } else {
-                                    images[i].onload = () => {
-                                        loaded++;
-                                        if (loaded === images.length) window.parent.postMessage({ type: 'PRINT_READY', id: window.frameElement.id }, '*');
-                                    };
-                                    images[i].onerror = () => {
-                                        loaded++;
-                                        if (loaded === images.length) window.parent.postMessage({ type: 'PRINT_READY', id: window.frameElement.id }, '*');
-                                    };
-                                }
-                            }
-                            if (loaded === images.length) window.parent.postMessage({ type: 'PRINT_READY', id: window.frameElement.id }, '*');
+                    (function() {
+                        var printed = false;
+                        function notifyReady() {
+                            if (printed) return;
+                            printed = true;
+                            window.parent.postMessage({ type: 'PRINT_READY', id: '${iframe.id}' }, '*');
                         }
-                    };
+                        function checkImages() {
+                            var images = document.getElementsByTagName('img');
+                            var loaded = 0;
+                            if (images.length === 0) {
+                                notifyReady();
+                            } else {
+                                for (var i = 0; i < images.length; i++) {
+                                    if (images[i].complete) {
+                                        loaded++;
+                                    } else {
+                                        images[i].onload = function() {
+                                            loaded++;
+                                            if (loaded === images.length) notifyReady();
+                                        };
+                                        images[i].onerror = function() {
+                                            loaded++;
+                                            if (loaded === images.length) notifyReady();
+                                        };
+                                    }
+                                }
+                                if (loaded === images.length) notifyReady();
+                            }
+                        }
+                        window.onload = checkImages;
+                        setTimeout(checkImages, 350);
+                    })();
                 </script>
             </body>
             </html>
@@ -304,7 +314,7 @@ export const printService = {
                             }
                         }, 60000); 
                     }
-                }, 500); 
+                }, 300); 
             }
         };
         window.addEventListener('message', handleMessage);
@@ -312,6 +322,14 @@ export const printService = {
         doc.open();
         doc.write(fullHTML);
         doc.close();
+    },
+
+    printHtmlContent: (contentHTML: string, title: string = 'مستند هندسي', options: PrintOptions = {}) => {
+        printService.printReport(contentHTML, title, undefined, {
+            showHeader: false,
+            showFooter: false,
+            ...options
+        });
     },
 
     printReport: (bodyContent: string, reportTitle: string, projectRef?: string, options: PrintOptions = {}) => {
