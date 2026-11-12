@@ -13,8 +13,10 @@ import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult
 
 interface ProjectAIProps {
   projectId: string;
-  folderId: string;
+  folderId?: string;
+  projectData?: Project | null;
   onClose: () => void;
+  onProjectUpdated?: (project: Project) => void;
 }
 
 // CONSOLIDATED AGENT TYPES (4 Power Agents)
@@ -84,13 +86,13 @@ const AGENT_CONFIG: Record<AgentType, { title: string, icon: string, color: stri
     }
 };
 
-const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) => {
+const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', projectData = null, onClose, onProjectUpdated }) => {
   const navigate = useNavigate();
   const [activeAgent, setActiveAgent] = useState<AgentType | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [fullProjectData, setFullProjectData] = useState<Project | null>(null); 
+  const [fullProjectData, setFullProjectData] = useState<Project | null>(projectData || null); 
   
   // Archiving & Report Menu State
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
@@ -123,8 +125,17 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
+  useEffect(() => {
+    if (projectData) {
+      setFullProjectData(projectData);
+    }
+  }, [projectData]);
+
+  useEffect(() => {
     const loadData = async () => {
+        if (projectData && (projectData.boqItems?.length || projectData.executionLogs?.length || projectData.payments?.length)) {
+            return;
+        }
         setIsLoading(true);
         try {
             // CRITICAL: Use getProjectById to fetch FULL data (Log sub-collection + Main Doc)
@@ -136,7 +147,7 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
         } catch (e) { console.error("Context Load Error", e); } finally { setIsLoading(false); }
     };
     loadData();
-  }, [projectId, folderId]);
+  }, [projectId, folderId, projectData]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, activeAgent, isLoading]);
 
@@ -200,13 +211,15 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId, onClose }) =
   const handleOpenArchiveModal = (content: string, index: number) => { setContentToArchive(content); setArchiveTitle(`استشارة - ${new Date().toLocaleDateString('ar-EG')}`); setTargetMessageIndex(index); setArchiveModalOpen(true); };
   const confirmArchive = async () => { if (!contentToArchive) return; setIsSaving(true); try { const cat = await aiHelper.classifyArchiveCategory(contentToArchive); const fileId = await api.saveToArchive(archiveTitle, contentToArchive, cat); if (targetMessageIndex !== null) { setMessages(prev => prev.map((m, i) => i === targetMessageIndex ? { ...m, isSaved: true, savedFileId: fileId } : m)); } alert(`تم الحفظ في: ${cat}`); setArchiveModalOpen(false); } catch(e) { alert("فشل الحفظ."); } finally { setIsSaving(false); } };
   const handleEditAsLetter = (content: string, fileId?: string) => { if (fileId) { api.getFileMetadata(fileId).then(meta => { if (meta) { navigate(`/editor/${projectId}/${meta.parentId}?fileId=${fileId}`); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); } }).catch(() => { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); }); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); } };
-  const handlePrintResponse = (content: string, type: string) => { printService.printReport(content, "تقرير استشاري", "PROJ-AI"); };
+  const handlePrintResponse = (content: string, type: string) => { 
+      printService.printReport(content, "تقرير استشاري", "PROJ-AI", { showHeader: false, showFooter: false }); 
+  };
   const handleCopyText = (content: string) => { const tempDiv = document.createElement("div"); tempDiv.innerHTML = content; navigator.clipboard.writeText(tempDiv.textContent || ""); alert("تم النسخ"); };
 
   const handleGenerateReport = async (startDate: string, endDate: string, reportType: string, title: string) => {
       setIsGeneratingReport(true);
       try {
-          const fullProject = fullProjectData || await api.getProjectById(projectId);
+          const fullProject = fullProjectData || projectData || await api.getProjectById(projectId);
           const logs = fullProject?.executionLogs || [];
           const filteredLogs = logs.filter(log => {
               const logDate = new Date(log.date);

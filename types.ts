@@ -50,6 +50,7 @@ export interface ProjectLog {
   boqItemCode?: string;
   boqItemDescription?: string;
   boqBatchName?: string;
+  workCategory?: string;
 }
 
 export interface PaymentItem {

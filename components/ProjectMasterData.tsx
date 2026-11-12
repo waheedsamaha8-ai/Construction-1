@@ -12,6 +12,7 @@ import { ReportGenerator } from '../services/reportGenerator';
 import { Project, ProjectLog, ProjectPayment, BOQItem, BOQItemReportType, BOQItemSavedReport, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
 import html2canvas from 'html2canvas';
 import InteractiveReportViewer, { formatInteractiveReportHtml, applyTableColumnWidthToHtml } from './InteractiveReportViewer';
+import ProjectAI from './ProjectAI';
 
 interface ProjectMasterDataProps {
     projectId: string;
@@ -62,6 +63,30 @@ const enhanceReportHtml = (rawHtml: string): string => {
     return formatInteractiveReportHtml(rawHtml);
 };
 
+// بنود وأنواع الأعمال الهندسية القياسية المختصرة
+const DEFAULT_WORK_CATEGORIES: { name: string; icon: string; stage: string }[] = [
+    { name: 'أعمال الحفر', icon: 'fa-trowel-bricks', stage: 'الترابية' },
+    { name: 'أعمال الإحلال', icon: 'fa-cubes', stage: 'الترابية' },
+    { name: 'أعمال الخرسانة', icon: 'fa-bars', stage: 'الإنشائية' },
+    { name: 'أعمال الخرسانة العادية', icon: 'fa-cubes', stage: 'الأساسات' },
+    { name: 'أعمال الخرسانة المسلحة', icon: 'fa-layer-group', stage: 'الأساسات والهيكل' },
+    { name: 'أعمال المباني', icon: 'fa-border-all', stage: 'المباني' },
+    { name: 'أعمال العزل', icon: 'fa-shield-halved', stage: 'العزل' },
+    { name: 'أعمال المحارة', icon: 'fa-paint-roller', stage: 'تشطيبات' },
+    { name: 'أعمال السيراميك', icon: 'fa-table-cells-large', stage: 'تشطيبات' },
+    { name: 'أعمال الرخام', icon: 'fa-gem', stage: 'تشطيبات' },
+    { name: 'أعمال الدهانات', icon: 'fa-palette', stage: 'تشطيبات' },
+    { name: 'أعمال السباكة', icon: 'fa-faucet-drip', stage: 'كهروميكانيك' },
+    { name: 'أعمال الكهرباء', icon: 'fa-bolt', stage: 'كهروميكانيك' },
+    { name: 'أعمال الجبس بورد', icon: 'fa-square-full', stage: 'تشطيبات' },
+    { name: 'أعمال النجارة', icon: 'fa-door-open', stage: 'تشطيبات' },
+    { name: 'أعمال الألوميتال', icon: 'fa-window-maximize', stage: 'تشطيبات' },
+    { name: 'أعمال الحدادة', icon: 'fa-shield-cat', stage: 'تخصصية' },
+    { name: 'أعمال التكييف', icon: 'fa-fan', stage: 'كهروميكانيك' },
+    { name: 'أعمال اللاندسكيب', icon: 'fa-tree', stage: 'الموقع العام' },
+    { name: 'أعمال الاستلامات', icon: 'fa-clipboard-check', stage: 'ضبط الجودة' }
+];
+
 export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onProjectUpdated, onOpenAI }: ProjectMasterDataProps) {
     const navigate = useNavigate();
     
@@ -72,6 +97,9 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     // Report Modal State
     const [showReportModal, setShowReportModal] = useState(false);
     const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+    const [showProjectAI, setShowProjectAI] = useState(false);
+    const [isBoqCompact, setIsBoqCompact] = useState(false);
+    const [activeReorderMenuId, setActiveReorderMenuId] = useState<string | null>(null);
     
     const seedProject = useMemo(() => {
         if (initialProjectData && ((initialProjectData.boqItems && initialProjectData.boqItems.length > 0) || (initialProjectData.payments && initialProjectData.payments.length > 0) || (initialProjectData.executionLogs && initialProjectData.executionLogs.length > 0))) {
@@ -233,7 +261,99 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [tempEditLogDate, setTempEditLogDate] = useState('');
     const [tempEditLogImages, setTempEditLogImages] = useState<string[]>([]);
     const [tempEditLogBoqItemId, setTempEditLogBoqItemId] = useState<string>('');
+    const [tempEditLogWorkCategory, setTempEditLogWorkCategory] = useState<string>('');
     const [selectedLogBoqItemId, setSelectedLogBoqItemId] = useState<string>('');
+    const [selectedWorkCategory, setSelectedWorkCategory] = useState<string>('');
+    const [isWorkCategoryDropdownOpen, setIsWorkCategoryDropdownOpen] = useState<boolean>(false);
+    const [editingCategoryName, setEditingCategoryName] = useState<string | null>(null);
+    const [editCategoryInputValue, setEditCategoryInputValue] = useState<string>('');
+    const [showWorkCategoryModal, setShowWorkCategoryModal] = useState<boolean>(false);
+    const [workCategorySearch, setWorkCategorySearch] = useState<string>('');
+    const [newCustomCategoryInput, setNewCustomCategoryInput] = useState<string>('');
+    const [whatsappShareModalLog, setWhatsappShareModalLog] = useState<ProjectLog | null>(null);
+    const [isPreparingShare, setIsPreparingShare] = useState<boolean>(false);
+    const [customWorkCategories, setCustomWorkCategories] = useState<string[]>(() => {
+        try {
+            const saved = localStorage.getItem(`custom_work_cats_${projectId}`);
+            return saved ? JSON.parse(saved) : [];
+        } catch {
+            return [];
+        }
+    });
+
+    const handleAddCustomWorkCategory = (categoryName: string) => {
+        const trimmed = categoryName.trim();
+        if (!trimmed) return;
+        if (!customWorkCategories.includes(trimmed) && !DEFAULT_WORK_CATEGORIES.some(c => c.name === trimmed)) {
+            const updated = [...customWorkCategories, trimmed];
+            setCustomWorkCategories(updated);
+            try {
+                localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated));
+            } catch (e) {
+                console.error(e);
+            }
+        }
+        setSelectedWorkCategory(trimmed);
+        setNewCustomCategoryInput('');
+        setShowWorkCategoryModal(false);
+    };
+
+    const handleUpdateCustomWorkCategory = (oldName: string, newName: string) => {
+        const trimmed = newName.trim();
+        if (!trimmed || trimmed === oldName) {
+            setEditingCategoryName(null);
+            return;
+        }
+        const updated = customWorkCategories.map(c => c === oldName ? trimmed : c);
+        setCustomWorkCategories(updated);
+        try {
+            localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated));
+        } catch (e) {
+            console.error(e);
+        }
+        if (selectedWorkCategory === oldName) {
+            setSelectedWorkCategory(trimmed);
+        }
+        // Update existing logs with this category
+        const updatedLogs = masterData.logs.map(l => l.workCategory === oldName ? { ...l, workCategory: trimmed } : l);
+        const newData = { ...masterData, logs: updatedLogs };
+        setMasterData(newData);
+        triggerAutoSave(newData);
+
+        setEditingCategoryName(null);
+        setEditCategoryInputValue('');
+    };
+
+    const handleDeleteCustomWorkCategory = (categoryName: string) => {
+        const updated = customWorkCategories.filter(c => c !== categoryName);
+        setCustomWorkCategories(updated);
+        try {
+            localStorage.setItem(`custom_work_cats_${projectId}`, JSON.stringify(updated));
+        } catch (e) {
+            console.error(e);
+        }
+        if (selectedWorkCategory === categoryName) {
+            setSelectedWorkCategory('');
+        }
+    };
+
+    const allWorkCategories = useMemo(() => {
+        const standard = DEFAULT_WORK_CATEGORIES.map(c => ({ ...c, isCustom: false }));
+        const custom = customWorkCategories.map(name => ({
+            name,
+            icon: 'fa-trowel',
+            stage: 'بنود مخصصة إضافية',
+            isCustom: true
+        }));
+        return [...standard, ...custom];
+    }, [customWorkCategories]);
+
+    const filteredWorkCategories = useMemo(() => {
+        if (!workCategorySearch.trim()) return allWorkCategories;
+        const q = workCategorySearch.trim().toLowerCase();
+        return allWorkCategories.filter(c => c.name.toLowerCase().includes(q) || c.stage.toLowerCase().includes(q));
+    }, [allWorkCategories, workCategorySearch]);
+
     const [viewingBoqLogsItem, setViewingBoqLogsItem] = useState<BOQItem | null>(null);
     const [logToDeleteId, setLogToDeleteId] = useState<string | null>(null);
     
@@ -735,6 +855,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             date: masterData.logDate || new Date().toISOString().split('T')[0], 
             content: masterData.newLog,
             images: logImages,
+            workCategory: selectedWorkCategory || undefined,
             ...(linkedBoq ? {
                 boqItemId: linkedBoq.id,
                 boqItemCode: linkedBoq.itemCode,
@@ -750,6 +871,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setMasterData(newData);
         setLogImages([]); 
         setSelectedLogBoqItemId('');
+        setSelectedWorkCategory('');
         
         // 2. Indicate Saving Background
         setAutoSaveStatus('saving');
@@ -776,10 +898,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         return (lastSpace > 35 ? sliced.slice(0, lastSpace) : sliced).trim() + '...';
     };
 
-    const shareLogToWhatsApp = async (log: ProjectLog) => {
+    const executeShareAsImage = async (log: ProjectLog) => {
+        setIsPreparingShare(true);
         const elementId = `log-card-${log.id}`;
         const element = document.getElementById(elementId);
-        if (!element) return;
+        if (!element) {
+            setIsPreparingShare(false);
+            return;
+        }
 
         try {
             // Add a temporary class to hide action buttons during capture
@@ -829,6 +955,43 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         boqBadge.style.paddingBottom = '10px';
                         boqBadge.style.overflow = 'visible';
                     }
+
+                    // 3. Make calendar icon, date rectangle, and work category rectangle on ONE SINGLE ROW upon export
+                    const clonedHeaderLeft = clonedEl.querySelector('.log-card-header-left') as HTMLElement | null;
+                    const clonedWrapper = clonedEl.querySelector('.log-date-category-wrapper') as HTMLElement | null;
+                    const clonedDateBox = clonedEl.querySelector('.log-date-box') as HTMLElement | null;
+                    const clonedCatBox = clonedEl.querySelector('.log-category-box') as HTMLElement | null;
+
+                    if (clonedWrapper) {
+                        clonedWrapper.style.display = 'flex';
+                        clonedWrapper.style.flexDirection = 'row';
+                        clonedWrapper.style.alignItems = 'center';
+                        clonedWrapper.style.gap = '8px';
+                        clonedWrapper.style.minWidth = 'auto';
+                        clonedWrapper.style.width = 'auto';
+                    }
+
+                    if (clonedDateBox) {
+                        clonedDateBox.style.width = 'auto';
+                        clonedDateBox.style.minWidth = '130px';
+                        clonedDateBox.style.height = '32px';
+                    }
+
+                    if (clonedCatBox) {
+                        clonedCatBox.style.width = 'auto';
+                        clonedCatBox.style.minWidth = 'auto';
+                        clonedCatBox.style.paddingLeft = '12px';
+                        clonedCatBox.style.paddingRight = '12px';
+                        clonedCatBox.style.height = '32px';
+                        clonedCatBox.style.whiteSpace = 'nowrap';
+                    }
+
+                    if (clonedHeaderLeft) {
+                        clonedHeaderLeft.style.display = 'flex';
+                        clonedHeaderLeft.style.flexDirection = 'row';
+                        clonedHeaderLeft.style.alignItems = 'center';
+                        clonedHeaderLeft.style.gap = '8px';
+                    }
                 }
             });
             
@@ -839,7 +1002,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             const contractorTitle = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || '';
 
             canvas.toBlob(async (blob) => {
-                if (!blob) return;
+                if (!blob) {
+                    setIsPreparingShare(false);
+                    return;
+                }
                 
                 const file = new File([blob], `log_${log.date}.png`, { type: 'image/png' });
                 
@@ -851,8 +1017,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             text: `يومية مشروع: ${projTitle}${contractorTitle ? `\nالمقاول: ${contractorTitle}` : ''}\nالتاريخ: ${log.date}`,
                             files: [file]
                         });
+                        setIsPreparingShare(false);
+                        setWhatsappShareModalLog(null);
                         return;
-                    } catch (error) {
+                    } catch (error: any) {
+                        if (error?.name === 'AbortError') {
+                            setIsPreparingShare(false);
+                            setWhatsappShareModalLog(null);
+                            return;
+                        }
                         console.log('Share canceled or failed', error);
                     }
                 }
@@ -871,14 +1044,119 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 alert('تم حفظ صورة اليومية في جهازك. سيتم فتح الواتساب الآن لمشاركتها.');
                 
                 // Optional: Open WhatsApp with text (user still needs to attach the downloaded image)
-                const text = `*يومية مشروع: ${projTitle}*${contractorTitle ? `\n*المقاول:* ${contractorTitle}` : ''}\n*التاريخ:* ${log.date}\n*البيان:* ${log.content}`;
+                const text = `*يومية مشروع: ${projTitle}*${contractorTitle ? `\n*المقاول:* ${contractorTitle}` : ''}\n*التاريخ:* ${log.date}${log.workCategory ? `\n*نوع العمل:* ${log.workCategory}` : ''}\n*البيان:* ${log.content}`;
                 window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+                setIsPreparingShare(false);
+                setWhatsappShareModalLog(null);
                 
             }, 'image/png');
         } catch (error) {
             console.error("Error generating image:", error);
             alert("حدث خطأ أثناء تجهيز الصورة للمشاركة.");
+            setIsPreparingShare(false);
         }
+    };
+
+    const executeShareAsText = async (log: ProjectLog) => {
+        setIsPreparingShare(true);
+        const projTitle = masterData.projectName || seedProject?.name || initialProjectData?.name || '';
+        const contractorTitle = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || '';
+        const matchedBoq = log.boqItemId ? masterData.boqItems.find(b => b.id === log.boqItemId) : undefined;
+        const boqCode = log.boqItemCode || matchedBoq?.itemCode;
+        const boqDesc = log.boqItemDescription || matchedBoq?.description;
+
+        let text = `📋 *سجل يومية مشروع:* ${projTitle}\n`;
+        if (contractorTitle) {
+            text += `🏢 *المقاول:* ${contractorTitle}\n`;
+        }
+        text += `📅 *التاريخ:* ${log.date}\n`;
+        if (log.workCategory) {
+            text += `🏗️ *نوع العمل:* ${log.workCategory}\n`;
+        }
+        if (boqCode || boqDesc) {
+            text += `🔗 *بند المقايسة:* (${boqCode || '-'}) ${getShortBoqText(boqDesc || '', 60)}\n`;
+        }
+        text += `\n📝 *بيان الأعمال والتنفيذ:*\n${log.content}\n`;
+
+        if (log.images && log.images.length > 0) {
+            text += `\n📷 *عدد الصور المرفقة:* ${log.images.length} صور\n`;
+        }
+
+        try {
+            const filesToShare: File[] = [];
+            if (log.images && log.images.length > 0) {
+                for (let i = 0; i < log.images.length; i++) {
+                    const img = log.images[i];
+                    try {
+                        const res = await fetch(img);
+                        const blob = await res.blob();
+                        const ext = blob.type.includes('png') ? 'png' : 'jpg';
+                        const file = new File([blob], `log_${log.date}_img_${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
+                        filesToShare.push(file);
+                    } catch (e) {
+                        console.error('Error fetching image for share:', e);
+                    }
+                }
+            }
+
+            if (filesToShare.length > 0 && navigator.canShare && navigator.canShare({ files: filesToShare })) {
+                await navigator.share({
+                    title: `يومية مشروع: ${projTitle}`,
+                    text: text,
+                    files: filesToShare
+                });
+                setIsPreparingShare(false);
+                setWhatsappShareModalLog(null);
+                return;
+            } else if (navigator.canShare && navigator.canShare({ text })) {
+                await navigator.share({
+                    title: `يومية مشروع: ${projTitle}`,
+                    text: text
+                });
+                if (filesToShare.length > 0) {
+                    filesToShare.forEach((file) => {
+                        const url = URL.createObjectURL(file);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = file.name;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    });
+                }
+                setIsPreparingShare(false);
+                setWhatsappShareModalLog(null);
+                return;
+            }
+        } catch (err: any) {
+            if (err?.name === 'AbortError') {
+                setIsPreparingShare(false);
+                setWhatsappShareModalLog(null);
+                return;
+            }
+            console.warn('Native share not completed:', err);
+        }
+
+        if (log.images && log.images.length > 0) {
+            log.images.forEach((img, idx) => {
+                const a = document.createElement('a');
+                a.href = img;
+                a.download = `log_${log.date}_img_${idx + 1}.jpg`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            });
+            alert(`تم تجهيز نص اليومية وتنزيل ${log.images.length} صورة على جهازك. سيتم فتح واتساب الآن لتتمكن من إرسال الرسالة وإرفاق الصور.`);
+        }
+
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+        setIsPreparingShare(false);
+        setWhatsappShareModalLog(null);
+    };
+
+    const shareLogToWhatsApp = (log: ProjectLog) => {
+        setWhatsappShareModalLog(log);
     };
 
     const confirmDeleteLog = async () => { 
@@ -922,6 +1200,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             content: tempEditLogContent,
             date: tempEditLogDate,
             images: tempEditLogImages,
+            workCategory: tempEditLogWorkCategory || undefined,
             boqItemId: linkedBoq ? linkedBoq.id : undefined,
             boqItemCode: linkedBoq ? linkedBoq.itemCode : undefined,
             boqItemDescription: linkedBoq ? linkedBoq.description : undefined,
@@ -934,6 +1213,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setMasterData(newData); 
         setEditingLogId(null); 
         setTempEditLogBoqItemId('');
+        setTempEditLogWorkCategory('');
         
         setAutoSaveStatus('saving');
         try {
@@ -2527,16 +2807,17 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setEditingItemType(null);
     };
 
-    // --- SOIL & REPORTS LOGIC (UPDATED MULTI-CARD SYSTEM) ---
+    // --- REPORTS & DOCUMENTS LOGIC (UNIVERSAL MULTI-CARD SYSTEM) ---
     const analyzeSoilFile = async (file: Blob) => { 
         setIsAnalyzingSoil(true); 
         try { 
-            const analysisHtml = await aiHelper.analyzeSoilReport(file); 
+            const result = await aiHelper.analyzeUniversalProjectDocument(file); 
             const newReport: EngineeringReportItem = {
                 id: `rep_${Date.now()}`,
-                type: 'soil',
-                title: `تقرير جسات - ${new Date().toLocaleDateString('ar-EG')}`,
-                content: analysisHtml,
+                type: (result.type as any) || 'doc',
+                title: result.title || `مستند مشروع - ${new Date().toLocaleDateString('ar-EG')}`,
+                summary: result.summary,
+                content: result.content,
                 date: new Date().toISOString()
             };
             
@@ -2548,12 +2829,40 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             
             setMasterData(newData); 
             triggerAutoSave(newData);
-            alert("تم تحليل التقرير وإضافته للكروت.");
+            alert(`تم تحليل المستند بنجاح: "${newReport.title}" وإضافته للكروت.`);
         } catch (e) { 
-            alert("فشل تحليل تقرير التربة."); 
+            alert("فشل تحليل المستند."); 
         } finally { 
             setIsAnalyzingSoil(false); 
         } 
+    };
+
+    // Reorder reports cards (تحريك الكروت لأعلى / لأسفل / للبداية / للنهاية)
+    const moveReportOrder = (reportId: string, direction: 'up' | 'down' | 'top' | 'bottom') => {
+        const list = [...(masterData.engineeringReports || [])];
+        const index = list.findIndex(r => r.id === reportId);
+        if (index === -1) return;
+
+        if (direction === 'up' && index > 0) {
+            const temp = list[index];
+            list[index] = list[index - 1];
+            list[index - 1] = temp;
+        } else if (direction === 'down' && index < list.length - 1) {
+            const temp = list[index];
+            list[index] = list[index + 1];
+            list[index + 1] = temp;
+        } else if (direction === 'top' && index > 0) {
+            const item = list.splice(index, 1)[0];
+            list.unshift(item);
+        } else if (direction === 'bottom' && index < list.length - 1) {
+            const item = list.splice(index, 1)[0];
+            list.push(item);
+        }
+
+        const newData = { ...masterData, engineeringReports: list };
+        setMasterData(newData);
+        triggerAutoSave(newData);
+        setActiveReorderMenuId(null);
     };
 
     const handleSoilAnalysis = async (e: React.ChangeEvent<HTMLInputElement>) => { 
@@ -2669,16 +2978,136 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         } catch(e) { alert("حدث خطأ أثناء تحميل الملفات من التطبيق."); } finally { setIsProcessingPicker(false); } 
     };
     const handleSourceChoice = (source: 'device' | 'camera' | 'app') => { const mode = sourceModal?.type; if (source === 'app') { handleOpenAppPicker(); return; } setSourceModal(null); if (source === 'camera') { if (mode === 'log') logCameraInputRef.current?.click(); else if (mode === 'editLog') editLogCameraInputRef.current?.click(); else if (mode === 'payment') paymentCameraRef.current?.click(); else if (mode === 'boq') boqCameraRef.current?.click(); else if (mode === 'soil') soilCameraRef.current?.click(); } else { if (mode === 'log') logImageInputRef.current?.click(); else if (mode === 'editLog') editLogImageInputRef.current?.click(); else if (mode === 'payment') paymentFileRef.current?.click(); else if (mode === 'boq') boqImageRef.current?.click(); else if (mode === 'soil') soilReportInputRef.current?.click(); } };
+    // تنسيقات وألوان مخصصة ومميزة لكل نوع من أنواع الأعمال
+    const getLogTheme = (category?: string, index: number = 0) => {
+        if (!category) {
+            const fallbackColors = [
+                { card: 'bg-gradient-to-br from-blue-100/95 via-blue-50/90 to-white border-blue-600 shadow-md shadow-blue-200/40', badge: 'bg-blue-600 text-white border-blue-700' },
+                { card: 'bg-gradient-to-br from-emerald-100/95 via-emerald-50/90 to-white border-emerald-600 shadow-md shadow-emerald-200/40', badge: 'bg-emerald-600 text-white border-emerald-700' },
+                { card: 'bg-gradient-to-br from-amber-100/95 via-amber-50/90 to-white border-amber-600 shadow-md shadow-amber-200/40', badge: 'bg-amber-600 text-white border-amber-700' },
+                { card: 'bg-gradient-to-br from-purple-100/95 via-purple-50/90 to-white border-purple-600 shadow-md shadow-purple-200/40', badge: 'bg-purple-600 text-white border-purple-700' }
+            ];
+            return fallbackColors[index % fallbackColors.length];
+        }
+
+        switch (category) {
+            case 'أعمال الحفر':
+                return {
+                    card: 'bg-gradient-to-br from-amber-100 via-amber-50 to-white border-amber-600 shadow-md shadow-amber-200/50',
+                    badge: 'bg-amber-600 text-white border-amber-700'
+                };
+            case 'أعمال الإحلال':
+                return {
+                    card: 'bg-gradient-to-br from-orange-100 via-orange-50 to-white border-orange-600 shadow-md shadow-orange-200/50',
+                    badge: 'bg-orange-600 text-white border-orange-700'
+                };
+            case 'أعمال الخرسانة':
+                return {
+                    card: 'bg-gradient-to-br from-blue-100 via-blue-50 to-white border-blue-600 shadow-md shadow-blue-200/50',
+                    badge: 'bg-blue-600 text-white border-blue-700'
+                };
+            case 'أعمال الخرسانة العادية':
+                return {
+                    card: 'bg-gradient-to-br from-slate-200 via-slate-100 to-white border-slate-600 shadow-md shadow-slate-200/50',
+                    badge: 'bg-slate-700 text-white border-slate-800'
+                };
+            case 'أعمال الخرسانة المسلحة':
+                return {
+                    card: 'bg-gradient-to-br from-indigo-100 via-indigo-50 to-white border-indigo-700 shadow-md shadow-indigo-200/50',
+                    badge: 'bg-indigo-700 text-white border-indigo-800'
+                };
+            case 'أعمال المباني':
+                return {
+                    card: 'bg-gradient-to-br from-red-100 via-red-50 to-white border-red-600 shadow-md shadow-red-200/50',
+                    badge: 'bg-red-600 text-white border-red-700'
+                };
+            case 'أعمال العزل':
+                return {
+                    card: 'bg-gradient-to-br from-teal-100 via-teal-50 to-white border-teal-600 shadow-md shadow-teal-200/50',
+                    badge: 'bg-teal-600 text-white border-teal-700'
+                };
+            case 'أعمال المحارة':
+                return {
+                    card: 'bg-gradient-to-br from-stone-200 via-stone-100 to-white border-stone-600 shadow-md shadow-stone-200/50',
+                    badge: 'bg-stone-700 text-white border-stone-800'
+                };
+            case 'أعمال السيراميك':
+                return {
+                    card: 'bg-gradient-to-br from-emerald-100 via-emerald-50 to-white border-emerald-600 shadow-md shadow-emerald-200/50',
+                    badge: 'bg-emerald-600 text-white border-emerald-700'
+                };
+            case 'أعمال الرخام':
+                return {
+                    card: 'bg-gradient-to-br from-purple-100 via-purple-50 to-white border-purple-600 shadow-md shadow-purple-200/50',
+                    badge: 'bg-purple-600 text-white border-purple-700'
+                };
+            case 'أعمال الدهانات':
+                return {
+                    card: 'bg-gradient-to-br from-cyan-100 via-cyan-50 to-white border-cyan-600 shadow-md shadow-cyan-200/50',
+                    badge: 'bg-cyan-600 text-white border-cyan-700'
+                };
+            case 'أعمال السباكة':
+                return {
+                    card: 'bg-gradient-to-br from-sky-100 via-sky-50 to-white border-sky-600 shadow-md shadow-sky-200/50',
+                    badge: 'bg-sky-600 text-white border-sky-700'
+                };
+            case 'أعمال الكهرباء':
+                return {
+                    card: 'bg-gradient-to-br from-yellow-100 via-amber-50 to-white border-yellow-600 shadow-md shadow-yellow-200/50',
+                    badge: 'bg-yellow-600 text-white border-yellow-700'
+                };
+            case 'أعمال الجبس بورد':
+                return {
+                    card: 'bg-gradient-to-br from-pink-100 via-pink-50 to-white border-pink-600 shadow-md shadow-pink-200/50',
+                    badge: 'bg-pink-600 text-white border-pink-700'
+                };
+            case 'أعمال النجارة':
+                return {
+                    card: 'bg-gradient-to-br from-amber-200 via-amber-100 to-white border-amber-800 shadow-md shadow-amber-300/50',
+                    badge: 'bg-amber-800 text-white border-amber-900'
+                };
+            case 'أعمال الألوميتال':
+                return {
+                    card: 'bg-gradient-to-br from-zinc-200 via-zinc-100 to-white border-zinc-600 shadow-md shadow-zinc-200/50',
+                    badge: 'bg-zinc-700 text-white border-zinc-800'
+                };
+            case 'أعمال الحدادة':
+                return {
+                    card: 'bg-gradient-to-br from-slate-300 via-slate-100 to-white border-slate-800 shadow-md shadow-slate-300/50',
+                    badge: 'bg-slate-800 text-white border-black'
+                };
+            case 'أعمال التكييف':
+                return {
+                    card: 'bg-gradient-to-br from-teal-100 via-cyan-50 to-white border-teal-500 shadow-md shadow-teal-200/50',
+                    badge: 'bg-teal-600 text-white border-teal-700'
+                };
+            case 'أعمال اللاندسكيب':
+                return {
+                    card: 'bg-gradient-to-br from-green-100 via-emerald-50 to-white border-green-600 shadow-md shadow-green-200/50',
+                    badge: 'bg-green-600 text-white border-green-700'
+                };
+            case 'أعمال الاستلامات':
+                return {
+                    card: 'bg-gradient-to-br from-fuchsia-100 via-purple-50 to-white border-fuchsia-600 shadow-md shadow-fuchsia-200/50',
+                    badge: 'bg-fuchsia-600 text-white border-fuchsia-700'
+                };
+            default: {
+                const palettes = [
+                    { card: 'bg-gradient-to-br from-rose-100 via-rose-50 to-white border-rose-600 shadow-md shadow-rose-200/50', badge: 'bg-rose-600 text-white border-rose-700' },
+                    { card: 'bg-gradient-to-br from-violet-100 via-violet-50 to-white border-violet-600 shadow-md shadow-violet-200/50', badge: 'bg-violet-600 text-white border-violet-700' },
+                    { card: 'bg-gradient-to-br from-lime-100 via-lime-50 to-white border-lime-600 shadow-md shadow-lime-200/50', badge: 'bg-lime-600 text-white border-lime-700' },
+                    { card: 'bg-gradient-to-br from-cyan-100 via-cyan-50 to-white border-cyan-600 shadow-md shadow-cyan-200/50', badge: 'bg-cyan-600 text-white border-cyan-700' },
+                    { card: 'bg-gradient-to-br from-orange-100 via-orange-50 to-white border-orange-600 shadow-md shadow-orange-200/50', badge: 'bg-orange-600 text-white border-orange-700' }
+                ];
+                let hash = 0;
+                for (let i = 0; i < category.length; i++) hash = category.charCodeAt(i) + ((hash << 5) - hash);
+                return palettes[Math.abs(hash) % palettes.length];
+            }
+        }
+    };
+
     const getCardColor = (index: number) => { 
-        const colors = [
-            'bg-blue-50 border-blue-400', 
-            'bg-emerald-50 border-emerald-400', 
-            'bg-amber-50 border-amber-400', 
-            'bg-purple-50 border-purple-400', 
-            'bg-rose-50 border-rose-400', 
-            'bg-cyan-50 border-cyan-400'
-        ]; 
-        return colors[index % colors.length]; 
+        return getLogTheme(undefined, index).card;
     };
 
     const boqDerivedData = useMemo(() => {
@@ -2690,16 +3119,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         return { groupedItems, batchOrder, grandTotalValue, grandExecutedValue };
     }, [masterData.boqItems]);
 
-    // NEW: Memoize visible logs for Pagination/Lazy Loading
+    // عرض جميع اليوميات كاملة ومباشرة بدون تقييد أو تجزئة (No pagination / Ready instantly)
     const visibleLogs = useMemo(() => {
-        // Ensure logs are sorted if they came unsorted
-        const sorted = sortLogs(masterData.logs);
-        return sorted.slice(0, visibleLogsCount);
-    }, [masterData.logs, visibleLogsCount]);
-
-    const handleLoadMoreLogs = () => {
-        setVisibleLogsCount(prev => prev + 10);
-    };
+        return sortLogs(masterData.logs);
+    }, [masterData.logs]);
 
     const renderBoqTable = () => { 
         const { groupedItems, batchOrder, grandTotalValue, grandExecutedValue } = boqDerivedData;
@@ -2809,7 +3232,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                           </div>
                                       )}
                                   </div>
-                                  <div className="w-full text-base sm:text-lg font-bold text-slate-900 leading-relaxed whitespace-pre-wrap break-words">
+                                  <div 
+                                      className={`w-full font-bold text-slate-900 break-words transition-all ${
+                                          isBoqCompact 
+                                              ? 'line-clamp-2 text-sm leading-snug cursor-pointer hover:text-indigo-700' 
+                                              : 'text-base sm:text-lg leading-relaxed whitespace-pre-wrap'
+                                      }`}
+                                      onClick={() => isBoqCompact && setEditingBoqItem(item)}
+                                      title={isBoqCompact ? 'سرد مختصر (اضغط لتعديل أو قراءة البند بالكامل)' : undefined}
+                                  >
                                       {item.description}
                                   </div>
                                   {!isNote && (
@@ -2975,9 +3406,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         </button>
                     </div>
                     <div className="flex items-center gap-2">
-                        <div className="flex gap-2">
-                            <button onClick={() => { triggerAutoSave(masterData); onClose(); }} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition transform active:scale-90" title="إغلاق وحفظ"><i className="fa-solid fa-times text-sm"></i></button>
-                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setShowProjectAI(true)}
+                            className="w-9 h-9 rounded-full bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-500 hover:to-purple-500 flex items-center justify-center text-white shadow-md hover:shadow-indigo-500/40 transition transform active:scale-90"
+                            title="المركز الاستشاري الموحد"
+                        >
+                            <i className="fa-solid fa-wand-magic-sparkles text-xs"></i>
+                        </button>
+                        <button onClick={() => { triggerAutoSave(masterData); onClose(); }} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition transform active:scale-90" title="إغلاق وحفظ"><i className="fa-solid fa-times text-sm"></i></button>
                     </div>
                 </div>
 
@@ -2985,7 +3422,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 <div className="flex border-b border-slate-200 bg-slate-50 overflow-x-auto hide-scrollbar shrink-0">
                     {['logs', 'payments', 'boq', 'soil'].map(tab => (
                         <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex-1 py-3 text-[10px] font-bold transition whitespace-nowrap px-4 ${activeTab === tab ? 'border-b-2 border-blue-600 text-blue-700 bg-white' : 'text-slate-500 hover:bg-slate-100'}`}>
-                            {tab === 'logs' ? 'يوميات' : tab === 'payments' ? 'مستخلصات' : tab === 'boq' ? 'مقايسة' : 'جسات وتقارير'}
+                            {tab === 'logs' ? 'يوميات' : tab === 'payments' ? 'مستخلصات' : tab === 'boq' ? 'مقايسة' : 'تقارير'}
                         </button>
                     ))}
                 </div>
@@ -3009,15 +3446,204 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         <div className="flex flex-col gap-2 pb-20">
                             <div className="bg-white rounded-xl p-2 border border-blue-100 shadow-sm shrink-0">
                                 <div className="flex gap-2 items-center mb-2">
-                                    <input type="date" className="bg-white border border-blue-200 text-xs rounded-lg px-2 py-1.5 outline-none text-slate-700 font-bold w-24" value={masterData.logDate} onChange={(e) => setMasterData({...masterData, logDate: e.target.value})} />
-                                    <button onClick={isRecording ? stopRecording : () => startRecording('log')} className={`w-8 h-8 rounded-lg flex items-center justify-center transition shadow-sm ${isRecording && voiceTarget === 'log' ? 'bg-red-500 text-white animate-pulse' : 'bg-white border border-blue-200 text-blue-600'}`}><i className={`fa-solid ${isRecording && voiceTarget === 'log' ? 'fa-stop' : 'fa-microphone'} text-xs`}></i></button>
-                                    <div className="flex-1"></div>
-                                    <button onClick={() => setSourceModal({ type: 'log', title: 'رفع صورة لليومية' })} className="bg-white border border-blue-200 text-blue-700 px-3 h-8 rounded-lg text-[10px] font-bold hover:bg-blue-50 transition flex items-center justify-center shadow-sm gap-1 shrink-0">
-                                        <i className="fa-solid fa-camera"></i>
+                                    <input type="date" className="bg-white border border-blue-200 text-xs rounded-lg px-2 py-1.5 outline-none text-slate-700 font-bold w-24 shrink-0" value={masterData.logDate} onChange={(e) => setMasterData({...masterData, logDate: e.target.value})} />
+                                    <button onClick={isRecording ? stopRecording : () => startRecording('log')} className={`w-8 h-8 rounded-lg flex items-center justify-center transition shadow-sm shrink-0 ${isRecording && voiceTarget === 'log' ? 'bg-red-500 text-white animate-pulse' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`} title={isRecording && voiceTarget === 'log' ? 'إيقاف التسجيل' : 'تسجيل صوتي'}><i className={`fa-solid ${isRecording && voiceTarget === 'log' ? 'fa-stop' : 'fa-microphone'} text-xs`}></i></button>
+                                    
+                                    {/* خانة نوع العمل: بكامل عرض المساحة بين زر المايك وزر الكاميرا وقائمة منسدلة بدون تمدد */}
+                                    <div className="relative flex-1 min-w-0">
+                                        <button 
+                                            type="button"
+                                            onClick={() => setIsWorkCategoryDropdownOpen(prev => !prev)} 
+                                            className={`w-full h-8 px-2.5 rounded-lg text-xs font-bold transition flex items-center justify-between gap-1 border shadow-xs overflow-hidden ${
+                                                selectedWorkCategory 
+                                                    ? 'bg-amber-500 text-white border-amber-600 shadow-amber-200/50' 
+                                                    : 'bg-white border-blue-200 text-slate-700 hover:bg-slate-50'
+                                            }`}
+                                            title={selectedWorkCategory ? `نوع العمل المختار: ${selectedWorkCategory}` : "اختيار أو إضافة نوع العمل"}
+                                        >
+                                            <span className="truncate flex-1 text-right text-xs leading-none">
+                                                {selectedWorkCategory || 'نوع العمل...'}
+                                            </span>
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                {selectedWorkCategory && (
+                                                    <span 
+                                                        onClick={(e) => { e.stopPropagation(); setSelectedWorkCategory(''); }}
+                                                        className="w-4 h-4 rounded-full bg-white/20 hover:bg-white/40 flex items-center justify-center text-[10px] leading-none text-white cursor-pointer mr-0.5"
+                                                        title="إلغاء التحديد"
+                                                    >
+                                                        ×
+                                                    </span>
+                                                )}
+                                                <i className={`fa-solid fa-chevron-down text-[9px] transition-transform ${isWorkCategoryDropdownOpen ? 'rotate-180' : ''} ${selectedWorkCategory ? 'text-white/80' : 'text-slate-400'}`}></i>
+                                            </div>
+                                        </button>
+
+                                        {/* Dropdown Menu */}
+                                        {isWorkCategoryDropdownOpen && (
+                                            <>
+                                                <div 
+                                                    className="fixed inset-0 z-40" 
+                                                    onClick={() => setIsWorkCategoryDropdownOpen(false)}
+                                                />
+                                                <div className="absolute top-full mt-1.5 right-0 left-0 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 p-1.5 flex flex-col gap-1 max-h-64 overflow-y-auto custom-scrollbar min-w-[200px] animate-scale-in">
+                                                    {/* إضافة نوع عمل جديد */}
+                                                    <div className="flex gap-1 items-center pb-1.5 border-b border-slate-100">
+                                                        <input
+                                                            type="text"
+                                                            placeholder="إضافة نوع عمل جديد..."
+                                                            value={newCustomCategoryInput}
+                                                            onChange={(e) => setNewCustomCategoryInput(e.target.value)}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter' && newCustomCategoryInput.trim()) {
+                                                                    e.preventDefault();
+                                                                    handleAddCustomWorkCategory(newCustomCategoryInput);
+                                                                    setIsWorkCategoryDropdownOpen(false);
+                                                                }
+                                                            }}
+                                                            className="flex-1 text-[10px] px-2 py-1 rounded-lg border border-slate-200 outline-none focus:border-amber-500 font-bold text-slate-800"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                if (newCustomCategoryInput.trim()) {
+                                                                    handleAddCustomWorkCategory(newCustomCategoryInput);
+                                                                    setIsWorkCategoryDropdownOpen(false);
+                                                                }
+                                                            }}
+                                                            disabled={!newCustomCategoryInput.trim()}
+                                                            className="px-2 py-1 bg-amber-500 text-white rounded-lg text-[10px] font-bold hover:bg-amber-600 disabled:opacity-40 shrink-0 transition"
+                                                            title="إضافة وتحديد"
+                                                        >
+                                                            إضافة
+                                                        </button>
+                                                    </div>
+
+                                                    {/* خيار إلغاء التحديد */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setSelectedWorkCategory('');
+                                                            setIsWorkCategoryDropdownOpen(false);
+                                                        }}
+                                                        className={`text-right text-[10px] px-2 py-1 rounded-lg transition font-bold flex items-center justify-between ${
+                                                            !selectedWorkCategory ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:bg-slate-50'
+                                                        }`}
+                                                    >
+                                                        <span>بدون تصنيف (عام)</span>
+                                                        {!selectedWorkCategory && <i className="fa-solid fa-check text-slate-600 text-[9px]"></i>}
+                                                    </button>
+
+                                                    {/* قائمة الأنواع */}
+                                                    <div className="flex flex-col gap-0.5 pt-0.5">
+                                                        {allWorkCategories.map((cat) => {
+                                                            const isSelected = selectedWorkCategory === cat.name;
+                                                            const isCustom = customWorkCategories.includes(cat.name);
+                                                            const isEditingThis = editingCategoryName === cat.name;
+
+                                                            if (isEditingThis) {
+                                                                return (
+                                                                    <div key={cat.name} className="flex items-center gap-1 p-1 bg-amber-50 rounded-lg border border-amber-200">
+                                                                        <input
+                                                                            type="text"
+                                                                            value={editCategoryInputValue}
+                                                                            onChange={(e) => setEditCategoryInputValue(e.target.value)}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === 'Enter') {
+                                                                                    handleUpdateCustomWorkCategory(cat.name, editCategoryInputValue);
+                                                                                } else if (e.key === 'Escape') {
+                                                                                    setEditingCategoryName(null);
+                                                                                }
+                                                                            }}
+                                                                            autoFocus
+                                                                            className="flex-1 text-[10px] px-1.5 py-0.5 rounded bg-white border border-amber-300 font-bold text-slate-800 outline-none"
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleUpdateCustomWorkCategory(cat.name, editCategoryInputValue)}
+                                                                            className="w-5 h-5 rounded bg-emerald-600 text-white flex items-center justify-center text-[9px] hover:bg-emerald-700"
+                                                                            title="حفظ التعديل"
+                                                                        >
+                                                                            <i className="fa-solid fa-check"></i>
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setEditingCategoryName(null)}
+                                                                            className="w-5 h-5 rounded bg-slate-200 text-slate-600 flex items-center justify-center text-[9px] hover:bg-slate-300"
+                                                                            title="إلغاء"
+                                                                        >
+                                                                            <i className="fa-solid fa-times"></i>
+                                                                        </button>
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <div
+                                                                    key={cat.name}
+                                                                    className={`flex items-center justify-between px-2 py-1 rounded-lg text-[10px] font-bold transition group ${
+                                                                        isSelected ? 'bg-amber-500 text-white' : 'text-slate-700 hover:bg-amber-50'
+                                                                    }`}
+                                                                >
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setSelectedWorkCategory(cat.name);
+                                                                            setIsWorkCategoryDropdownOpen(false);
+                                                                        }}
+                                                                        className="flex-1 text-right truncate cursor-pointer text-[10px]"
+                                                                        title={cat.name}
+                                                                    >
+                                                                        <span className="truncate text-[10px]">{cat.name}</span>
+                                                                    </button>
+
+                                                                    <div className="flex items-center gap-1 shrink-0 mr-1">
+                                                                        {isCustom && (
+                                                                            <>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setEditingCategoryName(cat.name);
+                                                                                        setEditCategoryInputValue(cat.name);
+                                                                                    }}
+                                                                                    className={`w-4 h-4 rounded flex items-center justify-center text-[8px] transition ${
+                                                                                        isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+                                                                                    }`}
+                                                                                    title="تعديل هذا النوع"
+                                                                                >
+                                                                                    <i className="fa-solid fa-pen text-[7px]"></i>
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        handleDeleteCustomWorkCategory(cat.name);
+                                                                                    }}
+                                                                                    className={`w-4 h-4 rounded flex items-center justify-center text-[8px] transition ${
+                                                                                        isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
+                                                                                    }`}
+                                                                                    title="حذف هذا النوع"
+                                                                                >
+                                                                                    <i className="fa-solid fa-trash text-[7px]"></i>
+                                                                                </button>
+                                                                            </>
+                                                                        )}
+                                                                        {isSelected && <i className="fa-solid fa-check text-[9px] text-white"></i>}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+
+                                    <button onClick={() => setSourceModal({ type: 'log', title: 'رفع صورة لليومية' })} className="w-8 h-8 rounded-lg bg-white border border-blue-200 text-blue-700 hover:bg-blue-50 transition flex items-center justify-center shadow-sm shrink-0" title="رفع صورة لليومية">
+                                        <i className="fa-solid fa-camera text-xs"></i>
                                     </button>
-                                    <button onClick={addLog} disabled={isUploadingImages} className="bg-blue-600 text-white px-3 h-8 rounded-lg text-[10px] font-bold hover:bg-blue-700 transition flex items-center justify-center shadow-sm gap-1 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed">
-                                        {isUploadingImages ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-plus"></i>} 
-                                        <span>إضافة</span>
+                                    <button onClick={addLog} disabled={isUploadingImages} className="w-8 h-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition flex items-center justify-center shadow-sm shrink-0 disabled:opacity-50 disabled:cursor-not-allowed" title="إضافة اليومية">
+                                        {isUploadingImages ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-plus text-xs"></i>} 
                                     </button>
                                 </div>
 
@@ -3063,11 +3689,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             <div className="space-y-2 pr-1">
                                 {visibleLogs.map((log, idx) => {
                                     const matchedBoqItem = log.boqItemId ? masterData.boqItems.find(b => b.id === log.boqItemId) : undefined;
+                                    const logTheme = getLogTheme(log.workCategory, idx);
                                     return (
                                     <div key={log.id} className="relative group">
                                         {editingLogId === log.id ? (
-                                            <div className="bg-blue-50 p-2 rounded-xl border-2 border-blue-300 shadow-md">
-                                                <input type="date" className="w-full p-2 text-xs bg-white border border-blue-200 rounded-lg mb-2" value={tempEditLogDate} onChange={(e) => setTempEditLogDate(e.target.value)} />
+                                            <div className="bg-blue-50 p-2.5 rounded-xl border-2 border-blue-400 shadow-md">
+                                                <input type="date" className="w-full p-2 text-xs bg-white border border-blue-200 rounded-lg mb-2 font-bold" value={tempEditLogDate} onChange={(e) => setTempEditLogDate(e.target.value)} />
+                                                
+                                                {/* Edit Work Category */}
+                                                <div className="mb-2">
+                                                    <select
+                                                        value={tempEditLogWorkCategory}
+                                                        onChange={(e) => setTempEditLogWorkCategory(e.target.value)}
+                                                        className="w-full p-2 text-xs bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none"
+                                                    >
+                                                        <option value="">⚙️ اختر نوع العمل (اختياري)...</option>
+                                                        {allWorkCategories.map(cat => (
+                                                            <option key={cat.name} value={cat.name}>{cat.name}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+
                                                 {linkableBoqItems.length > 0 && (
                                                     <select
                                                         value={tempEditLogBoqItemId}
@@ -3087,7 +3729,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 <div className="flex justify-between"><button onClick={() => setSourceModal({ type: 'editLog', title: 'إضافة صورة' })} className="text-[10px] text-blue-600 bg-blue-100 px-2 py-1 rounded">إضافة صورة</button><div className="flex gap-2"><button onClick={() => saveEditLog(log.id)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">حفظ</button><button onClick={() => setEditingLogId(null)} className="text-xs bg-white border px-3 py-1 rounded">إلغاء</button></div></div>
                                             </div>
                                         ) : (
-                                            <div id={`log-card-${log.id}`} className={`p-3 rounded-2xl shadow-sm border-4 hover:shadow-md transition relative flex flex-col gap-2 ${getCardColor(idx)}`}>
+                                            <div id={`log-card-${log.id}`} className={`p-3.5 rounded-2xl shadow-md border-[3.5px] hover:shadow-lg transition relative flex flex-col gap-2.5 ${logTheme.card}`}>
                                                 {/* Hidden project name & contractor for sharing */}
                                                 <div className="hidden share-only-project-name flex items-start gap-2.5 mb-1.5 pb-2.5 border-b-2 border-black/10">
                                                     <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 flex items-center justify-center shrink-0 mt-0.5">
@@ -3102,12 +3744,29 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                         </span>
                                                     </div>
                                                 </div>
-                                                <div className="flex justify-between items-center border-b border-black/5 pb-2">
-                                                    <div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-white/50 text-slate-700 flex items-center justify-center shadow-sm"><i className="fa-solid fa-calendar-day text-xs"></i></div><span className="font-bold text-slate-800 text-base font-mono bg-white/50 px-3 h-8 flex items-center justify-center rounded border border-black/5 leading-none"><span className="share-text-lift">{log.date}</span></span></div>
+                                                <div className="flex justify-between items-center border-b border-black/10 pb-2">
+                                                    <div className="flex items-center gap-2 log-card-header-left">
+                                                        <div className="w-8 h-8 rounded-full bg-white text-slate-800 flex items-center justify-center shadow-xs border border-black/10 shrink-0 log-calendar-icon">
+                                                            <i className="fa-solid fa-calendar-day text-xs text-blue-600"></i>
+                                                        </div>
+                                                        <div className="flex flex-col gap-1 items-stretch min-w-[125px] sm:min-w-[140px] log-date-category-wrapper">
+                                                            <div className="font-extrabold text-slate-900 text-sm font-mono bg-white px-3 h-8 flex items-center justify-center rounded-lg border border-black/10 shadow-xs leading-none whitespace-nowrap text-center log-date-box">
+                                                                <span className="share-text-lift">{log.date}</span>
+                                                            </div>
+                                                            {log.workCategory && (
+                                                                <div 
+                                                                    className={`px-2 h-8 flex items-center justify-center rounded-lg shadow-xs border text-[10px] font-black leading-tight text-center truncate log-category-box ${logTheme.badge}`}
+                                                                    title={log.workCategory}
+                                                                >
+                                                                    <span className="share-text-lift truncate">{log.workCategory}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                     <div className="flex gap-1 log-actions-container">
-                                                        <button onClick={() => shareLogToWhatsApp(log)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-green-600 transition flex items-center justify-center" title="مشاركة واتساب"><i className="fa-brands fa-whatsapp text-[12px]"></i></button>
-                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogBoqItemId(log.boqItemId || ''); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
-                                                        <button onClick={() => setLogToDeleteId(log.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button>
+                                                        <button onClick={() => shareLogToWhatsApp(log)} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-green-600 transition flex items-center justify-center shadow-xs" title="مشاركة واتساب"><i className="fa-brands fa-whatsapp text-[12px]"></i></button>
+                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogBoqItemId(log.boqItemId || ''); setTempEditLogWorkCategory(log.workCategory || ''); }} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-blue-600 transition flex items-center justify-center shadow-xs" title="تعديل"><i className="fa-solid fa-pen text-[10px]"></i></button>
+                                                        <button onClick={() => setLogToDeleteId(log.id)} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-red-600 transition flex items-center justify-center shadow-xs" title="حذف"><i className="fa-solid fa-trash text-[10px]"></i></button>
                                                     </div>
                                                 </div>
                                                 {(log.boqItemId || log.boqItemCode) && (
@@ -3133,7 +3792,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                         <i className="share-hide-icon fa-solid fa-arrow-up-right-from-square text-[10px] text-indigo-600 shrink-0 mt-1"></i>
                                                     </div>
                                                 )}
-                                                <p className="share-text-lift text-slate-900 text-lg leading-relaxed font-bold whitespace-pre-wrap mb-0.5">{log.content}</p>
+                                                <p className="share-text-lift text-slate-950 text-lg leading-relaxed font-black whitespace-pre-wrap mb-0.5">{log.content}</p>
                                                 {/* OPTIMIZED IMAGES: Loading Eager for top 2 logs for instant feel */}
                                                 {log.images && log.images.length > 0 && (
                                                     <div className={`grid gap-1 mt-1 ${
@@ -3166,16 +3825,6 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     </div>
                                 )})}
                                 
-                                {/* Show More Button */}
-                                {visibleLogsCount < masterData.logs.length && (
-                                    <button 
-                                        onClick={handleLoadMoreLogs}
-                                        className="w-full py-2 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs hover:bg-slate-200 transition shadow-sm mt-2"
-                                    >
-                                        عرض المزيد ({masterData.logs.length - visibleLogsCount} سجل متبقي)
-                                    </button>
-                                )}
-
                                 {masterData.logs.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">لا توجد سجلات.</div>}
                             </div>
                         </div>
@@ -3473,9 +4122,45 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             {/* ... BOQ Header ... */}
                             <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-1.5 flex justify-between items-center shrink-0">
                                 <div><h4 className="font-bold text-indigo-900 text-[10px]">تحليل المقايسة</h4></div>
-                                <div className="flex gap-1.5">
-                                    <button onClick={handleCreateManualBOQ} className="bg-white border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-sm hover:bg-indigo-50 transition flex items-center gap-1.5"><i className="fa-solid fa-plus"></i> إنشاء يدوية</button>
-                                    <button onClick={() => setSourceModal({ type: 'boq', title: 'رفع المقايسة' })} disabled={isAnalyzingBOQ} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg hover:bg-indigo-700 transition flex items-center gap-1.5 disabled:opacity-50">{isAnalyzingBOQ ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-file-import"></i>} تحليل</button>
+                                <div className="flex items-center gap-1.5">
+                                    {/* زر التبديل بين وضع السرد الكامل والمختصر للبنود والملاحظات - أيقونة فقط */}
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsBoqCompact(!isBoqCompact)}
+                                        className={`w-8 h-8 rounded-lg border transition flex items-center justify-center shadow-xs active:scale-95 ${
+                                            isBoqCompact
+                                                ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                                : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50'
+                                        }`}
+                                        title={isBoqCompact ? 'السرد المختصر مفعل (اضغط للتبديل للسرد الكامل)' : 'السرد الكامل مفعل (اضغط للتبديل للسرد المختصر)'}
+                                    >
+                                        <i className={`fa-solid ${isBoqCompact ? 'fa-bars-staggered' : 'fa-align-justify'} text-xs`}></i>
+                                    </button>
+
+                                    {/* زر إنشاء يدوية - أيقونة فقط */}
+                                    <button
+                                        type="button"
+                                        onClick={handleCreateManualBOQ}
+                                        className="w-8 h-8 rounded-lg bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 flex items-center justify-center shadow-xs transition active:scale-95"
+                                        title="إنشاء مقايسة يدوية"
+                                    >
+                                        <i className="fa-solid fa-plus text-xs"></i>
+                                    </button>
+
+                                    {/* زر تحليل - أيقونة فقط */}
+                                    <button
+                                        type="button"
+                                        onClick={() => setSourceModal({ type: 'boq', title: 'رفع المقايسة' })}
+                                        disabled={isAnalyzingBOQ}
+                                        className="w-8 h-8 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-md transition active:scale-95 disabled:opacity-50"
+                                        title="تحليل ورفع المقايسة"
+                                    >
+                                        {isAnalyzingBOQ ? (
+                                            <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                        ) : (
+                                            <i className="fa-solid fa-file-import text-xs"></i>
+                                        )}
+                                    </button>
                                 </div>
                             </div>
                             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col boq-container w-full max-w-full">
@@ -3552,18 +4237,165 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     </div>
                                 </div>
                             )}
-                            {/* BOQ Edit Modal (Updated with FIXED positioning) */}
+                            {/* BOQ Edit Modal (FULL SCREEN + Compact Margins & Paddings) */}
                             {editingBoqItem && (
-                                <div className="fixed inset-0 z-[1600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-                                    <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-scale-in relative max-h-[94vh] flex flex-col">
-                                        {showBoqDeleteConfirm && <div className="absolute inset-0 z-[60] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-6 rounded-2xl"><div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-xs text-center"><h4 className="font-bold mb-2">حذف البند؟</h4><div className="flex gap-3"><button onClick={confirmDeleteBOQItem} className="flex-1 bg-red-600 text-white py-2 rounded-xl">حذف</button><button onClick={() => setShowBoqDeleteConfirm(false)} className="flex-1 bg-slate-100 text-slate-700 py-2 rounded-xl">إلغاء</button></div></div></div>}
-                                        <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0"><h3 className="font-bold text-white">تعديل البند</h3><button onClick={() => { setViewingBoqReport(null); setEditingBoqItem(null); }} className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center"><i className="fa-solid fa-times"></i></button></div>
-                                        <div className="p-4 space-y-3 overflow-y-auto flex-1">
-                                            <div className="flex gap-2"><div className="w-24"><label className="block text-xs font-bold mb-1">رقم</label><input type="text" className="w-full p-2 border rounded-lg" value={editingBoqItem.itemCode} onChange={(e) => setEditingBoqItem({...editingBoqItem, itemCode: e.target.value})} /></div><div className="w-20"><label className="block text-xs font-bold mb-1">الوحدة</label><input type="text" className="w-full p-2 border rounded-lg" value={editingBoqItem.unit} onChange={(e) => setEditingBoqItem({...editingBoqItem, unit: e.target.value})} /></div><div className="flex-1"><label className="block text-xs font-bold mb-1">الفئة</label><input type="number" className="w-full p-2 border rounded-lg" value={editingBoqItem.unitPrice} onChange={(e) => setEditingBoqItem({...editingBoqItem, unitPrice: Number(e.target.value)})} /></div></div>
-                                            <div><label className="block text-xs font-bold mb-1">بيان الأعمال</label><textarea className="w-full p-3 border rounded-lg h-24 resize-none text-sm" value={editingBoqItem.description} onChange={(e) => setEditingBoqItem({...editingBoqItem, description: e.target.value})}></textarea></div>
-                                            <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-100"><div className="bg-slate-50 p-2 rounded-lg"><label className="block text-xs font-bold text-center">الكمية التعاقدية</label><input type="number" className="w-full p-2 border rounded-lg text-center" value={editingBoqItem.quantity} onChange={(e) => setEditingBoqItem({...editingBoqItem, quantity: Number(e.target.value)})} /></div><div className="bg-green-50 p-2 rounded-lg"><label className="block text-xs font-bold text-green-700 text-center">الكمية المنفذة</label><input type="number" className="w-full p-2 border rounded-lg text-center font-bold text-green-800" value={isNaN(Number(editingBoqItem.executedQuantity)) ? 0 : editingBoqItem.executedQuantity} onChange={(e) => setEditingBoqItem({...editingBoqItem, executedQuantity: Number(e.target.value)})} /></div></div>
+                                <div className="fixed inset-0 z-[1700] bg-slate-900 flex flex-col w-screen h-screen overflow-hidden animate-fade-in">
+                                    <div className="bg-slate-50 w-full h-full flex flex-col overflow-hidden relative">
+                                        {/* Delete Confirmation Overlay */}
+                                        {showBoqDeleteConfirm && (
+                                            <div className="absolute inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                                                <div className="bg-white p-5 rounded-2xl shadow-2xl w-full max-w-xs text-center border border-slate-200 space-y-3 animate-scale-in">
+                                                    <div className="w-10 h-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto text-lg">
+                                                        <i className="fa-solid fa-triangle-exclamation"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="font-bold text-sm text-slate-900 mb-0.5">حذف البند؟</h4>
+                                                        <p className="text-[11px] text-slate-500">هل أنت متأكد من حذف هذا البند من المقايسة نهائياً؟</p>
+                                                    </div>
+                                                    <div className="flex gap-2 pt-1">
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={confirmDeleteBOQItem} 
+                                                            className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 rounded-xl text-xs transition shadow-xs"
+                                                        >
+                                                            حذف
+                                                        </button>
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={() => setShowBoqDeleteConfirm(false)} 
+                                                            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 rounded-xl text-xs transition"
+                                                        >
+                                                            إلغاء
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Modal Header - Compact & Clean */}
+                                        <div className="bg-slate-900 text-white px-3 py-2 flex justify-between items-center shrink-0 border-b border-slate-800 shadow-xs">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-indigo-600/80 flex items-center justify-center text-white text-xs shadow-xs">
+                                                    <i className="fa-solid fa-pen-to-square"></i>
+                                                </div>
+                                                <h3 className="font-bold text-xs sm:text-sm text-white">تعديل البند ({editingBoqItem.itemCode || '-'})</h3>
+                                            </div>
+                                            <button 
+                                                type="button"
+                                                onClick={() => { setViewingBoqReport(null); setEditingBoqItem(null); }} 
+                                                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition active:scale-90"
+                                                title="إغلاق النافذة"
+                                            >
+                                                <i className="fa-solid fa-times text-xs"></i>
+                                            </button>
                                         </div>
-                                        <div className="p-4 bg-slate-50 border-t flex justify-between gap-2 shrink-0"><button type="button" onClick={() => setShowBoqDeleteConfirm(true)} className="px-4 py-2 bg-red-100 text-red-600 rounded-xl font-bold"><i className="fa-solid fa-trash"></i></button><button type="button" onClick={addItemBelow} className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-xl font-bold"><i className="fa-solid fa-plus"></i> إضافة أسفل</button><button type="button" onClick={saveBOQItemEdit} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl font-bold">حفظ التعديلات</button></div>
+
+                                        {/* Modal Content - Minimized Margins & Paddings */}
+                                        <div className="p-2.5 sm:p-3 space-y-2 overflow-y-auto flex-1 custom-scrollbar max-w-xl mx-auto w-full">
+                                            {/* Item Code, Unit, and Unit Price */}
+                                            <div className="grid grid-cols-12 gap-2 bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                                                <div className="col-span-4 sm:col-span-3">
+                                                    <label className="block text-[11px] font-bold text-slate-600 mb-0.5">رقم البند</label>
+                                                    <input 
+                                                        type="text" 
+                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
+                                                        value={editingBoqItem.itemCode} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, itemCode: e.target.value})} 
+                                                    />
+                                                </div>
+                                                <div className="col-span-4 sm:col-span-3">
+                                                    <label className="block text-[11px] font-bold text-slate-600 mb-0.5 text-center">الوحدة</label>
+                                                    <input 
+                                                        type="text" 
+                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-center focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
+                                                        value={editingBoqItem.unit} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, unit: e.target.value})} 
+                                                    />
+                                                </div>
+                                                <div className="col-span-4 sm:col-span-6">
+                                                    <label className="block text-[11px] font-bold text-slate-600 mb-0.5">الفئة (ج.م)</label>
+                                                    <input 
+                                                        type="number" 
+                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-left focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
+                                                        value={editingBoqItem.unitPrice} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, unitPrice: Number(e.target.value)})} 
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* Description Textarea */}
+                                            <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs space-y-1">
+                                                <div className="flex justify-between items-center">
+                                                    <label className="block text-[11px] font-bold text-slate-600">بيان الأعمال والمواصفات</label>
+                                                    <span className="text-[10px] text-slate-400 font-normal">نصوص ومواصفات تفصيلية</span>
+                                                </div>
+                                                <textarea 
+                                                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs sm:text-sm font-semibold leading-relaxed resize-y min-h-[110px] sm:min-h-[140px] focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
+                                                    placeholder="أدخل بيان الأعمال والتوصيف الهندسي الكامل للبند..."
+                                                    value={editingBoqItem.description} 
+                                                    onChange={(e) => setEditingBoqItem({...editingBoqItem, description: e.target.value})}
+                                                ></textarea>
+                                            </div>
+
+                                            {/* Contract & Executed Quantities */}
+                                            <div className="grid grid-cols-2 gap-2 bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                                                <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                                    <label className="block text-[11px] font-bold text-slate-600 text-center mb-0.5">الكمية التعاقدية</label>
+                                                    <input 
+                                                        type="number" 
+                                                        className="w-full p-1.5 bg-white border border-slate-200 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-indigo-500 outline-none" 
+                                                        value={editingBoqItem.quantity} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, quantity: Number(e.target.value)})} 
+                                                    />
+                                                </div>
+                                                <div className="bg-emerald-50/70 p-2 rounded-lg border border-emerald-100">
+                                                    <label className="block text-[11px] font-bold text-emerald-800 text-center mb-0.5">الكمية المنفذة</label>
+                                                    <input 
+                                                        type="number" 
+                                                        className="w-full p-1.5 bg-white border border-emerald-200 text-emerald-800 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-emerald-500 outline-none" 
+                                                        value={isNaN(Number(editingBoqItem.executedQuantity)) ? 0 : editingBoqItem.executedQuantity} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, executedQuantity: Number(e.target.value)})} 
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Modal Footer with 3 ICON-ONLY Buttons: Save, Add Below, Delete */}
+                                        <div className="p-2 sm:p-2.5 bg-white border-t border-slate-200 shrink-0 shadow-md">
+                                            <div className="max-w-xl mx-auto w-full flex items-center justify-between gap-2">
+                                                <div className="flex items-center gap-2">
+                                                    {/* زر حفظ التعديلات - أيقونة فقط */}
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={saveBOQItemEdit} 
+                                                        className="w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-xs transition transform active:scale-90"
+                                                        title="حفظ التعديلات"
+                                                    >
+                                                        <i className="fa-solid fa-floppy-disk text-base"></i>
+                                                    </button>
+
+                                                    {/* زر إضافة أسفل - أيقونة فقط */}
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={addItemBelow} 
+                                                        className="w-10 h-10 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 flex items-center justify-center shadow-2xs transition transform active:scale-90"
+                                                        title="إضافة بند جديد أسفل"
+                                                    >
+                                                        <i className="fa-solid fa-plus text-base"></i>
+                                                    </button>
+                                                </div>
+
+                                                {/* زر حذف - أيقونة فقط */}
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => setShowBoqDeleteConfirm(true)} 
+                                                    className="w-10 h-10 rounded-xl bg-red-100 hover:bg-red-200 text-red-600 border border-red-200 flex items-center justify-center shadow-2xs transition transform active:scale-90"
+                                                    title="حذف البند"
+                                                >
+                                                    <i className="fa-solid fa-trash-can text-base"></i>
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -4004,13 +4836,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 flex justify-between items-center shrink-0 mb-3 mx-1 mt-1 sticky top-0 z-20 shadow-sm">
                                 <div>
                                     <h4 className="font-bold text-orange-900 text-sm flex items-center gap-2">
-                                        <i className="fa-solid fa-microscope text-orange-500"></i>
+                                        <i className="fa-solid fa-folder-open text-orange-500"></i>
                                         تقارير 
                                     </h4>
-                                    <p className="text-[8px] text-orange-700 opacity-80">جسات - اختبارات  - تقارير </p>
+                                    <p className="text-[9px] text-orange-800/90 font-medium mt-0.5">جسات - اختبارات - تقارير - مستندات</p>
                                 </div>
                                 <button 
-                                    onClick={() => setSourceModal({ type: 'soil', title: 'رفع تقرير هندسي جديد' })} 
+                                    onClick={() => setSourceModal({ type: 'soil', title: 'رفع وتحليل مستند أو تقرير (عقود، جسات، اختبارات)' })} 
                                     disabled={isAnalyzingSoil} 
                                     className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg hover:bg-orange-700 transition flex items-center gap-2 disabled:opacity-50"
                                 >
@@ -4045,7 +4877,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         )}
 
-                                        {masterData.engineeringReports.map((report) => (
+                                        {masterData.engineeringReports.map((report, reportIdx) => (
                                             <div 
                                                 key={report.id} 
                                                 onClick={() => openReportFullScreen(report)}
@@ -4053,8 +4885,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             >
                                                 <div className="flex justify-between items-start mb-3">
                                                     {/* Report Icon & Date */}
-                                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 ${report.type === 'soil' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
-                                                        <i className={`fa-solid ${report.type === 'soil' ? 'fa-mountain-sun' : 'fa-flask'}`}></i>
+                                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 ${
+                                                        report.type === 'contract' 
+                                                            ? 'bg-emerald-100 text-emerald-600'
+                                                            : report.type === 'test'
+                                                            ? 'bg-purple-100 text-purple-600'
+                                                            : report.type === 'soil'
+                                                            ? 'bg-orange-100 text-orange-600'
+                                                            : 'bg-blue-100 text-blue-600'
+                                                    }`}>
+                                                        <i className={`fa-solid ${
+                                                            report.type === 'contract'
+                                                                ? 'fa-file-signature'
+                                                                : report.type === 'test'
+                                                                ? 'fa-vial-circle-check'
+                                                                : report.type === 'soil'
+                                                                ? 'fa-mountain-sun'
+                                                                : 'fa-file-lines'
+                                                        }`}></i>
                                                     </div>
                                                     
                                                     {/* Actions or Edit Mode */}
@@ -4075,15 +4923,94 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                             </button>
                                                         </div>
                                                     ) : (
-                                                        <div className="flex items-center gap-1">
+                                                        <div className="flex items-center gap-1 relative">
+                                                            {/* زر ترتيب الكارت - بجوار زر تعديل */}
+                                                            <div className="relative">
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setActiveReorderMenuId(activeReorderMenuId === report.id ? null : report.id);
+                                                                    }}
+                                                                    className={`w-7 h-7 rounded-full flex items-center justify-center transition border ${
+                                                                        activeReorderMenuId === report.id 
+                                                                            ? 'bg-indigo-600 text-white border-indigo-600' 
+                                                                            : 'hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border-transparent hover:border-indigo-100'
+                                                                    }`}
+                                                                    title="ترتيب الكارت"
+                                                                >
+                                                                    <i className="fa-solid fa-arrows-up-down text-[10px]"></i>
+                                                                </button>
+
+                                                                {/* Reorder Dropdown Menu */}
+                                                                {activeReorderMenuId === report.id && (
+                                                                    <>
+                                                                        <div 
+                                                                            className="fixed inset-0 z-[100]" 
+                                                                            onClick={(e) => { e.stopPropagation(); setActiveReorderMenuId(null); }}
+                                                                        ></div>
+                                                                        <div 
+                                                                            className="absolute left-0 sm:right-0 top-8 z-[110] bg-white border border-slate-200 rounded-xl shadow-xl p-1.5 min-w-[145px] text-slate-800 text-xs space-y-1 animate-scale-in"
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                        >
+                                                                            <div className="px-2 py-1 text-[10px] font-bold text-slate-400 border-b border-slate-100 flex items-center justify-between">
+                                                                                <span>ترتيب الكارت</span>
+                                                                                <i className="fa-solid fa-sort text-indigo-500"></i>
+                                                                            </div>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => moveReportOrder(report.id, 'up')}
+                                                                                disabled={reportIdx === 0}
+                                                                                className="w-full text-right px-2 py-1.5 rounded-lg hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 transition disabled:opacity-30 disabled:pointer-events-none font-semibold text-[11px]"
+                                                                            >
+                                                                                <i className="fa-solid fa-arrow-up text-indigo-500 w-3 text-center"></i>
+                                                                                <span>تحريك لأعلى</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => moveReportOrder(report.id, 'down')}
+                                                                                disabled={reportIdx === masterData.engineeringReports.length - 1}
+                                                                                className="w-full text-right px-2 py-1.5 rounded-lg hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 transition disabled:opacity-30 disabled:pointer-events-none font-semibold text-[11px]"
+                                                                            >
+                                                                                <i className="fa-solid fa-arrow-down text-indigo-500 w-3 text-center"></i>
+                                                                                <span>تحريك لأسفل</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => moveReportOrder(report.id, 'top')}
+                                                                                disabled={reportIdx === 0}
+                                                                                className="w-full text-right px-2 py-1.5 rounded-lg hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 transition disabled:opacity-30 disabled:pointer-events-none font-semibold text-[11px] border-t border-slate-100"
+                                                                            >
+                                                                                <i className="fa-solid fa-angles-up text-indigo-500 w-3 text-center"></i>
+                                                                                <span>نقل للبداية (الأول)</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => moveReportOrder(report.id, 'bottom')}
+                                                                                disabled={reportIdx === masterData.engineeringReports.length - 1}
+                                                                                className="w-full text-right px-2 py-1.5 rounded-lg hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 transition disabled:opacity-30 disabled:pointer-events-none font-semibold text-[11px]"
+                                                                            >
+                                                                                <i className="fa-solid fa-angles-down text-indigo-500 w-3 text-center"></i>
+                                                                                <span>نقل للنهاية (الأخير)</span>
+                                                                            </button>
+                                                                        </div>
+                                                                    </>
+                                                                )}
+                                                            </div>
+
+                                                            {/* زر تعديل العنوان */}
                                                             <button 
+                                                                type="button"
                                                                 onClick={(e) => handleStartRenameReport(e, report)}
                                                                 className="w-7 h-7 rounded-full hover:bg-blue-50 text-slate-300 hover:text-blue-600 flex items-center justify-center transition border border-transparent hover:border-blue-100"
                                                                 title="تعديل العنوان"
                                                             >
                                                                 <i className="fa-solid fa-pen text-[10px]"></i>
                                                             </button>
+
+                                                            {/* زر حذف التقرير */}
                                                             <button 
+                                                                type="button"
                                                                 onClick={(e) => { e.stopPropagation(); setReportToDeleteId(report.id); }}
                                                                 className="w-7 h-7 rounded-full hover:bg-red-50 text-slate-300 hover:text-red-500 flex items-center justify-center transition border border-transparent hover:border-red-100"
                                                                 title="حذف التقرير"
@@ -4944,6 +5871,290 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                             </div>
                         </div>
                     </div>
+                )}
+
+                {/* Work Category Selector & Manager Modal (نافذة اختيار وإضافة نوع الأعمال) */}
+                {showWorkCategoryModal && (
+                    <div className="fixed inset-0 z-[1800] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+                        <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[85vh] animate-scale-in border border-slate-200 overflow-hidden">
+                            {/* Modal Header */}
+                            <div className="p-3.5 bg-gradient-to-r from-amber-600 via-amber-700 to-orange-700 text-white flex justify-between items-center shrink-0">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center text-white shrink-0 shadow-inner">
+                                        <i className="fa-solid fa-tags text-base"></i>
+                                    </div>
+                                    <div>
+                                        <h3 className="font-extrabold text-sm sm:text-base leading-tight">اختيار وتصنيف نوع الأعمال</h3>
+                                        <p className="text-[10px] text-amber-100 font-bold mt-0.5">من أعمال الحفر والأساسات وحتى آخر بنود التشطيبات والتسليم</p>
+                                    </div>
+                                </div>
+                                <button 
+                                    type="button"
+                                    onClick={() => setShowWorkCategoryModal(false)}
+                                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition shrink-0"
+                                    title="إغلاق"
+                                >
+                                    <i className="fa-solid fa-times text-xs"></i>
+                                </button>
+                            </div>
+
+                            {/* Quick Add Custom Work Category Field */}
+                            <div className="p-3 bg-amber-50/90 border-b border-amber-200/80 flex flex-col gap-1.5 shrink-0">
+                                <div className="text-[11px] font-black text-amber-950 flex items-center gap-1.5">
+                                    <i className="fa-solid fa-circle-plus text-amber-700"></i>
+                                    <span>إضافة بند عمل مخصص جديد:</span>
+                                </div>
+                                <div className="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        placeholder="اكتب اسم بند العمل الجديد واضغط إضافة..."
+                                        value={newCustomCategoryInput}
+                                        onChange={(e) => setNewCustomCategoryInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                handleAddCustomWorkCategory(newCustomCategoryInput);
+                                            }
+                                        }}
+                                        className="flex-1 px-3 py-2 text-xs bg-white border border-amber-300 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold text-slate-900 shadow-xs"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAddCustomWorkCategory(newCustomCategoryInput)}
+                                        disabled={!newCustomCategoryInput.trim()}
+                                        className="bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-2 rounded-xl text-xs font-black transition disabled:opacity-50 shrink-0 flex items-center gap-1 shadow-xs"
+                                    >
+                                        <i className="fa-solid fa-plus text-[10px]"></i>
+                                        <span>إضافة وتحديد</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Search & Clear Bar */}
+                            <div className="p-2.5 bg-white border-b border-slate-100 flex items-center gap-2 shrink-0">
+                                <div className="relative flex-1">
+                                    <i className="fa-solid fa-magnifying-glass absolute right-3 top-2.5 text-slate-400 text-xs"></i>
+                                    <input 
+                                        type="text"
+                                        placeholder="بحث في بنود الأعمال (حفر، خرسانة، عزل، سباكة، كهرباء، دهانات...)..."
+                                        value={workCategorySearch}
+                                        onChange={(e) => setWorkCategorySearch(e.target.value)}
+                                        className="w-full pr-8 pl-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:bg-white focus:border-amber-500 text-slate-800"
+                                    />
+                                </div>
+                                {selectedWorkCategory && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedWorkCategory('');
+                                            setShowWorkCategoryModal(false);
+                                        }}
+                                        className="bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shrink-0"
+                                        title="إلغاء تصنيف اليومية"
+                                    >
+                                        <i className="fa-solid fa-ban text-[10px]"></i>
+                                        <span>إلغاء التحديد</span>
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Categories Grid List */}
+                            <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50 custom-scrollbar">
+                                {filteredWorkCategories.length === 0 ? (
+                                    <div className="text-center py-10 text-slate-400">
+                                        <i className="fa-solid fa-filter text-2xl mb-1 opacity-40"></i>
+                                        <p className="text-xs font-bold">لا توجد بنود أعمال مطابقة لكلمة البحث</p>
+                                    </div>
+                                ) : (
+                                    filteredWorkCategories.map((cat, idx) => {
+                                        const isSelected = selectedWorkCategory === cat.name;
+                                        return (
+                                            <div
+                                                key={idx}
+                                                onClick={() => {
+                                                    setSelectedWorkCategory(cat.name);
+                                                    setShowWorkCategoryModal(false);
+                                                }}
+                                                className={`p-2.5 rounded-2xl border-2 cursor-pointer transition flex items-center justify-between gap-3 ${
+                                                    isSelected 
+                                                        ? 'bg-amber-500 text-white border-amber-600 shadow-md' 
+                                                        : 'bg-white text-slate-800 border-slate-200 hover:border-amber-400 hover:bg-amber-50/60'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                                        isSelected ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
+                                                    }`}>
+                                                        <i className={`fa-solid ${cat.icon || 'fa-layer-group'} text-[11px]`}></i>
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h4 className="text-[11px] font-bold leading-tight">{cat.name}</h4>
+                                                        {cat.stage && (
+                                                            <span className={`text-[9px] font-medium ${isSelected ? 'text-amber-100' : 'text-slate-400'}`}>
+                                                                {cat.stage}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                    {cat.isCustom && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleDeleteCustomWorkCategory(cat.name);
+                                                            }}
+                                                            className={`w-6 h-6 rounded flex items-center justify-center text-[10px] transition ${
+                                                                isSelected ? 'text-white/80 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
+                                                            }`}
+                                                            title="حذف هذا البند المخصص"
+                                                        >
+                                                            <i className="fa-solid fa-trash"></i>
+                                                        </button>
+                                                    )}
+                                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                                                        isSelected ? 'border-white bg-white text-amber-600' : 'border-slate-300'
+                                                    }`}>
+                                                        {isSelected && <i className="fa-solid fa-check text-[10px]"></i>}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+
+                            {/* Modal Footer */}
+                            <div className="p-3 bg-white border-t border-slate-200 flex justify-between items-center shrink-0 text-xs">
+                                <span className="text-[11px] font-bold text-slate-500">
+                                    البند المحدد: <strong className="text-amber-700 font-extrabold">{selectedWorkCategory || 'بدون تصنيف (عام)'}</strong>
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowWorkCategoryModal(false)}
+                                    className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2 rounded-xl font-bold transition shadow-xs"
+                                >
+                                    إغلاق
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* WhatsApp Share Choice Modal (صندوق خيارات المشاركة عبر واتساب) */}
+                {whatsappShareModalLog && (
+                    <div 
+                        className="fixed inset-0 z-[2200] bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-xs animate-fade-in"
+                        onClick={() => !isPreparingShare && setWhatsappShareModalLog(null)}
+                    >
+                        <div 
+                            className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 animate-scale-in text-right relative overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {/* Header */}
+                            <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-xs">
+                                        <i className="fa-brands fa-whatsapp text-xl"></i>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-black text-slate-800">مشاركة اليومية عبر واتساب</h3>
+                                        <p className="text-[10px] text-slate-500 font-bold mt-0.5">
+                                            يومية: <span className="font-mono text-emerald-700">{whatsappShareModalLog.date}</span>
+                                            {whatsappShareModalLog.workCategory && <span> • {whatsappShareModalLog.workCategory}</span>}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setWhatsappShareModalLog(null)}
+                                    disabled={isPreparingShare}
+                                    className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs transition"
+                                >
+                                    <i className="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+
+                            {isPreparingShare ? (
+                                <div className="py-8 flex flex-col items-center justify-center gap-2">
+                                    <i className="fa-solid fa-circle-notch fa-spin text-emerald-600 text-3xl"></i>
+                                    <p className="text-xs font-bold text-slate-700 animate-pulse">جاري تجهيز المشاركة...</p>
+                                </div>
+                            ) : (
+                                <div className="flex flex-col gap-2.5">
+                                    {/* Option 1: Share as Image */}
+                                    <button
+                                        type="button"
+                                        onClick={() => executeShareAsImage(whatsappShareModalLog)}
+                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-start gap-3 shadow-xs active:scale-[0.98]"
+                                    >
+                                        <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs mt-0.5">
+                                            <i className="fa-solid fa-image text-lg"></i>
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center justify-between gap-1">
+                                                <span className="text-xs font-black text-slate-900 group-hover:text-emerald-950">إرسال اليومية كصورة</span>
+                                                <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-md font-bold">عالية الدقة</span>
+                                            </div>
+                                            <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
+                                                تصدير كارت اليومية الرسمي كصورة متناسقة تضم الأيقونة والتاريخ ونوع العمل بصف واحد.
+                                            </p>
+                                        </div>
+                                    </button>
+
+                                    {/* Option 2: Share as Text with Images */}
+                                    <button
+                                        type="button"
+                                        onClick={() => executeShareAsText(whatsappShareModalLog)}
+                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-start gap-3 shadow-xs active:scale-[0.98]"
+                                    >
+                                        <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs mt-0.5">
+                                            <i className="fa-solid fa-comment-dots text-lg"></i>
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center justify-between gap-1">
+                                                <span className="text-xs font-black text-slate-900 group-hover:text-blue-950">إرسال كرسالة نصية مع الصور</span>
+                                                {whatsappShareModalLog.images && whatsappShareModalLog.images.length > 0 && (
+                                                    <span className="text-[9px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-md font-bold">
+                                                        {whatsappShareModalLog.images.length} صور
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
+                                                إرسال بيان الأعمال والتفاصيل نصياً مع إرفاق صور اليومية الملتقطة.
+                                            </p>
+                                        </div>
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Footer */}
+                            <div className="mt-4 pt-2 border-t border-slate-100 flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={() => setWhatsappShareModalLog(null)}
+                                    disabled={isPreparingShare}
+                                    className="px-4 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
+                                >
+                                    إلغاء
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Unified Consulting Center (المركز الاستشاري الموحد) */}
+                {showProjectAI && (
+                    <ProjectAI
+                        projectId={projectId}
+                        folderId={projectId}
+                        projectData={masterData}
+                        onClose={() => setShowProjectAI(false)}
+                        onProjectUpdated={(updated) => {
+                            setMasterData(updated);
+                            if (onProjectUpdated) onProjectUpdated(updated);
+                        }}
+                    />
                 )}
             </div>
         </div>

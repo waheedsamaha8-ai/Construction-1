@@ -310,6 +310,61 @@ export const analysisService = {
         } catch (e) { return "فشل تحليل تقرير التربة."; }
     },
 
+    async analyzeUniversalProjectDocument(file: Blob | File): Promise<{ title: string; type: string; summary: string; content: string }> {
+        try {
+            const filePart = await fileToPart(file);
+            const prompt = `
+                **IDENTITY:** Senior Engineering Consultant & Technical Office Director (35+ Years Experience in Egyptian Codes ECP, FIDIC Contracts, and Project Documentation).
+                **TASK:** Analyze the attached project document. It can be ANY document from the project:
+                - تقارير أبحاث التربة والجسات (Soil & Geotechnical Reports).
+                - تقارير ونتائج اختبارات المعامل (Lab Tests: Concrete cubes, Steel, Compaction, Asphalt, Materials).
+                - عقود المقاولات والاتفاقيات والشروط والمطالبات (Construction Contracts, Agreements, FIDIC, Claims).
+                - محاضر الاستلام وطلبات الفحص (Site Handover, Inspection Requests / RFIs, Checklists, NCRs).
+                - المواصفات الفنية والتقارير الدورية والمراسلات (Specifications, Periodic Engineering Reports, Technical Memos).
+
+                **REQUIREMENTS:**
+                1. Detect the document type automatically: 'soil' | 'test' | 'contract' | 'report' | 'doc'.
+                2. Extract a concise, formal Arabic Title (عنوان دقيق ورسمي للمستند، مثل: "تقرير اختبار تكسير مكعبات الخرسانة عمر 28 يوم" أو "عقد مقاولة أعمال..." أو "تقرير أبحاث وتوصيات تربة الأساسات").
+                3. Provide a clear 1-2 sentence executive summary (ملخص موجز) in Arabic.
+                4. Provide the full technical and analytical report in HTML:
+                   - Start directly with <h1>عنوان التقرير أو المستند</h1> without any blue header div.
+                   - Clear KPI boxes (info-box, success-box, warning-box, cost-box).
+                   - Responsive HTML tables (width="100%") with natural word wrapping in all cells.
+                   - Strict compliance with Egyptian Code of Practice (ECP) or standard construction contract rules.
+                   - Concrete findings, test results table, contractual clauses analysis, or engineering directives.
+
+                **OUTPUT FORMAT (STRICT JSON ONLY):**
+                Return ONLY a JSON object with this exact shape:
+                {
+                    "title": "عنوان المستند الدقيق",
+                    "type": "soil" or "test" or "contract" or "report" or "doc",
+                    "summary": "ملخص تنفيذي مكثف من سطرين يوضح خلاصة المستند وأهم نتائجه",
+                    "content": "<h1>عنوان المستند</h1> ... محتوى التقرير الفني والتحليل الهندسي الشامل بصيغة HTML ..."
+                }
+            `;
+            const result = await safeGenerateContent(MODEL_COMPLEX, {
+                contents: { parts: [filePart, { text: prompt }] },
+                config: { responseMimeType: "application/json" }
+            });
+            const parsed = JSON.parse(result.text);
+            return {
+                title: parsed.title || "مستند مشروع معتمد",
+                type: parsed.type || "doc",
+                summary: parsed.summary || "تم تحليل وتوثيق المستند بالذكاء الاصطناعي.",
+                content: (parsed.content || `<p>${parsed.summary || ''}</p>`) + getAiFooter(result.usedModel)
+            };
+        } catch (e) {
+            console.warn("Universal document analysis fallback", e);
+            const fallbackHtml = await this.analyzePdfDocument(file);
+            return {
+                title: `مستند مشروع - ${new Date().toLocaleDateString('ar-EG')}`,
+                type: 'doc',
+                summary: 'مستند هندسي تم تحليله وتوثيقه بسجل المشروع.',
+                content: fallbackHtml
+            };
+        }
+    },
+
     async analyzeProjectMasterData(data: any): Promise<string> {
         const context = JSON.stringify(data);
         const prompt = `
@@ -420,99 +475,125 @@ export const analysisService = {
     },
 
     async generateCustomProjectReport(project: Project, logs: ProjectLog[], title: string, start: string, end: string): Promise<string> {
+        const projAny: any = project || {};
         const boqItems = project.boqItems || [];
-        const boqTotalValue = boqItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
-        const boqExecutedValue = boqItems.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0);
+        const boqTotalValue = boqItems.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0);
+        const boqExecutedValue = boqItems.reduce((sum, item) => sum + ((Number(item.executedQuantity) || 0) * (Number(item.unitPrice) || 0)), 0);
         const financialProgress = boqTotalValue > 0 ? (boqExecutedValue / boqTotalValue) * 100 : 0;
 
-        const paymentsTotal = project.payments?.reduce((acc, p) => acc + (p.netAmount || 0), 0) || 0;
+        const payments = (project.payments || []) as any[];
+        const paymentsTotal = payments.reduce((acc, p) => acc + (Number(p.netAmount) || Number(p.amount) || 0), 0);
         
         const logsContext = logs.length > 0 
-            ? logs.map(l => `[${l.date}] ${l.content}`).join('\n')
-            : "لا يوجد يوميات مسجلة في هذه الفترة.";
+            ? logs.map(l => `• [${l.date}] ${l.content} ${l.boqItemId ? `(مرتبط ببند المقايسة: ${l.boqItemId})` : ''}`).join('\n')
+            : "لا توجد يوميات مسجلة خلال هذه الفترة المحددة.";
 
-        const paymentsContext = (project.payments || []).length > 0
-            ? project.payments.map(p => `[${p.date}] Net: ${p.netAmount} EGP | Note: ${p.note}`).join('\n')
-            : "لا يوجد مستخلصات.";
+        const boqContext = boqItems.length > 0
+            ? boqItems.map((b, i) => `• [بند ${b.itemCode || i+1}] ${b.description}: تعاقدي ${b.quantity} ${b.unit || 'م3'} | منفذ ${b.executedQuantity || 0} | متبقي ${Math.max(0, (b.quantity || 0) - (b.executedQuantity || 0))} | فئة ${(b.unitPrice || 0).toLocaleString()} ج.م | إجمالي ${((b.quantity || 0) * (b.unitPrice || 0)).toLocaleString()} ج.م`).join('\n')
+            : "لا توجد بنود مقايسة مسجلة.";
+
+        const paymentsContext = payments.length > 0
+            ? payments.map((p, i) => `• [مستخلص ${p.invoiceNumber || p.number || i+1}] بتاريخ: ${p.date} | إجمالي أعمال: ${(p.grossAmount || p.currentWorkValue || 0).toLocaleString()} ج.م | خصم ضمان: ${(p.retentionDeduction || p.retention || 0).toLocaleString()} | خصم دفعة مقدمة: ${(p.advanceDeduction || p.advancePayment || 0).toLocaleString()} | استقطاعات وضرائب: ${(p.taxDeduction || p.taxes || 0).toLocaleString()} | صافي مستحق: ${(p.netAmount || p.amount || 0).toLocaleString()} ج.م | تراكمي: ${(p.cumulativeAmount || p.netAmount || 0).toLocaleString()} ج.م | بيان: ${p.note || ''}`).join('\n')
+            : "لا توجد مستخلصات مسجلة.";
             
-        const reportsContext = (project.engineeringReports || []).length > 0
-            ? project.engineeringReports.map(r => `[${new Date(r.date).toLocaleDateString()}] ${r.type}: ${r.title}`).join('\n')
-            : "لا توجد تقارير.";
+        const soilContext = projAny.soilReport && String(projAny.soilReport).trim().length > 0 
+            ? String(projAny.soilReport) 
+            : "لم يتم إدخال تقرير فحص تربة وتوصيات جسات مفصل.";
 
-        const rfisContext = (project.rfis || []).map(r => `[${r.date}] ${r.subject} - Status: ${r.status}`).join('\n');
-        const ncrsContext = (project.ncrs || []).map(n => `[${n.issueDate}] ${n.description} - Status: ${n.status}`).join('\n');
+        const reportsContext = (project.engineeringReports || []).length > 0
+            ? project.engineeringReports.map(r => `• [${r.date || 'تاريخ غير محدد'}] [${r.type}] ${r.title}`).join('\n')
+            : "لا توجد تقارير هندسية سابقة.";
+
+        const rfisContext = (project.rfis || []).map(r => `• [${r.date}] ${r.subject} - حالة: ${r.status}`).join('\n');
+        const ncrsContext = (project.ncrs || []).map(n => `• [${n.issueDate}] ${n.description} - حالة: ${n.status}`).join('\n');
 
         const prompt = `
-            **ROLE:** Unified Engineering Consultant Center (المركز الاستشاري الموحد - يضم مدير عام، مدير تكاليف وعقود، مدير مكتب فني، ومدير موقع).
-            **TASK:** Generate a Comprehensive Executive Report: "${title}" for the period (${start} to ${end}).
-            **LANGUAGE:** Professional Arabic.
+            **ROLE:** Unified Engineering Consultant Center (المركز الاستشاري الموحد للمشروع - يضم المدير العام، مدير التكاليف والعقود، مدير المكتب الفني وضبط الجودة، ومدير الموقع والسلامة).
+            **TASK:** Generate a Dazzling, Comprehensive, Publication-Grade Executive Report: "${title}" for the period (${start} to ${end}).
+            **LANGUAGE:** Professional Arabic (المصطلحات الهندسية الرسمية واللغة العربية الفصحى).
             
             **PROJECT DATA (SOURCE OF TRUTH - DO NOT HALLUCINATE OR INVENT DATA):**
-            - Project Name: ${project.name}
-            - Status: ${project.status}
-            - Financial Progress: ${financialProgress.toFixed(1)}%
-            - Total Contract Value: ${boqTotalValue.toLocaleString()} EGP
-            - Total Executed Value: ${boqExecutedValue.toLocaleString()} EGP
-            - Total Paid: ${paymentsTotal.toLocaleString()} EGP
+            - اسم المشروع: ${project.name || 'بدون اسم'}
+            - المقاول العام: ${project.contractor || 'غير محدد'}
+            - الاستشاري: ${projAny.consultant || 'غير محدد'}
+            - حالة المشروع: ${project.status || 'ساري'}
+            - نسبة الإنجاز المالي: ${financialProgress.toFixed(1)}%
+            - القيمة التعاقدية الإجمالية للمقايسة: ${boqTotalValue.toLocaleString()} جنيه مصري
+            - إجمالي قيمة الأعمال المنفذة: ${boqExecutedValue.toLocaleString()} جنيه مصري
+            - إجمالي المنصرف بالمستخلصات: ${paymentsTotal.toLocaleString()} جنيه مصري
             
-            **LOGS DURING THIS PERIOD:**
+            **سجل المقايسة التفصيلي:**
+            ${boqContext}
+
+            **سجل المستخلصات والدفعات المعتمدة:**
+            ${paymentsContext}
+
+            **تقرير فحص التربة والجسات:**
+            ${soilContext}
+
+            **سجل اليوميات الميدانية خلال فترة التقرير:**
             ${logsContext}
             
-            **PAYMENTS HISTORY:**
-            ${paymentsContext}
-            
-            **REPORTS HISTORY:**
+            **سجل التقارير الهندسية والأرشيف:**
             ${reportsContext}
             
-            **RFIs & NCRs:**
-            ${rfisContext}
-            ${ncrsContext}
+            **طلبات المعلومات وملاحظات الجودة (RFIs & NCRs):**
+            ${rfisContext || 'لا توجد طلبات معلومات'}
+            ${ncrsContext || 'لا توجد تقارير عدم مطابقة'}
 
             **REQUIREMENTS:**
-            1. **Mobile Optimization:** The report MUST be 100% width on mobile screens. No side margins or padding in the container.
-            2. **Dynamic Tables:** Use \`width="100%"\` for all tables. Tables must be responsive and never overflow the screen. Use \`table-layout: auto\`.
-            3. يجب أن يكون التقرير بناءً على اطلاع تام وفهم تام لجميع بيانات المشروع المذكورة أعلاه.
-            4. يجب أن يكون التقرير شاملاً وكاملاً ويغطي جميع التفاصيل، ويعطي الموقف ويحلل موقف المشروع ونسبة تقدمه أو تأخره.
-            5. يجب إعطاء البيانات المسجلة بدون أي تعديل أو بيانات وهمية.
-            6. يجب تقديم النصائح والتوجيهات وتحليل المخاطر المتوقعة.
+            1. **Mobile & Print Optimization:** Report must be 100% width, fully responsive, and look gorgeous on screen and in print.
+            2. **Dynamic Tables:** All tables must have \`width="100%"\` with natural word wrapping in all table cells and column headers. Never wrap tables inside an \`info-box\` or text block.
+            3. **Pure Project Truth:** Deliver factual analysis based 100% on the live project register above. Do not invent items or numbers.
+            4. **Visual Hierarchy:** Use clean sections, stat cards, clear tables, and colored alert boxes (\`info-box\`, \`success-box\`, \`warning-box\`, \`cost-box\`).
+            5. **Direct Title:** Start directly with \`<h1>${title}</h1>\` without any blue header bar.
             
             **STRICT REPORT STRUCTURE (HTML):**
-            
             <h1>${title} (${start} - ${end})</h1>
 
-            <h3>1. الموقف التنفيذي والمالي (Executive & Financial Status)</h3>
-            <div class="info-box editable-box">
-                <p>تحليل شامل للموقف ونسبة التقدم أو التأخير بناءً على البيانات الحقيقية للمشروع.</p>
+            <div class="cost-box editable-box">
+                <p><strong>موجز المؤشرات القياسية للمشروع:</strong> القيمة التعاقدية: <strong>${boqTotalValue.toLocaleString()} ج.م</strong> | المنفذ بالمقايسة: <strong>${boqExecutedValue.toLocaleString()} ج.م (${financialProgress.toFixed(1)}%)</strong> | المنصرف بالمستخلصات: <strong>${paymentsTotal.toLocaleString()} ج.م</strong></p>
             </div>
 
-            <h3>2. تحليل البيانات والأعمال المنجزة (Data & Completed Works Analysis)</h3>
+            <h3>1. الموقف التنفيذي والمالي المتكامل (Executive & Financial Status)</h3>
+            <div class="info-box editable-box">
+                <p>تحليل استراتيجي يربط بين سير الأعمال الميدانية ونسب الصرف المالي والجدول الزمني، وتقييم أداء المقاول من واقع اليوميات والمستخلصات.</p>
+            </div>
+
+            <h3>2. جدول مطابقة الأعمال المنفذة بالمستخلصات والمقايسة (Reconciliation Table)</h3>
             <div class="table-responsive">
                 <table style="width:100%; border-collapse: collapse; margin: 10px 0; font-size: 0.9em;">
                     <thead>
                         <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
-                            <th style="padding: 8px; text-align: right;">التاريخ</th>
-                            <th style="padding: 8px; text-align: right;">البيانات المسجلة (أحداث/مستخلصات)</th>
-                            <th style="padding: 8px; text-align: right;">تحليل الاستشاري</th>
+                            <th style="padding: 8px; text-align: right;">التاريخ / المرجع</th>
+                            <th style="padding: 8px; text-align: right;">البيان وسجل الأعمال</th>
+                            <th style="padding: 8px; text-align: right;">الأثر المالي والتنفيذي</th>
+                            <th style="padding: 8px; text-align: right;">تحليل وتقييم الاستشاري</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <!-- Summarize actual data into rows. DO NOT INVENT DATA. -->
+                        <!-- Summarize actual logs and payments into clean rows based on real data -->
                     </tbody>
                 </table>
             </div>
 
-            <h3>3. تحليل المخاطر المتوقعة (Risk Analysis)</h3>
-            <div class="warning-box editable-box">
-                <p>تحليل المخاطر بناءً على المعطيات السابقة (تأخيرات، جودة، تدفق نقدي).</p>
+            <h3>3. تقييم الجودة والتربة والأعمال الميدانية (Quality, Soil & Field Analysis)</h3>
+            <div class="info-box editable-box">
+                <p>تحليل فني يغطي مطابقة الأعمال للكود المصري، وحالة التربة والتوصيات الجيوتقنية ومستوى المياه الجوفية إن وجد.</p>
             </div>
 
-            <h3>4. توجيهات المركز الاستشاري (Consultant Directives)</h3>
+            <h3>4. مصفوفة المخاطر المتوقعة والإجراءات الوقائية (Risk Matrix)</h3>
+            <div class="warning-box editable-box">
+                <p>رصد أدق المخاطر (الزمنية، التمويلية، الفنية، أو السلامة) وسبل تفاديها قبل تفاقمها.</p>
+            </div>
+
+            <h3>5. توجيهات وقرارات المركز الاستشاري الموحد (Consultant Directives)</h3>
             <div class="success-box editable-box">
                 <ul>
-                    <li><strong>توجيهات الإدارة العليا:</strong> ...</li>
-                    <li><strong>توجيهات إدارة العقود والتكاليف:</strong> ...</li>
-                    <li><strong>توجيهات المكتب الفني:</strong> ...</li>
-                    <li><strong>توجيهات إدارة الموقع:</strong> ...</li>
+                    <li><strong>توجيهات المدير العام:</strong> قرارات عليا لحسم مسار المشروع وحماية المالك.</li>
+                    <li><strong>توجيهات مدير التكاليف والعقود:</strong> تعليمات تدقيق المستخلصات، حفظ الحقوق التعاقدية، وضبط التدفق النقدي.</li>
+                    <li><strong>توجيهات مدير المكتب الفني:</strong> اشتراطات الكود المصري، اعتماد المواد، وإغلاق أي ملاحظات فنية.</li>
+                    <li><strong>توجيهات مدير الموقع والسلامة:</strong> ضوابط التنفيذ الميداني، معدلات الإنجاز اليومية، وإجراءات السلامة المهنية.</li>
                 </ul>
             </div>
         `;

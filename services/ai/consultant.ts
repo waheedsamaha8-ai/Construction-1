@@ -177,6 +177,112 @@ Answer with **EXTREME PRECISION** based *only* on the project data.
 
 import { Type, FunctionDeclaration } from './core';
 
+function buildLiveProjectDossier(project: any): string {
+    if (!project) return "لا توجد بيانات متاحة للمشروع في سجل المشروع حالياً.";
+
+    const boq: any[] = project.boqItems || [];
+    const payments: any[] = project.payments || [];
+    const logs: any[] = project.executionLogs || [];
+    const reports: any[] = project.engineeringReports || [];
+    const soilReport = project.soilReport || '';
+
+    const boqTotalValue = boq.reduce((sum: number, item: any) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0);
+    const boqExecutedValue = boq.reduce((sum: number, item: any) => sum + ((Number(item.executedQuantity) || 0) * (Number(item.unitPrice) || 0)), 0);
+    const paymentsTotalNet = payments.reduce((sum: number, p: any) => sum + (Number(p.netAmount) || Number(p.amount) || 0), 0);
+    const progressPct = boqTotalValue > 0 ? ((boqExecutedValue / boqTotalValue) * 100).toFixed(1) : '0';
+
+    // 1. BOQ detailed list
+    const boqFormatted = boq.length > 0
+        ? boq.map((b, idx) => {
+            const code = b.itemCode !== undefined ? b.itemCode : (b.itemNumber !== undefined ? b.itemNumber : idx + 1);
+            const desc = b.description || 'بدون بيان';
+            const unit = b.unit || 'م3';
+            const qty = Number(b.quantity) || 0;
+            const exec = Number(b.executedQuantity) || 0;
+            const rem = Math.max(0, qty - exec);
+            const price = Number(b.unitPrice) || 0;
+            const total = qty * price;
+            return `• [بند ${code}] ${desc} | الوحدة: ${unit} | التعاقدي: ${qty} | المنفذ: ${exec} | المتبقي: ${rem} | الفئة: ${price.toLocaleString()} ج.م | الإجمالي: ${total.toLocaleString()} ج.م`;
+        }).join('\n')
+        : "لا توجد بنود مقايسة مدخلة.";
+
+    // 2. Payments detailed list
+    const paymentsFormatted = payments.length > 0
+        ? payments.map((p, idx) => {
+            const inv = p.invoiceNumber || p.number || (idx + 1);
+            const date = p.date || 'بدون تاريخ';
+            const gross = Number(p.grossAmount) || Number(p.currentWorkValue) || 0;
+            const net = Number(p.netAmount) || Number(p.amount) || 0;
+            const cum = Number(p.cumulativeAmount) || net;
+            const ret = Number(p.retentionDeduction) || Number(p.retention) || 0;
+            const adv = Number(p.advanceDeduction) || Number(p.advancePayment) || 0;
+            const tax = Number(p.taxDeduction) || Number(p.taxes) || 0;
+            const note = p.note || p.notes || '';
+            const itemsStr = Array.isArray(p.items) && p.items.length > 0
+                ? ` | البنود المشمولة: [${p.items.map((it: any) => `بند ${it.itemCode || it.itemNumber || ''}: ك.حالية ${it.currentQuantity || 0}`).join(', ')}]`
+                : '';
+            return `• [مستخلص ${inv}] بتاريخ: ${date} | إجمالي الأعمال: ${gross.toLocaleString()} ج.م | استقطاع ضمان أعمال: ${ret.toLocaleString()} | استقطاع دفعة مقدمة: ${adv.toLocaleString()} | ضرائب وتأمينات: ${tax.toLocaleString()} | الصافي المستحق: ${net.toLocaleString()} ج.م | التراكمي: ${cum.toLocaleString()} ج.م | ملاحظات: ${note}${itemsStr}`;
+        }).join('\n')
+        : "لا توجد مستخلصات مسجلة.";
+
+    // 3. Execution logs
+    const sortedLogs = [...logs].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const logsFormatted = sortedLogs.length > 0
+        ? sortedLogs.map((l, idx) => {
+            const itemLink = l.boqItemId ? ` [مرتبط ببند المقايسة: ${l.boqItemId}]` : '';
+            const photosCount = Array.isArray(l.images) ? l.images.length : (l.imageUrl ? 1 : 0);
+            return `• [سجل ${idx + 1}] [${l.date}] ${l.content}${itemLink}${photosCount > 0 ? ` (مرفق ${photosCount} صور ميدانية)` : ''}`;
+        }).join('\n')
+        : "لا توجد يوميات مسجلة.";
+
+    // 4. Soil report
+    const soilSummary = soilReport && soilReport.trim().length > 0
+        ? soilReport
+        : "لم يتم حفظ تقرير فحص تربة وتوصيات جسات مفصل.";
+
+    // 5. Engineering reports
+    const reportsFormatted = reports.length > 0
+        ? reports.map((r, idx) => {
+            const snippet = r.content ? r.content.replace(/<[^>]*>/g, ' ').substring(0, 800) : '';
+            return `• [تقرير ${idx + 1}] [${r.date || 'تاريخ غير محدد'}] نوع: [${r.type || 'تقرير هندسي'}] "${r.title}": ${snippet}`;
+        }).join('\n')
+        : "لا توجد تقارير هندسية سابقة.";
+
+    return `
+=== ملف سجل المشروع الحي الشامل (LIVE PROJECT REGISTER DOSSIER) ===
+اسم المشروع: ${project.name || 'بدون اسم'}
+الموقع: ${project.location || 'غير محدد'}
+المقاول العام: ${project.contractor || 'غير محدد'}
+الاستشاري: ${project.consultant || 'غير محدد'}
+حالة المشروع: ${project.status || 'ساري'}
+القيمة التعاقدية الإجمالية للمقايسة: ${boqTotalValue.toLocaleString()} جنيه مصري
+إجمالي قيمة الأعمال المنفذة بالمقايسة: ${boqExecutedValue.toLocaleString()} جنيه مصري
+نسبة الإنجاز المالي: ${progressPct}%
+إجمالي المنصرف بالمستخلصات: ${paymentsTotalNet.toLocaleString()} جنيه مصري
+
+--- [1. تبويب المقايسة التراكمي (BOQ ITEMS)] ---
+(عدد بنود المقايسة: ${boq.length})
+${boqFormatted}
+
+--- [2. تبويب المستخلصات والشهادات المالية (PAYMENTS HISTORY)] ---
+(عدد المستخلصات: ${payments.length})
+${paymentsFormatted}
+
+--- [3. تبويب اليوميات الميدانية وسير الأعمال (DAILY EXECUTION LOGS)] ---
+(عدد سجلات اليوميات: ${logs.length})
+${logsFormatted}
+
+--- [4. تبويب الجسات وفحص التربة الأساسي (SOIL REPORT)] ---
+${soilSummary}
+
+--- [5. تبويب التقارير الهندسية والأرشيفية المعتمدة (ENGINEERING REPORTS)] ---
+(عدد التقارير: ${reports.length})
+${reportsFormatted}
+
+=== نهاية ملف سجل المشروع الحي ===
+`;
+}
+
 export const consultantService = {
     async specializedConsultation(project: any, agentType: string, prompt: string, prevContent: string = '', files: File[] = []): Promise<string> {
         
@@ -259,36 +365,35 @@ export const consultantService = {
 
         const tools = [{ functionDeclarations: [getProjectInventory, readDocument, searchLogs, searchReports, searchBOQ, searchOtherDocs, getPayments] }];
 
+        // Build live dossier from the in-memory project register
+        const liveDossier = buildLiveProjectDossier(project);
+
         // Merge the Master Prompt with Data Context
         const systemInstruction = `
             ${CONSULTANT_MASTER_PROMPT}
             ${SHARED_SYSTEM_MEMORY}
             
+            **المركز الاستشاري الموحد للمشروع (UNIFIED PROJECT CONSULTING CENTER)**
+            أنت عقل المركز الاستشاري الموحد للمشروع، وتعمل حالياً بالكامل داخل هذا المشروع وسجل بياناته الحي:
+            [اسم المشروع: ${project?.name || 'المشروع الحالي'}]
+            
             **AGENT SPECIFIC ROLE:**
             ${agentPrompt}
- 
-            **STRATEGIC DATA RETRIEVAL (RAG PROTOCOL):**
-            Project data is massive and is NOT provided in this prompt. You MUST use the provided tools to fetch data.
-            1. **Inventory First:** Start by calling \`getProjectInventory\` to see the project summary and what data exists.
-            2. **Search & Filter:** Use \`searchLogs\`, \`searchReports\`, \`searchBOQ\`, or \`getPayments\` to find specific information based on the user's question.
-            3. **Targeted Reading:** If you need the full text of a specific log or report, use \`readDocument\`.
-            
-            **CRITICAL RULES FOR TOOLS:**
-            - Never guess or hallucinate data. Always use tools to fetch the exact numbers, dates, and text.
-            - DO NOT call the same tool with the same arguments multiple times.
-            - **PARALLEL CALLING:** You can and SHOULD call multiple tools at the same time if you need data from different sources (e.g., call searchLogs and searchReports in the same turn).
-            - **SYNONYM SEARCH (MANDATORY):** When searching, ALWAYS provide multiple keywords (comma-separated) to cover synonyms, singular/plural forms, and related engineering terms.
-              - Example: If user asks for "Piles", search for "piles,pile,khazouk,خوازيق,خازوق".
-              - Example: If user asks for "Replacement Soil", search for "replacement,soil,ehlal,احلال,إحلال,تربة".
-              - Example: If user asks for "Foundations", search for "foundation,footing,base,قواعد,أساسات,اساسات".
-            - Once you have enough data to answer the user's question, STOP calling tools and provide the final HTML answer.
+
+            **LIVE PROJECT REGISTER DOSSIER (ملف بيانات سجل المشروع الحي الكامل):**
+            تم تزويدك بالبيانات الحية المباشرة لسجل المشروع بجميع أقسامه (اليوميات، المستخلصات، المقايسة، الجسات والتقارير):
+            ${liveDossier}
+
+            **إرشادات العمل والتكامل الاستشاري:**
+            1. أنت مطلع على كافة تفاصيل سجل المشروع المذكورة أعلاه بنسبة 100%.
+            2. استخدم هذه البيانات الحقيقية فقط (الأرقام، النسب، التواريخ، البنود، المستخلصات، كميات التربة، اليوميات).
+            3. يمنع اختلاق أو افتراض بيانات من خارج السجل (No Hallucination).
+            4. الأدوات التفاعلية (Tools) متاحة لك دائماً للبحث التفصيلي في نصوص التقارير أو تصفية السجلات عند الحاجة.
+            5. قدم مخرجات هندسية راقية مبهرة، جداول منسقة بعرض 100% مع التفاف النص، وصناديق ملونة واضحة (info-box, success-box, warning-box, cost-box).
+            6. ابدأ الرد مباشرة بعنوان رئيسي <h1> ثم متن التحليل الاستشاري دون أي هيدر أزرق.
 
             **USER REQUEST:**
             ${prompt}
-
-            **IMPORTANT FORMATTING INSTRUCTION:**
-            - Start your response directly with a clean main title: \`<h1>عنوان التقرير الاستشاري</h1>\` (Do NOT use any \`.report-header\` div or blue header box).
-            - Never place \`<table>\` inside an \`info-box\` or any text box; place \`<table>\` directly in the report body at 100% width with natural text wrapping in all cells and column headers.
             `;
 
         try {
@@ -504,12 +609,21 @@ export const consultantService = {
                         } else if (call.name === "getPayments") {
                             let payments = [...(project.payments || [])].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
                             responseData = { 
-                                payments: payments.map((p: any) => ({ 
+                                totalPayments: payments.length,
+                                payments: payments.map((p: any, idx: number) => ({ 
                                     id: p.id, 
+                                    invoiceNumber: p.invoiceNumber || p.number || (idx + 1),
                                     date: p.date, 
+                                    grossAmount: p.grossAmount || p.currentWorkValue || 0,
+                                    retentionDeduction: p.retentionDeduction || p.retention || 0,
+                                    advanceDeduction: p.advanceDeduction || p.advancePayment || 0,
+                                    taxDeduction: p.taxDeduction || p.taxes || 0,
                                     amount: p.netAmount || p.amount, 
+                                    netAmount: p.netAmount || p.amount,
                                     cumulative: p.cumulativeAmount,
-                                    status: p.status 
+                                    status: p.status,
+                                    note: p.note || p.notes || '',
+                                    items: p.items || []
                                 })) 
                             };
                         }

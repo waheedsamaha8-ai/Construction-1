@@ -932,18 +932,6 @@ export default function ProjectFolder() {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setShowAI(true);
-              }}
-              className="w-8 h-8 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-sm hover:shadow-indigo-500/40 transition transform active:scale-90"
-              title="المركز الاستشاري الموحد"
-            >
-              <i className="fa-solid fa-wand-magic-sparkles text-xs"></i>
-            </button>
-          )}
-          {!isArchive && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
                 setUseGeotagging(!useGeotagging);
               }}
               className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm border transition relative ${
@@ -1171,7 +1159,7 @@ export default function ProjectFolder() {
           />
       )}
       {previewItem && ( <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} /> )}
-      {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} onClose={() => setShowAI(false)} onProjectUpdated={(updated) => setCurrentProject(updated)} />}
+      {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} projectData={currentProject} onClose={() => setShowAI(false)} onProjectUpdated={(updated) => setCurrentProject(updated)} />}
     </Layout>
   );
 }
