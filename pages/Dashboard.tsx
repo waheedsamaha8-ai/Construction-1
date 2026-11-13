@@ -9,6 +9,7 @@ import FileViewer from '../components/FileViewer';
 import ProjectMap from '../components/ProjectMap'; 
 import ConfirmModal from '../components/ConfirmModal'; 
 import MarketPricesModal from '../components/MarketPricesModal';
+import ProfessionalPricingModal from '../components/ProfessionalPricingModal';
 import InstantExpert from '../components/InstantExpert'; // IMPORT NEW COMPONENT
 import InteractiveReportViewer from '../components/InteractiveReportViewer';
 import { api } from '../services/api';
@@ -94,6 +95,7 @@ const Dashboard: React.FC = () => {
   
   // --- NEW TOOLS STATE ---
   const [showMarket, setShowMarket] = useState(false);
+  const [showProfessionalPricing, setShowProfessionalPricing] = useState(false);
   const [showInstantExpert, setShowInstantExpert] = useState(false); // NEW STATE
 
   const isIframe = typeof window !== 'undefined' ? window.self !== window.top : false;
@@ -643,6 +645,15 @@ const Dashboard: React.FC = () => {
               <input type="text" placeholder="بحث شامل..." className="w-full pr-10 pl-4 py-3 rounded-2xl border-none shadow-sm focus:ring-2 focus:ring-blue-500 outline-none transition bg-white text-slate-900 font-bold" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               {isSearchingFiles && <div className="absolute inset-y-0 left-0 pl-4 flex items-center"><i className="fa-solid fa-circle-notch fa-spin text-blue-500"></i></div>}
           </div>
+
+          {/* Professional Construction Item Pricing Tool */}
+          <button 
+            onClick={() => setShowProfessionalPricing(true)} 
+            className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition transform hover:-translate-y-1 bg-gradient-to-br from-amber-500 to-orange-600 text-white hover:from-amber-600 hover:to-orange-700"
+            title="التسعير الاحترافي وتحليل أسعار البنود الإنشائية"
+          >
+              <i className="fa-solid fa-file-invoice-dollar text-lg"></i>
+          </button>
           
           {/* Market Tool */}
           <button 
@@ -705,7 +716,11 @@ const Dashboard: React.FC = () => {
             {!searchQuery && (
                 <div className="lg:col-span-1 space-y-4 mt-4 lg:mt-0">
                      {/* Tip Card */}
-                     <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-3xl p-4 text-white shadow-lg animate-slide-up relative overflow-hidden group">
+                     <div className={`rounded-3xl p-4 text-white shadow-lg animate-slide-up relative overflow-hidden group transition-colors duration-300 ${
+                         isTipSaved
+                             ? 'bg-gradient-to-br from-emerald-600 via-emerald-700 to-green-800 border border-emerald-400/40'
+                             : 'bg-gradient-to-br from-indigo-600 to-purple-700'
+                     }`}>
                          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
                          <div className="flex justify-between items-start mb-3 relative z-10">
                              <h3 className="font-bold text-sm flex items-center gap-2">
@@ -715,12 +730,12 @@ const Dashboard: React.FC = () => {
                          </div>
                          <p className="text-xs font-medium leading-relaxed mb-4 min-h-[50px] opacity-90 relative z-10">{tipOfTheDay}</p>
                          <div className="flex gap-2 relative z-10">
-                             <button onClick={handleGenerateFreshTip} disabled={isGeneratingFreshTip} className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 transition"><i className={`fa-solid ${isGeneratingFreshTip ? 'fa-circle-notch fa-spin' : 'fa-rotate'}`}></i> معلومة جديدة</button>
+                             <button onClick={handleGenerateFreshTip} disabled={isGeneratingFreshTip} className="flex-1 bg-white/15 hover:bg-white/25 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 transition"><i className={`fa-solid ${isGeneratingFreshTip ? 'fa-circle-notch fa-spin' : 'fa-rotate'}`}></i> معلومة جديدة</button>
                              <button
                                  onClick={handleExplainTip}
                                  className={`flex-1 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition ${
                                      isTipSaved
-                                         ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-md border border-emerald-400'
+                                         ? 'bg-white text-emerald-800 hover:bg-emerald-50 shadow-md'
                                          : 'bg-white/20 hover:bg-white/30 text-white'
                                  }`}
                              >
@@ -948,6 +963,7 @@ const Dashboard: React.FC = () => {
       )}
 
       {showMarket && <MarketPricesModal onClose={() => setShowMarket(false)} />}
+      {showProfessionalPricing && <ProfessionalPricingModal onClose={() => setShowProfessionalPricing(false)} />}
       {showInstantExpert && <InstantExpert onClose={() => setShowInstantExpert(false)} />} {/* RENDER INSTANT EXPERT */}
 
       {previewItem && <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} />

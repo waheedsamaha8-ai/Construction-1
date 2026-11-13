@@ -1,6 +1,8 @@
 import { AI_REPORT_INSTRUCTION } from "../reportGenerator";
 import { db } from "../firebaseConfig";
 import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import * as XLSX from "xlsx";
+import mammoth from "mammoth";
 
 // --- GENAI TYPE DEFINITIONS (CLIENT-SAFE REPLACEMENTS) ---
 export enum Type {
@@ -120,13 +122,90 @@ export const compressImageForAI = async (file: File): Promise<string> => {
     });
 };
 
-export const fileToPart = async (file: Blob | File, useCompression = false) => {
+export const fileToPart = async (file: Blob | File, useCompression = false): Promise<any> => {
+    const fileName = (file instanceof File ? file.name : '').toLowerCase();
+    const mimeType = (file.type || '').toLowerCase();
+
+    // 1. Handle Excel & CSV files (.xlsx, .xls, .csv)
+    if (
+        fileName.endsWith('.xlsx') ||
+        fileName.endsWith('.xls') ||
+        fileName.endsWith('.csv') ||
+        mimeType.includes('spreadsheet') ||
+        mimeType.includes('ms-excel') ||
+        mimeType.includes('excel') ||
+        mimeType === 'text/csv'
+    ) {
+        try {
+            const buffer = await file.arrayBuffer();
+            const workbook = XLSX.read(buffer, { type: 'array' });
+            const sheetsContent = workbook.SheetNames.map((sheetName) => {
+                const sheet = workbook.Sheets[sheetName];
+                const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+                return `=== ورقة عمل (Sheet): ${sheetName} ===\n${csv}`;
+            }).join('\n\n');
+            return {
+                text: `محتوى ملف الإكسل المرفق (${file instanceof File ? file.name : 'Excel'}):\n${sheetsContent}`
+            };
+        } catch (e) {
+            console.warn("Excel parsing failed in fileToPart:", e);
+        }
+    }
+
+    // 2. Handle Word files (.docx, .doc)
+    if (
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc') ||
+        mimeType.includes('wordprocessingml') ||
+        mimeType.includes('msword') ||
+        mimeType.includes('word')
+    ) {
+        try {
+            const buffer = await file.arrayBuffer();
+            try {
+                const htmlResult = await mammoth.convertToHtml({ arrayBuffer: buffer });
+                if (htmlResult.value && htmlResult.value.trim()) {
+                    return {
+                        text: `محتوى ملف الوورد المرفق (${file instanceof File ? file.name : 'Word'}):\n${htmlResult.value}`
+                    };
+                }
+            } catch {}
+            try {
+                const textResult = await mammoth.extractRawText({ arrayBuffer: buffer });
+                if (textResult.value && textResult.value.trim()) {
+                    return {
+                        text: `محتوى ملف الوورد المرفق (${file instanceof File ? file.name : 'Word'}):\n${textResult.value}`
+                    };
+                }
+            } catch {}
+            const fallbackText = new TextDecoder('utf-8', { fatal: false })
+                .decode(buffer)
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (fallbackText) {
+                return {
+                    text: `محتوى ملف الوورد المرفق (${file instanceof File ? file.name : 'Word'}):\n${fallbackText.slice(0, 60000)}`
+                };
+            }
+        } catch (e) {
+            console.warn("Word parsing failed in fileToPart:", e);
+        }
+    }
+
+    // 3. Handle Images with optional compression
     if (useCompression && file instanceof File && file.type.startsWith('image/')) {
         try {
             const base64 = await compressImageForAI(file);
             return { inlineData: { data: base64, mimeType: 'image/jpeg' } };
         } catch (e) { console.warn("Compression failed", e); }
     }
+
+    // 4. Default binary/base64 inlineData (PDF, Images, Audio)
+    const resolvedMime =
+        mimeType ||
+        (fileName.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
+
     return new Promise<{inlineData: {data: string, mimeType: string}}>((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -135,7 +214,7 @@ export const fileToPart = async (file: Blob | File, useCompression = false) => {
             if (!base64) {
                 console.warn("fileToPart: No base64 data found in result");
             }
-            resolve({ inlineData: { data: base64, mimeType: file.type || 'application/octet-stream' } });
+            resolve({ inlineData: { data: base64, mimeType: resolvedMime } });
         };
         reader.onerror = reject;
         reader.readAsDataURL(file);

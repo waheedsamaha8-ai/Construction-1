@@ -7,14 +7,39 @@ export const analysisService = {
         try {
             const filePart = await fileToPart(file, true);
             const boqContext = projectBoq.map(b => 
-                `Code: ${b.itemCode} | Desc: ${b.description} | Unit: ${b.unit} | ContractQty: ${b.quantity} | UnitPrice: ${b.unitPrice}`
+                `ID: ${b.id} | Code: ${b.itemCode} | Desc: ${b.description} | Unit: ${b.unit} | ContractQty: ${b.quantity} | UnitPrice: ${b.unitPrice}`
             ).join('\n');
 
             const prompt = `
                 **ROLE:** Senior Quantity Surveyor (Construction).
-                **TASK:** Analyze the attached Payment Certificate.
-                **OFFICIAL BOQ (Reference):** ${boqContext}
-                **OUTPUT:** JSON Format Only.
+                **TASK:** Analyze the attached Payment Certificate (مستخلص أعمال) from PDF, Excel, Word, or Image.
+                **OFFICIAL BOQ (Reference):**
+                ${boqContext || 'No reference BOQ provided'}
+                
+                **INSTRUCTIONS:**
+                Extract the payment certificate header data and line items into a JSON object with this exact structure:
+                {
+                  "invoiceNumber": "string (invoice/IPC number, e.g. '1', '2')",
+                  "date": "YYYY-MM-DD (if found, else empty string)",
+                  "cumulativeAmount": number (total cumulative value of works up to this payment),
+                  "netAmount": number (net current payment amount if stated),
+                  "items": [
+                    {
+                      "boqItemId": "matching ID from OFFICIAL BOQ if matched, else empty string",
+                      "itemCode": "string",
+                      "description": "string",
+                      "unit": "string",
+                      "contractQuantity": number,
+                      "prevQuantity": number,
+                      "currQuantity": number,
+                      "totalQuantity": number,
+                      "unitPrice": number,
+                      "completionRatio": number (default 100),
+                      "totalValue": number
+                    }
+                  ]
+                }
+                **OUTPUT:** Valid JSON Only.
             `;
 
             const result = await safeGenerateContent(MODEL_SMART, { 
@@ -22,7 +47,37 @@ export const analysisService = {
                 config: { responseMimeType: "application/json" } 
             });
             
-            return JSON.parse(result.text || '{}');
+            const raw = (result.text || '{}').replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(raw || '{}');
+            if (parsed && Array.isArray(parsed.items)) {
+                parsed.items = parsed.items.map((it: any, idx: number) => {
+                    const prevQ = cleanNumber(it.prevQuantity);
+                    const currQ = cleanNumber(it.currQuantity);
+                    const totQ = cleanNumber(it.totalQuantity) || (prevQ + currQ);
+                    const price = cleanNumber(it.unitPrice);
+                    const ratio = cleanNumber(it.completionRatio) || 100;
+                    const totVal = cleanNumber(it.totalValue) || Math.round(totQ * price * (ratio / 100));
+                    return {
+                        boqItemId: it.boqItemId || undefined,
+                        itemCode: String(it.itemCode || (idx + 1)),
+                        description: String(it.description || '').trim(),
+                        unit: String(it.unit || 'م').trim(),
+                        contractQuantity: cleanNumber(it.contractQuantity) || totQ,
+                        prevQuantity: prevQ,
+                        currQuantity: currQ,
+                        totalQuantity: totQ,
+                        unitPrice: price,
+                        completionRatio: ratio,
+                        totalValue: totVal
+                    };
+                });
+                if (!parsed.cumulativeAmount && parsed.items.length > 0) {
+                    parsed.cumulativeAmount = parsed.items.reduce((s: number, i: any) => s + (Number(i.totalValue) || 0), 0);
+                } else if (parsed.cumulativeAmount) {
+                    parsed.cumulativeAmount = cleanNumber(parsed.cumulativeAmount);
+                }
+            }
+            return parsed;
         } catch (e) { return null; }
     },
 
@@ -158,15 +213,31 @@ export const analysisService = {
         } catch (e) { return "فشل تحليل المستند."; }
     },
 
-    async transcribeAndRefineLetterText(audioBlob: Blob): Promise<string> {
+    async transcribeAndRefineLetterText(audioBlob: Blob, mode: 'paragraph' | 'full_letter' = 'paragraph', fallbackTranscript: string = ''): Promise<string> {
         try {
             const filePart = await fileToPart(audioBlob);
-            const prompt = `Transcribe and format as professional Engineering Letter (Arabic HTML). Use bold fonts for clarity.`;
+            const prompt = mode === 'full_letter' ? `
+                **ROLE:** Senior Engineering Consultant & Technical Office Director.
+                **TASK:** Listen carefully to the attached voice recording (and optional speech transcript: "${fallbackTranscript}") and convert it into a complete, formal, well-structured Arabic Engineering Letter in clean HTML.
+                **OUTPUT REQUIREMENTS:**
+                - Return clean HTML ONLY (no markdown fences).
+                - Include a formal greeting, clear technical paragraphs (<p>), bullet points if appropriate (<ul><li>), and a formal closing.
+                - Use clear, authoritative Arabic engineering terminology.
+            ` : `
+                **ROLE:** Senior Engineering Consultant.
+                **TASK:** Transcribe the attached voice recording (and optional speech transcript: "${fallbackTranscript}") into a well-phrased, professional Arabic engineering paragraph or text block ready to be inserted directly at the cursor inside an engineering letter.
+                **OUTPUT REQUIREMENTS:**
+                - Return clean Arabic HTML paragraph(s) (<p>...</p>) ONLY (no markdown fences, no full letter header/footer).
+                - Keep the exact technical meaning dictated by the engineer while refining grammar and professional phrasing.
+            `;
             const result = await safeGenerateContent(MODEL_SMART, {
                 contents: { parts: [filePart, { text: prompt }] }
             });
-            return result.text;
-        } catch (e) { return ""; }
+            const cleaned = (result.text || '').replace(/```html/gi, '').replace(/```/g, '').trim();
+            return cleaned || (fallbackTranscript ? `<p>${fallbackTranscript}</p>` : '');
+        } catch (e) {
+            return fallbackTranscript ? `<p>${fallbackTranscript}</p>` : "";
+        }
     },
 
     async transcribeAudioLog(audioBlob: Blob): Promise<string> {
@@ -606,13 +677,41 @@ export const analysisService = {
     async parseBOQ(file: File): Promise<BOQItem[]> {
         try {
             const filePart = await fileToPart(file);
-            const prompt = `Extract BOQ Items to JSON Array: [{itemCode, description, unit, quantity, unitPrice}].`;
+            const prompt = `
+                **ROLE:** Expert Quantity Surveyor (مهندس حصر ومكتب فني).
+                **TASK:** Extract all Bill of Quantities (BOQ / مقايسة) items from the attached file (Excel, Word, PDF, or Image) into a JSON Array.
+                **SCHEMA:**
+                [
+                  {
+                    "itemCode": "string (رقم البند أو الكود)",
+                    "description": "string (بيان الأعمال بالتفصيل كما ورد بالمقايسة)",
+                    "unit": "string (الوحدة: م3، م2، م.ط، طن، عدد، مقطوعية، إلخ)",
+                    "quantity": number (الكمية),
+                    "unitPrice": number (فئة البند / السعر)
+                  }
+                ]
+                **RULES:**
+                - Extract every single BOQ item accurately.
+                - Convert any Arabic-Indic numerals (٠١٢٣٤٥٦٧٨٩) to standard numbers.
+                - Output valid JSON array ONLY.
+            `;
             const result = await safeGenerateContent(MODEL_SMART, {
                 contents: { parts: [filePart, { text: prompt }] },
                 config: { responseMimeType: "application/json" } 
             });
-            const data = JSON.parse(result.text || '[]');
-            return Array.isArray(data) ? data : [];
+            const rawText = (result.text || '[]').replace(/```json/gi, '').replace(/```/g, '').trim();
+            const data = JSON.parse(rawText || '[]');
+            if (!Array.isArray(data)) return [];
+            return data.map((it: any, idx: number) => ({
+                id: `boq_${Date.now()}_${idx}`,
+                itemCode: String(it.itemCode ?? (idx + 1)),
+                description: String(it.description || '').trim(),
+                unit: String(it.unit || 'عدد').trim(),
+                quantity: cleanNumber(it.quantity),
+                unitPrice: cleanNumber(it.unitPrice),
+                total: cleanNumber(it.quantity) * cleanNumber(it.unitPrice),
+                executedQuantity: 0
+            })).filter(it => it.description.length > 0);
         } catch (e) { return []; }
     },
 

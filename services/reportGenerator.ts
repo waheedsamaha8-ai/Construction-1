@@ -309,7 +309,7 @@ export const REPORT_CSS = `
         font-weight: 800 !important; 
         font-size: 12.5px !important; 
         text-align: center !important; 
-        min-width: 90px !important;
+        min-width: 0 !important;
         white-space: normal !important;
         word-break: normal !important;
         overflow-wrap: normal !important;
@@ -333,7 +333,7 @@ export const REPORT_CSS = `
         font-weight: 600 !important; 
         color: #0f172a !important; 
         text-align: right !important;
-        min-width: 85px !important;
+        min-width: 0 !important;
         white-space: normal !important;
         word-break: normal !important;
         overflow-wrap: normal !important;
@@ -342,7 +342,7 @@ export const REPORT_CSS = `
         line-height: 1.55 !important;
     }
 
-    tr:nth-child(even) td { 
+    tr:nth-child(even) td:not([style*="background"]) { 
         background-color: #f8fafc !important; 
     }
 
@@ -366,6 +366,28 @@ export const REPORT_CSS = `
         min-width: 50px !important;
         line-height: 1.35 !important;
         background-color: #ffffff !important;
+    }
+
+    table.pricing-compact-table {
+        width: 100% !important;
+        min-width: 460px !important;
+        margin: 0 !important;
+        table-layout: auto !important;
+    }
+    table.pricing-compact-table th,
+    table.pricing-compact-table th * {
+        padding: 5px 6px !important;
+        font-size: 10.5px !important;
+        font-weight: 800 !important;
+        line-height: 1.3 !important;
+        text-align: center !important;
+    }
+    table.pricing-compact-table td,
+    table.pricing-compact-table td * {
+        padding: 5px 6px !important;
+        font-size: 10.5px !important;
+        font-weight: 700 !important;
+        line-height: 1.3 !important;
     }
 
     /* PHOTO GRID */

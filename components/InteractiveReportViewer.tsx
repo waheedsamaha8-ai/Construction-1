@@ -284,13 +284,13 @@ export const applyTableColumnWidthToHtml = (
 
         targetTable.style.setProperty('width', '100%', 'important');
         targetTable.style.setProperty('min-width', '580px', 'important');
-        targetTable.style.setProperty('table-layout', 'auto', 'important');
+        targetTable.style.setProperty('table-layout', percent === 'auto' ? 'auto' : 'fixed', 'important');
 
         const rows = Array.from(targetTable.querySelectorAll('tr'));
         const headerRow = targetTable.querySelector('thead tr') || rows[0];
         const colCount = headerRow ? headerRow.children.length : 0;
 
-        // Calculate proportional widths for remaining columns if total > 100%
+        // Calculate proportional widths for remaining columns so total equals 100%
         let adjustedOtherWidths: Record<number, string> = {};
         if (typeof percent === 'number' && headerRow && colCount > 1) {
             const remainingBudget = Math.max(10, 100 - percent);
@@ -301,19 +301,32 @@ export const applyTableColumnWidthToHtml = (
                 if (idx === colIdx) return;
                 const el = c as HTMLElement;
                 const m = (el.style.width || '').match(/(\d+(?:\.\d+)?)%/);
-                if (m) {
-                    const w = parseFloat(m[1]);
-                    otherCols.push({ idx, currentW: w });
-                    sumOtherExplicit += w;
-                }
+                const w = m ? parseFloat(m[1]) : Math.round(100 / colCount);
+                otherCols.push({ idx, currentW: w });
+                sumOtherExplicit += w;
             });
 
-            if (sumOtherExplicit > remainingBudget && sumOtherExplicit > 0) {
+            if (sumOtherExplicit > 0) {
                 otherCols.forEach((col) => {
-                    const scaled = Math.max(5, Math.round((col.currentW / sumOtherExplicit) * remainingBudget));
+                    const scaled = Math.max(4, Math.round((col.currentW / sumOtherExplicit) * remainingBudget));
                     adjustedOtherWidths[col.idx] = `${scaled}%`;
                 });
             }
+        }
+
+        // Sync <colgroup> if present
+        const colgroup = targetTable.querySelector('colgroup');
+        if (colgroup) {
+            const cols = Array.from(colgroup.querySelectorAll('col')) as HTMLElement[];
+            cols.forEach((colEl, idx) => {
+                if (percent === 'auto') {
+                    colEl.style.removeProperty('width');
+                } else if (idx === colIdx) {
+                    colEl.style.setProperty('width', `${percent}%`, 'important');
+                } else if (adjustedOtherWidths[idx]) {
+                    colEl.style.setProperty('width', adjustedOtherWidths[idx], 'important');
+                }
+            });
         }
 
         rows.forEach((row) => {
@@ -330,15 +343,23 @@ export const applyTableColumnWidthToHtml = (
                 cell.style.setProperty('word-break', 'normal', 'important');
                 cell.style.setProperty('overflow-wrap', 'normal', 'important');
                 (cell.style as any).setProperty('word-wrap', 'normal', 'important');
+                cell.style.setProperty('hyphens', 'none', 'important');
 
-                if (idx === colIdx) {
-                    if (percent === 'auto') {
-                        cell.style.removeProperty('width');
-                    } else {
-                        cell.style.width = `${percent}%`;
-                    }
+                cell.querySelectorAll('*').forEach((inner) => {
+                    const el = inner as HTMLElement;
+                    el.style.setProperty('white-space', 'normal', 'important');
+                    el.style.setProperty('word-break', 'normal', 'important');
+                    el.style.setProperty('overflow-wrap', 'normal', 'important');
+                    (el.style as any).setProperty('word-wrap', 'normal', 'important');
+                    el.style.setProperty('min-width', '0', 'important');
+                });
+
+                if (percent === 'auto') {
+                    cell.style.removeProperty('width');
+                } else if (idx === colIdx) {
+                    cell.style.setProperty('width', `${percent}%`, 'important');
                 } else if (adjustedOtherWidths[idx]) {
-                    cell.style.width = adjustedOtherWidths[idx];
+                    cell.style.setProperty('width', adjustedOtherWidths[idx], 'important');
                 }
             });
         });

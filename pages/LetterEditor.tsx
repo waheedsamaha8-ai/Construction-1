@@ -268,6 +268,24 @@ const LetterEditor: React.FC = () => {
   const [showSpacingTools, setShowSpacingTools] = useState(false); 
   const [showMarginTools, setShowMarginTools] = useState(false); 
   const [currentRowHeight, setCurrentRowHeight] = useState('30');
+
+  // --- Voice Dictation (Microphone) State ---
+  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const [voiceRecordingSeconds, setVoiceRecordingSeconds] = useState(0);
+  const [liveVoiceTranscript, setLiveVoiceTranscript] = useState('');
+  const speechRecognitionRef = useRef<any>(null);
+  const liveTranscriptRef = useRef<string>('');
+  const voiceTimerRef = useRef<any>(null);
+  const voiceActionModeRef = useRef<'paragraph' | 'full_letter' | 'cancel'>('paragraph');
+
+  // --- Table Column Width Modal State ---
+  const [tableColModal, setTableColModal] = useState<{
+      selectedColIdx: number;
+      columns: { index: number; title: string; widthPercent: number }[];
+  } | null>(null);
+  const activeTableRef = useRef<HTMLTableElement | null>(null);
+
   const A4_WIDTH_PX = 794; 
 
   const calculateSize = useCallback(() => {
@@ -344,6 +362,7 @@ const LetterEditor: React.FC = () => {
       // 4. Remove forced width: 100% !important on .report-container so print preview A4 scale isn't crushed
       css = css.replace(/width:\s*100%\s*!important;/g, '');
       css = css.replace(/max-width:\s*100%\s*!important;/g, '');
+      css = css.replace(/table-layout:\s*auto\s*!important;/g, 'table-layout: auto;');
       // 5. Force natural Arabic reading flow without excessive word spacing
       css += `
         .report-body, .report-body * {
@@ -821,6 +840,367 @@ const LetterEditor: React.FC = () => {
   const deleteImage = () => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.remove(); setActiveElement(null); setShowImageTools(false); } };
   const deleteTable = () => { if (!activeElement) return; const table = activeElement.closest('table'); if (table) { table.remove(); setShowTableTools(false); setActiveElement(null); } };
   const modifyTable = (action: string) => { if (!activeElement) return; const cell = activeElement.closest('td') || activeElement.closest('th'); if (!cell) return; const row = cell.closest('tr') as HTMLTableRowElement; const table = row.closest('table') as HTMLTableElement; if (!table || !row) return; if (action === 'addRow') { const newRow = table.insertRow(row.rowIndex + 1); for (let i = 0; i < row.cells.length; i++) { const newCell = newRow.insertCell(i); const refCell = row.cells[i]; newCell.style.cssText = refCell.style.cssText; newCell.innerHTML = '&nbsp;'; } } else if (action === 'delRow') { if (table.rows.length > 1) { table.deleteRow(row.rowIndex); } else { activeElement.closest('table')?.remove(); setShowTableTools(false); } } else if (action === 'addCol') { const cellIndex = (cell as HTMLTableCellElement).cellIndex; for (let i = 0; i < table.rows.length; i++) { const row = table.rows[i]; const newCell = row.insertCell(cellIndex + 1); const refCell = row.cells[cellIndex]; newCell.style.cssText = refCell.style.cssText; newCell.innerHTML = '&nbsp;'; } } else if (action === 'delCol') { const cellIndex = (cell as HTMLTableCellElement).cellIndex; for (let i = 0; i < table.rows.length; i++) { if (table.rows[i].cells.length > 1) { table.rows[i].deleteCell(cellIndex); } } } };
+
+  // --- VOICE DICTATION (MICROPHONE) FOR PARAGRAPH OR FULL LETTER ---
+  useEffect(() => {
+      return () => {
+          if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+          try { speechRecognitionRef.current?.stop(); } catch (_) {}
+          try {
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                  mediaRecorderRef.current.stop();
+              }
+          } catch (_) {}
+      };
+  }, []);
+
+  const insertDictatedHtmlIntoEditor = (htmlContent: string, mode: 'paragraph' | 'full_letter') => {
+      if (!editorRef.current || !htmlContent.trim()) return;
+      const cleanHtml = htmlContent.trim().startsWith('<') ? htmlContent.trim() : `<p>${htmlContent.trim()}</p>`;
+
+      if (mode === 'full_letter') {
+          const currentText = (editorRef.current.innerText || '').trim();
+          const isDefaultOrEmpty = !currentText || currentText.includes('اكتب نص الخطاب هنا') || currentText.length < 25;
+          if (isDefaultOrEmpty) {
+              editorRef.current.innerHTML = cleanHtml;
+          } else {
+              editorRef.current.innerHTML += `<hr style="margin:12px 0; border-color:#cbd5e1;" />${cleanHtml}`;
+          }
+          checkFormats();
+          setTimeout(calculateSize, 80);
+          return;
+      }
+
+      editorRef.current.focus();
+      const sel = window.getSelection();
+      if (savedRange.current && sel && editorRef.current.contains(savedRange.current.commonAncestorContainer)) {
+          try {
+              sel.removeAllRanges();
+              sel.addRange(savedRange.current);
+              document.execCommand('insertHTML', false, `${cleanHtml}<p><br></p>`);
+              if (sel.rangeCount > 0) {
+                  savedRange.current = sel.getRangeAt(0).cloneRange();
+              }
+              checkFormats();
+              setTimeout(calculateSize, 80);
+              return;
+          } catch (_) {}
+      }
+
+      editorRef.current.innerHTML += `${cleanHtml}<p><br></p>`;
+      checkFormats();
+      setTimeout(calculateSize, 80);
+  };
+
+  const startVoiceDictation = async () => {
+      if (isVoiceRecording || isProcessingVoice) return;
+
+      // Save current selection/cursor range before starting
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+          savedRange.current = sel.getRangeAt(0).cloneRange();
+      }
+
+      liveTranscriptRef.current = '';
+      setLiveVoiceTranscript('');
+      setVoiceRecordingSeconds(0);
+      audioChunksRef.current = [];
+      voiceActionModeRef.current = 'paragraph';
+
+      // Start browser SpeechRecognition in parallel if supported for live preview & fallback
+      try {
+          const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          if (SpeechRec) {
+              const recognition = new SpeechRec();
+              recognition.lang = 'ar-EG';
+              recognition.continuous = true;
+              recognition.interimResults = true;
+              recognition.onresult = (event: any) => {
+                  let transcript = '';
+                  for (let i = 0; i < event.results.length; i++) {
+                      transcript += event.results[i][0].transcript + ' ';
+                  }
+                  liveTranscriptRef.current = transcript.trim();
+                  setLiveVoiceTranscript(liveTranscriptRef.current);
+              };
+              recognition.start();
+              speechRecognitionRef.current = recognition;
+          }
+      } catch (_) {}
+
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mediaRecorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = mediaRecorder;
+
+          mediaRecorder.ondataavailable = (event) => {
+              if (event.data && event.data.size > 0) {
+                  audioChunksRef.current.push(event.data);
+              }
+          };
+
+          mediaRecorder.onstop = async () => {
+              stream.getTracks().forEach(track => track.stop());
+              try { speechRecognitionRef.current?.stop(); } catch (_) {}
+              if (voiceTimerRef.current) {
+                  clearInterval(voiceTimerRef.current);
+                  voiceTimerRef.current = null;
+              }
+              setIsVoiceRecording(false);
+
+              const actionMode = voiceActionModeRef.current;
+              if (actionMode === 'cancel') {
+                  setLiveVoiceTranscript('');
+                  return;
+              }
+
+              const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
+              const fallbackText = liveTranscriptRef.current.trim();
+
+              if (audioBlob.size === 0 && !fallbackText) return;
+
+              setIsProcessingVoice(true);
+              try {
+                  const htmlResult = await aiHelper.transcribeAndRefineLetterText(audioBlob, actionMode, fallbackText);
+                  if (htmlResult && htmlResult.trim()) {
+                      insertDictatedHtmlIntoEditor(htmlResult, actionMode);
+                  } else if (fallbackText) {
+                      insertDictatedHtmlIntoEditor(`<p>${fallbackText}</p>`, actionMode);
+                  }
+              } catch (err) {
+                  if (fallbackText) {
+                      insertDictatedHtmlIntoEditor(`<p>${fallbackText}</p>`, actionMode);
+                  }
+              } finally {
+                  setIsProcessingVoice(false);
+                  setLiveVoiceTranscript('');
+              }
+          };
+
+          mediaRecorder.start();
+          setIsVoiceRecording(true);
+          voiceTimerRef.current = setInterval(() => {
+              setVoiceRecordingSeconds(prev => prev + 1);
+          }, 1000);
+      } catch (err) {
+          console.error("Microphone access failed:", err);
+          alert("تعذر الوصول إلى الميكروفون. يرجى التأكد من السماح بصلاحية الميكروفون في المتصفح.");
+          try { speechRecognitionRef.current?.stop(); } catch (_) {}
+      }
+  };
+
+  const stopVoiceDictation = (mode: 'paragraph' | 'full_letter' = 'paragraph') => {
+      voiceActionModeRef.current = mode;
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+      } else {
+          try { speechRecognitionRef.current?.stop(); } catch (_) {}
+          if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+          setIsVoiceRecording(false);
+          if (liveTranscriptRef.current.trim()) {
+              insertDictatedHtmlIntoEditor(`<p>${liveTranscriptRef.current.trim()}</p>`, mode);
+              setLiveVoiceTranscript('');
+          }
+      }
+  };
+
+  const cancelVoiceDictation = () => {
+      voiceActionModeRef.current = 'cancel';
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+      } else {
+          try { speechRecognitionRef.current?.stop(); } catch (_) {}
+          if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+          setIsVoiceRecording(false);
+          setLiveVoiceTranscript('');
+      }
+  };
+
+  // --- TABLE COLUMN WIDTH ADJUSTMENT WITH FULL CELL TEXT WRAPPING ---
+  const findTargetTableAndCol = (): { table: HTMLTableElement | null; colIdx: number } => {
+      let table: HTMLTableElement | null = null;
+      let colIdx = 0;
+
+      if (activeElement) {
+          const cell = activeElement.closest('td, th') as HTMLTableCellElement | null;
+          if (cell) {
+              colIdx = cell.cellIndex || 0;
+              table = cell.closest('table') as HTMLTableElement | null;
+          } else {
+              table = activeElement.closest('table') as HTMLTableElement | null;
+          }
+      }
+      if (!table) {
+          const sel = window.getSelection();
+          if (sel && sel.anchorNode) {
+              const el = (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) as HTMLElement;
+              const cell = el?.closest('td, th') as HTMLTableCellElement | null;
+              if (cell) colIdx = cell.cellIndex || 0;
+              table = el?.closest('table') as HTMLTableElement | null;
+          }
+      }
+      if (!table && activeTableRef.current && editorRef.current?.contains(activeTableRef.current)) {
+          table = activeTableRef.current;
+      }
+      if (!table && editorRef.current) {
+          const tables = editorRef.current.querySelectorAll('table');
+          if (tables.length > 0) table = tables[tables.length - 1] as HTMLTableElement;
+      }
+      return { table, colIdx };
+  };
+
+  const openTableColumnWidthModal = () => {
+      const { table, colIdx } = findTargetTableAndCol();
+      if (!table) return;
+      activeTableRef.current = table;
+
+      const headerRow = (table.querySelector('thead tr') || table.rows[0]) as HTMLTableRowElement | undefined;
+      if (!headerRow || headerRow.cells.length === 0) return;
+
+      const colCount = headerRow.cells.length;
+      const colgroupCols = Array.from(table.querySelectorAll('colgroup col')) as HTMLElement[];
+      const tableRect = table.getBoundingClientRect();
+
+      const cols = Array.from(headerRow.cells).map((cell, idx) => {
+          let pct = Math.round(100 / colCount);
+          const colStyleW = colgroupCols[idx]?.style?.width || '';
+          const cellStyleW = cell.style.width || '';
+          const match = (colStyleW || cellStyleW).match(/(\d+(?:\.\d+)?)%/);
+          if (match) {
+              pct = Math.round(parseFloat(match[1]));
+          } else if (tableRect.width > 0) {
+              const cellRect = cell.getBoundingClientRect();
+              if (cellRect.width > 0) {
+                  pct = Math.max(5, Math.min(85, Math.round((cellRect.width / tableRect.width) * 100)));
+              }
+          }
+          const rawTitle = (cell.innerText || '').replace(/\s+/g, ' ').trim();
+          return {
+              index: idx,
+              title: rawTitle ? rawTitle.slice(0, 22) : `عمود ${idx + 1}`,
+              widthPercent: pct
+          };
+      });
+
+      setTableColModal({
+          selectedColIdx: Math.min(colIdx, cols.length - 1),
+          columns: cols
+      });
+  };
+
+  const applyEditorTableColumnWidth = (targetColIdx: number, newPercent: number | 'auto') => {
+      const table = activeTableRef.current || findTargetTableAndCol().table;
+      if (!table || !tableColModal) return;
+
+      const colCount = tableColModal.columns.length;
+      if (colCount === 0) return;
+
+      let nextColumns = [...tableColModal.columns];
+
+      if (newPercent === 'auto') {
+          const equalPct = Math.round(100 / colCount);
+          nextColumns = nextColumns.map(c => ({ ...c, widthPercent: equalPct }));
+          table.style.setProperty('width', '100%', 'important');
+          table.style.setProperty('table-layout', 'auto', 'important');
+
+          const colgroup = table.querySelector('colgroup');
+          if (colgroup) colgroup.remove();
+
+          Array.from(table.rows).forEach((row) => {
+              Array.from(row.cells).forEach((cell) => {
+                  cell.removeAttribute('width');
+                  cell.removeAttribute('nowrap');
+                  cell.style.removeProperty('width');
+                  cell.style.removeProperty('max-width');
+                  cell.style.setProperty('min-width', '0px', 'important');
+                  cell.style.setProperty('white-space', 'normal', 'important');
+                  cell.style.setProperty('word-break', 'normal', 'important');
+                  cell.style.setProperty('overflow-wrap', 'normal', 'important');
+                  (cell.style as any).setProperty('word-wrap', 'normal', 'important');
+                  cell.style.setProperty('hyphens', 'none', 'important');
+              });
+          });
+
+          setTableColModal({ ...tableColModal, selectedColIdx: targetColIdx, columns: nextColumns });
+          setTimeout(calculateSize, 50);
+          return;
+      }
+
+      const clamped = Math.max(5, Math.min(85, Math.round(newPercent)));
+      if (colCount > 1) {
+          const remainingBudget = Math.max(colCount - 1, 100 - clamped);
+          const sumOther = nextColumns.reduce((acc, c, i) => (i === targetColIdx ? acc : acc + c.widthPercent), 0);
+          nextColumns = nextColumns.map((c, i) => {
+              if (i === targetColIdx) return { ...c, widthPercent: clamped };
+              const scaled = sumOther > 0
+                  ? Math.max(4, Math.round((c.widthPercent / sumOther) * remainingBudget))
+                  : Math.max(4, Math.round(remainingBudget / (colCount - 1)));
+              return { ...c, widthPercent: scaled };
+          });
+      } else {
+          nextColumns[0] = { ...nextColumns[0], widthPercent: 100 };
+      }
+
+      // Enforce fixed table layout & 100% width so all cells across all rows strictly obey the column widths
+      table.style.setProperty('width', '100%', 'important');
+      table.style.setProperty('table-layout', 'fixed', 'important');
+
+      // Ensure <colgroup> exists and matches the exact column widths
+      let colgroup = table.querySelector('colgroup');
+      if (!colgroup) {
+          colgroup = document.createElement('colgroup');
+          table.insertBefore(colgroup, table.firstChild);
+      }
+      colgroup.innerHTML = nextColumns
+          .map(c => `<col style="width: ${c.widthPercent}% !important;" />`)
+          .join('');
+
+      // Apply width and natural word-wrapping (without breaking words) to ALL cells in ALL rows
+      Array.from(table.rows).forEach((row) => {
+          const cells = Array.from(row.cells);
+          // Skip full-row colspan banners
+          if (cells.length === 1 && (cells[0].colSpan || 1) > 1) {
+              cells[0].style.setProperty('white-space', 'normal', 'important');
+              cells[0].style.setProperty('word-break', 'normal', 'important');
+              cells[0].style.setProperty('overflow-wrap', 'normal', 'important');
+              return;
+          }
+
+          cells.forEach((cell, idx) => {
+              const colInfo = nextColumns[idx];
+              cell.removeAttribute('nowrap');
+              cell.style.setProperty('min-width', '0px', 'important');
+              cell.style.setProperty('white-space', 'normal', 'important');
+              cell.style.setProperty('word-break', 'normal', 'important');
+              cell.style.setProperty('overflow-wrap', 'normal', 'important');
+              (cell.style as any).setProperty('word-wrap', 'normal', 'important');
+              cell.style.setProperty('hyphens', 'none', 'important');
+
+              if (colInfo && (cell.colSpan || 1) === 1) {
+                  cell.style.setProperty('width', `${colInfo.widthPercent}%`, 'important');
+                  cell.style.setProperty('max-width', `${colInfo.widthPercent}%`, 'important');
+              }
+
+              // Ensure all inner tags inside the cell respond and wrap words naturally without breaking words
+              cell.querySelectorAll('*').forEach((inner) => {
+                  const el = inner as HTMLElement;
+                  el.style.setProperty('white-space', 'normal', 'important');
+                  el.style.setProperty('word-break', 'normal', 'important');
+                  el.style.setProperty('overflow-wrap', 'normal', 'important');
+                  (el.style as any).setProperty('word-wrap', 'normal', 'important');
+                  el.style.setProperty('hyphens', 'none', 'important');
+                  el.style.setProperty('min-width', '0px', 'important');
+                  el.style.setProperty('max-width', '100%', 'important');
+              });
+          });
+      });
+
+      setTableColModal({
+          selectedColIdx: targetColIdx,
+          columns: nextColumns
+      });
+      setTimeout(calculateSize, 50);
+  };
   const applyTableTheme = (theme: 'professional' | 'striped' | 'simple' | 'elegant' | 'teal' | 'purple' | 'minimal') => { 
       let table = activeElement?.closest('table'); 
       if (!table) {
@@ -1340,7 +1720,7 @@ const LetterEditor: React.FC = () => {
                 width: 100% !important;
                 min-width: 480px !important;
                 border-collapse: collapse !important;
-                table-layout: auto !important;
+                table-layout: auto;
                 box-sizing: border-box !important;
                 margin: 0 auto !important;
             }
@@ -1367,7 +1747,21 @@ const LetterEditor: React.FC = () => {
                 padding: 8px 12px !important;
                 vertical-align: middle !important;
                 word-break: normal !important;
-                overflow-wrap: break-word !important;
+                overflow-wrap: normal !important;
+                word-wrap: normal !important;
+                white-space: normal !important;
+                hyphens: none !important;
+                min-width: 0 !important;
+            }
+
+            #letter-content-area table th *,
+            #letter-content-area table td * {
+                word-break: normal !important;
+                overflow-wrap: normal !important;
+                word-wrap: normal !important;
+                white-space: normal !important;
+                hyphens: none !important;
+                min-width: 0 !important;
             }
 
             @media print {
@@ -1450,7 +1844,7 @@ const LetterEditor: React.FC = () => {
                     <input type="text" value={filename} onChange={(e) => setFilename(e.target.value)} className="font-bold text-white text-sm bg-transparent outline-none border-b border-transparent hover:border-slate-500 focus:border-blue-500 w-36 sm:w-56" />
                  </div>
             </div>
-            <div className="relative shrink-0" ref={headerMenuRef}>
+            <div className="relative shrink-0 flex items-center gap-2" ref={headerMenuRef}>
                 {/* Hidden inputs for Draft-to-Letter Camera & Image Upload */}
                 <input
                     type="file"
@@ -1467,6 +1861,53 @@ const LetterEditor: React.FC = () => {
                     accept="image/*,application/pdf"
                     className="hidden"
                 />
+
+                {/* زر الميكروفون لكتابة خطاب أو فقرة بالتسجيل الصوتي */}
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        if (isVoiceRecording) {
+                            stopVoiceDictation('paragraph');
+                        } else {
+                            startVoiceDictation();
+                        }
+                    }}
+                    disabled={isProcessingVoice}
+                    className={`w-9 h-9 rounded-lg transition flex items-center justify-center border text-sm font-bold ${
+                        isVoiceRecording
+                            ? 'bg-red-600 text-white border-red-400 shadow-lg animate-pulse'
+                            : isProcessingVoice
+                            ? 'bg-amber-600 text-white border-amber-500'
+                            : 'bg-slate-800 text-emerald-400 hover:bg-slate-700 hover:text-emerald-300 border-slate-700'
+                    }`}
+                    title={isVoiceRecording ? "إيقاف التسجيل وإدراج النص" : "كتابة خطاب أو فقرة بالتسجيل الصوتي (ميكروفون)"}
+                >
+                    {isProcessingVoice ? (
+                        <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                    ) : isVoiceRecording ? (
+                        <i className="fa-solid fa-stop text-xs"></i>
+                    ) : (
+                        <i className="fa-solid fa-microphone text-xs"></i>
+                    )}
+                </button>
+
+                {/* زر التبديل بين وضع المحرر ووضع الطباعة بجوار زر الثلاث نقاط */}
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        setIsMobileZoom(!isMobileZoom);
+                    }}
+                    className={`w-9 h-9 rounded-lg transition flex items-center justify-center border text-sm font-bold ${
+                        isMobileZoom
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-lg'
+                            : 'bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white border-slate-700'
+                    }`}
+                    title={isMobileZoom ? "العودة لتخطيط الطباعة (A4)" : "وضع التحرير السهل (تعبئة الشاشة)"}
+                >
+                    <i className={`fa-solid ${isMobileZoom ? 'fa-book-open' : 'fa-mobile-screen-button'} text-xs`}></i>
+                </button>
 
                 <button
                     onClick={() => setIsHeaderMenuOpen(prev => !prev)}
@@ -1901,10 +2342,6 @@ const LetterEditor: React.FC = () => {
                     <button onMouseDown={(e) => {e.preventDefault(); setShowSpacingTools(!showSpacingTools); setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowQuoteTools(false); setShowMarginTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showSpacingTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="تباعد الأسطر والفقرات"><i className="fa-solid fa-text-height text-[11px]"></i></button>
                     
                     <button onMouseDown={(e) => {e.preventDefault(); setShowMarginTools(!showMarginTools); setShowSpacingTools(false); setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowQuoteTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showMarginTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="هوامش النص الداخلية"><i className="fa-solid fa-expand text-[11px]"></i></button>
-
-                    <button onMouseDown={(e) => {e.preventDefault(); setIsMobileZoom(!isMobileZoom);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${isMobileZoom ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-white text-slate-600'}`} title={isMobileZoom ? "العودة لتخطيط الطباعة (A4)" : "وضع التحرير السهل (تعبئة الشاشة)"}>
-                        <i className={`fa-solid ${isMobileZoom ? 'fa-book-open' : 'fa-mobile-screen-button'} text-[11px]`}></i>
-                    </button>
                     
                     <button onMouseDown={(e) => {e.preventDefault(); execCmd('insertUnorderedList')}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${formats.list ? 'bg-blue-100 text-blue-600' : 'hover:bg-white'}`} title="قائمة نقطية"><i className="fa-solid fa-list-ul text-[11px]"></i></button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertQuote()}} className="w-8 h-8 hover:bg-white hover:text-teal-600 rounded flex items-center justify-center transition hover:shadow-sm" title="اقتباس"><i className="fa-solid fa-quote-right text-[11px]"></i></button>
@@ -2047,6 +2484,16 @@ const LetterEditor: React.FC = () => {
                                 <button onMouseDown={(e) => { e.preventDefault(); if(activeElement) { const cell = activeElement.closest('td, th') as HTMLElement; if(cell) cell.style.backgroundColor = '#dcfce7'; } }} className="w-4 h-4 border border-green-300 bg-green-100 rounded" title="أخضر"></button>
                             </div>
                             <div className="w-[1px] h-3 bg-yellow-300 mx-0.5"></div>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); openTableColumnWidthModal(); }}
+                                className="px-2 py-0.5 bg-indigo-600 text-white border border-indigo-700 rounded hover:bg-indigo-700 font-bold shadow-sm flex items-center gap-1 shrink-0"
+                                title="تعديل عرض الأعمدة واستجابة النص في جميع الخلايا"
+                            >
+                                <i className="fa-solid fa-arrows-left-right-to-line"></i>
+                                <span>عرض الأعمدة</span>
+                            </button>
+                            <div className="w-[1px] h-3 bg-yellow-300 mx-0.5"></div>
                             <button onClick={() => modifyTable('addRow')} className="px-2 py-0.5 bg-white border border-yellow-400 rounded hover:bg-yellow-200 font-bold text-green-700 shadow-sm flex items-center gap-1"><i className="fa-solid fa-plus"></i> <span className="hidden sm:inline">صف</span></button>
                             <button onClick={() => modifyTable('delRow')} className="px-2 py-0.5 bg-white border border-red-300 rounded hover:bg-red-50 text-red-700 font-bold shadow-sm flex items-center gap-1"><i className="fa-solid fa-minus"></i> <span className="hidden sm:inline">صف</span></button>
                             <div className="w-[1px] h-3 bg-yellow-300 mx-0.5"></div>
@@ -2106,7 +2553,189 @@ const LetterEditor: React.FC = () => {
                     {showQuoteTools && (<><span className="font-bold text-teal-800 ml-1 hidden sm:inline">الاقتباس:</span><div className="flex gap-1 border-l border-teal-300 pl-1 ml-1 items-center bg-white/50 p-0.5 rounded-lg shrink-0"><span className="text-[9px] text-teal-600 font-bold hidden sm:inline">لون:</span><button onClick={() => updateQuoteStyle('teal')} className="w-4 h-4 bg-teal-100 border border-teal-500 rounded hover:scale-110 transition"></button><button onClick={() => updateQuoteStyle('blue')} className="w-4 h-4 bg-blue-100 border border-blue-500 rounded hover:scale-110 transition"></button><button onClick={() => updateQuoteStyle('red')} className="w-4 h-4 bg-red-100 border border-red-500 rounded hover:scale-110 transition"></button><button onClick={() => updateQuoteStyle('orange')} className="w-4 h-4 bg-orange-100 border border-orange-500 rounded hover:scale-110 transition"></button></div><div className="w-[1px] h-3 bg-teal-300 mx-0.5"></div><button onClick={deleteQuote} className="px-2 py-0.5 bg-orange-50 border border-orange-200 text-orange-600 rounded hover:bg-orange-100 font-bold flex items-center gap-1" title="إلغاء الاقتباس مع الحفاظ على النص"><i className="fa-solid fa-eraser"></i> إلغاء الاقتباس</button></>)}
                  </div>
             )}
+
+            {/* شريط التسجيل الصوتي النشط لكتابة فقرة أو خطاب كامل */}
+            {(isVoiceRecording || isProcessingVoice) && (
+                <div className="bg-slate-900/95 text-white px-3 py-2 border-b border-slate-700 flex flex-wrap items-center justify-between gap-2 shadow-lg animate-fade-in">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                        {isVoiceRecording ? (
+                            <>
+                                <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping shrink-0"></span>
+                                <span className="text-xs font-black text-red-400 font-mono shrink-0">
+                                    {Math.floor(voiceRecordingSeconds / 60)}:{String(voiceRecordingSeconds % 60).padStart(2, '0')}
+                                </span>
+                                <span className="text-xs font-bold text-slate-200 truncate">
+                                    {liveVoiceTranscript || 'تحدث الآن... جاري الاستماع والتسجيل الصوتي'}
+                                </span>
+                            </>
+                        ) : (
+                            <>
+                                <i className="fa-solid fa-circle-notch fa-spin text-amber-400 text-xs"></i>
+                                <span className="text-xs font-bold text-amber-300">جاري تحويل التسجيل الصوتي وصياغته هندسياً...</span>
+                            </>
+                        )}
+                    </div>
+                    {isVoiceRecording && (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); stopVoiceDictation('paragraph'); }}
+                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black shadow-sm flex items-center gap-1 transition"
+                            >
+                                <i className="fa-solid fa-paragraph text-[10px]"></i>
+                                <span>إدراج كفقرة</span>
+                            </button>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); stopVoiceDictation('full_letter'); }}
+                                className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black shadow-sm flex items-center gap-1 transition"
+                            >
+                                <i className="fa-solid fa-file-signature text-[10px]"></i>
+                                <span>كتابة خطاب كامل</span>
+                            </button>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); cancelVoiceDictation(); }}
+                                className="px-2 py-1 rounded-lg bg-slate-700 hover:bg-red-600 text-slate-200 hover:text-white text-[11px] font-bold transition"
+                            >
+                                إلغاء
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
+
+        {/* نافذة تعديل عرض أعمدة الجدول مع استجابة والتواء النص بدون تكسير الكلمات */}
+        {tableColModal && (
+            <div
+                className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 no-print animate-fade-in"
+                onClick={() => setTableColModal(null)}
+            >
+                <div
+                    className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-scale-in text-right"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <i className="fa-solid fa-arrows-left-right-to-line text-indigo-400"></i>
+                            <h3 className="font-black text-xs sm:text-sm">تعديل عرض أعمدة الجدول</h3>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setTableColModal(null)}
+                            className="w-7 h-7 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition"
+                        >
+                            <i className="fa-solid fa-times text-xs"></i>
+                        </button>
+                    </div>
+
+                    <div className="p-4 space-y-4">
+                        <div>
+                            <label className="block text-[11px] font-bold text-slate-500 mb-1.5">اختر العمود المراد ضبط عرضه:</label>
+                            <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1 bg-slate-50 rounded-xl border border-slate-200">
+                                {tableColModal.columns.map((col) => {
+                                    const isSelected = col.index === tableColModal.selectedColIdx;
+                                    return (
+                                        <button
+                                            key={col.index}
+                                            type="button"
+                                            onClick={() => setTableColModal({ ...tableColModal, selectedColIdx: col.index })}
+                                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border ${
+                                                isSelected
+                                                    ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
+                                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-indigo-50'
+                                            }`}
+                                        >
+                                            <span className="truncate max-w-[120px]">{col.title}</span>
+                                            <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${isSelected ? 'bg-indigo-800 text-indigo-100' : 'bg-slate-100 text-slate-600'}`}>
+                                                {col.widthPercent}%
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {tableColModal.columns[tableColModal.selectedColIdx] && (() => {
+                            const currentCol = tableColModal.columns[tableColModal.selectedColIdx];
+                            return (
+                                <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-3 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs font-black text-indigo-950">
+                                            عرض ({currentCol.title}):
+                                        </span>
+                                        <div className="flex items-center gap-1.5">
+                                            <button
+                                                type="button"
+                                                onClick={() => applyEditorTableColumnWidth(currentCol.index, Math.max(5, currentCol.widthPercent - 2))}
+                                                className="w-7 h-7 rounded-lg bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-black flex items-center justify-center"
+                                            >
+                                                -
+                                            </button>
+                                            <span className="font-mono font-black text-sm text-indigo-700 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 min-w-[52px] text-center">
+                                                {currentCol.widthPercent}%
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => applyEditorTableColumnWidth(currentCol.index, Math.min(85, currentCol.widthPercent + 2))}
+                                                className="w-7 h-7 rounded-lg bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-black flex items-center justify-center"
+                                            >
+                                                +
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <input
+                                        type="range"
+                                        min={5}
+                                        max={85}
+                                        value={currentCol.widthPercent}
+                                        onChange={(e) => applyEditorTableColumnWidth(currentCol.index, parseInt(e.target.value, 10) || 15)}
+                                        className="w-full accent-indigo-600 cursor-pointer"
+                                    />
+
+                                    <div className="flex flex-wrap gap-1.5 pt-1">
+                                        {[8, 12, 15, 20, 25, 35, 45, 60].map((preset) => (
+                                            <button
+                                                key={preset}
+                                                type="button"
+                                                onClick={() => applyEditorTableColumnWidth(currentCol.index, preset)}
+                                                className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold border transition ${
+                                                    currentCol.widthPercent === preset
+                                                        ? 'bg-indigo-600 text-white border-indigo-700'
+                                                        : 'bg-white text-slate-700 border-slate-200 hover:bg-indigo-100'
+                                                }`}
+                                            >
+                                                {preset}%
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                            <button
+                                type="button"
+                                onClick={() => applyEditorTableColumnWidth(tableColModal.selectedColIdx, 'auto')}
+                                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition flex items-center gap-1.5"
+                            >
+                                <i className="fa-solid fa-rotate-left text-[11px]"></i>
+                                <span>توزيع تلقائي متوازن</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setTableColModal(null)}
+                                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black shadow-md transition"
+                            >
+                                تم
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
 
 
         <div 

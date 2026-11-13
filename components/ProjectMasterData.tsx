@@ -268,6 +268,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [editingCategoryName, setEditingCategoryName] = useState<string | null>(null);
     const [editCategoryInputValue, setEditCategoryInputValue] = useState<string>('');
     const [showWorkCategoryModal, setShowWorkCategoryModal] = useState<boolean>(false);
+    const [showAddLogModal, setShowAddLogModal] = useState<boolean>(false);
+    const [logFilterCategory, setLogFilterCategory] = useState<string>('');
+    const [logFilterDate, setLogFilterDate] = useState<string>('');
+    const [calendarPickerTarget, setCalendarPickerTarget] = useState<'filter' | 'addLog' | null>(null);
+    const [calendarViewYearMonth, setCalendarViewYearMonth] = useState<{ year: number; month: number }>(() => {
+        const now = new Date();
+        return { year: now.getFullYear(), month: now.getMonth() };
+    });
     const [workCategorySearch, setWorkCategorySearch] = useState<string>('');
     const [newCustomCategoryInput, setNewCustomCategoryInput] = useState<string>('');
     const [whatsappShareModalLog, setWhatsappShareModalLog] = useState<ProjectLog | null>(null);
@@ -881,6 +889,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setLogImages([]); 
         setSelectedLogBoqItemId('');
         setSelectedWorkCategory('');
+        setShowAddLogModal(false);
         
         // 2. Indicate Saving Background
         setAutoSaveStatus('saving');
@@ -1267,42 +1276,57 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     // Payment Logic
+    const analyzePaymentFile = async (file: File) => {
+        setIsAnalyzingPayment(true);
+        try {
+            let processedFile: File = file;
+            if (file.type && file.type.startsWith('image/')) {
+                const compressed = await imageUtils.compressImage(file, 0.2, 500);
+                processedFile = new File([compressed], file.name, { type: compressed.type || file.type });
+            }
+
+            if (processedFile.type?.startsWith('image/') || processedFile.size < 2 * 1024 * 1024) {
+                try {
+                    const base64 = await new Promise<string>((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result as string);
+                        reader.onerror = () => resolve('');
+                        reader.readAsDataURL(processedFile);
+                    });
+                    if (base64) setNewPaymentFile(base64);
+                } catch (_) {}
+            }
+
+            // Pass BOQ Items for AI Matching (Supports PDF, Excel, Word, and Images)
+            const extractedData = await aiHelper.parsePaymentDocument(processedFile, masterData.boqItems);
+
+            if (extractedData) {
+                if (extractedData.cumulativeAmount) {
+                    setMasterData(prev => ({ ...prev, newPaymentCumulative: extractedData.cumulativeAmount.toString() }));
+                }
+                if (extractedData.date) setNewPaymentDate(extractedData.date);
+                if (extractedData.invoiceNumber) {
+                    setMasterData(prev => ({
+                        ...prev,
+                        newInvoiceNumber: extractedData.invoiceNumber,
+                        newPaymentNote: `مستخلص رقم ${extractedData.invoiceNumber}`
+                    }));
+                }
+                if (extractedData.items && extractedData.items.length > 0) {
+                    setNewPaymentItems(extractedData.items);
+                }
+            }
+        } catch (e) {
+            console.error("Failed to analyze payment document:", e);
+        } finally {
+            setIsAnalyzingPayment(false);
+        }
+    };
+
     const handlePaymentFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
-        setIsAnalyzingPayment(true);
-        try {
-            let processedFile = file;
-            if (file.type.startsWith('image/')) {
-                processedFile = await imageUtils.compressImage(file, 0.2, 500);
-            }
-            const reader = new FileReader();
-            reader.readAsDataURL(processedFile);
-            reader.onload = async () => {
-                const base64 = reader.result as string;
-                setNewPaymentFile(base64);
-                
-                // Pass BOQ Items for AI Matching
-                const extractedData = await aiHelper.parsePaymentDocument(processedFile, masterData.boqItems);
-                
-                if (extractedData) {
-                    if (extractedData.cumulativeAmount) {
-                        setMasterData(prev => ({...prev, newPaymentCumulative: extractedData.cumulativeAmount.toString()}));
-                    }
-                    if (extractedData.date) setNewPaymentDate(extractedData.date);
-                    if (extractedData.invoiceNumber) {
-                        setMasterData(prev => ({...prev, newInvoiceNumber: extractedData.invoiceNumber}));
-                        // Update Note to be JUST the Invoice Number as requested
-                        setMasterData(prev => ({...prev, newPaymentNote: `مستخلص رقم ${extractedData.invoiceNumber}`}));
-                    }
-                    
-                    if (extractedData.items && extractedData.items.length > 0) {
-                        setNewPaymentItems(extractedData.items);
-                    }
-                }
-                setIsAnalyzingPayment(false);
-            };
-        } catch (e) { setIsAnalyzingPayment(false); }
+        await analyzePaymentFile(file);
         if (paymentFileRef.current) paymentFileRef.current.value = '';
         if (paymentCameraRef.current) paymentCameraRef.current.value = '';
     };
@@ -1640,7 +1664,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         };
     }, [smartIpcDraftItems, previousTotalPayments, smartIpcRetentionPercent, smartIpcAdvancePercent, smartIpcTaxesPercent, logsByBoqItemId]);
 
-    const handlePrintPaymentIPC = (pay: ProjectPayment) => {
+    const handlePrintPaymentIPC = (pay: ProjectPayment, mode: 'print' | 'edit' = 'print') => {
         const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
         const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
         const itemsList = (pay.items || []).filter(i => (i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0);
@@ -1864,11 +1888,31 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             </div>
         `;
 
+        const reportTitle = `مستخلص جاري رقم (${pay.invoiceNumber || '-'})`;
+        const reportSubtitle = `مشروع: ${projName} | المقاول: ${contractorName}`;
+
+        if (mode === 'edit') {
+            const fullReport = ReportGenerator.buildReport(reportTitle, bodyHtml, {
+                subtitle: reportSubtitle,
+                date: pay.date,
+                ref: `IPC-${pay.invoiceNumber || '1'}`
+            });
+            onClose();
+            navigate(`/editor/${projectId}/${projectId}`, {
+                state: {
+                    initialContent: fullReport,
+                    filename: `مستخلص_رقم_${pay.invoiceNumber || '1'}_${pay.date}`,
+                    returnToMasterData: true
+                }
+            });
+            return;
+        }
+
         printService.printReport(
             bodyHtml,
-            `مستخلص جاري رقم (${pay.invoiceNumber || '-'})`,
+            reportTitle,
             `IPC-${pay.invoiceNumber || '1'}-${pay.date}`,
-            { subtitle: `مشروع: ${projName} | المقاول: ${contractorName}` }
+            { subtitle: reportSubtitle }
         );
     };
 
@@ -2410,40 +2454,161 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const confirmDeleteBatch = () => { if (!batchToDeleteId) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => (item.batchId || 'default') !== batchToDeleteId) }; setMasterData(newData); setBatchToDeleteId(null); triggerAutoSave(newData, { _allowEmptyBoq: true }); };
     const saveBatchRename = (batchId: string) => { if (!newBatchName.trim()) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => (item.batchId || 'default') === batchId ? { ...item, batchName: newBatchName } : item) }; setMasterData(newData); setRenamingBatchId(null); triggerAutoSave(newData); };
     
-    const handleEditBatchAsLetter = (batchItems: BOQItem[], batchName: string) => {
-        const tableRows = batchItems.map(item => `
-            <tr>
-                <td>${item.itemCode || '-'}</td>
-                <td>${item.description}</td>
-                <td>${item.unit}</td>
-                <td>${item.quantity}</td>
-                <td>${item.unitPrice.toLocaleString()}</td>
-                <td>${(item.quantity * item.unitPrice).toLocaleString()}</td>
-            </tr>
-        `).join('');
+    const [docActionModal, setDocActionModal] = useState<{
+        title: string;
+        subtitle?: string;
+        printLabel: string;
+        editLabel: string;
+        onPrint: () => void;
+        onEdit: () => void;
+    } | null>(null);
+
+    const handleEditBatchAsLetter = (batchItems: BOQItem[], batchName: string, mode: 'print' | 'edit' = 'edit') => {
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+
+        const tableBlocks = batchItems.map((item) => {
+            const codeStr = String(item.itemCode || '').trim();
+            const unitStr = String(item.unit || '').trim();
+            const descStr = String(item.description || '').trim();
+            const qty = Number(item.quantity) || 0;
+            const price = Number(item.unitPrice) || 0;
+            const itemTotal = qty * price;
+            const isNonPriced = qty === 0 && price === 0;
+
+            const isHeader =
+                /header/i.test(codeStr) ||
+                /header/i.test(unitStr) ||
+                (isNonPriced && !(/note/i.test(codeStr) || /note/i.test(unitStr) || /^(ملحوظ|ملاحظ|تنبيه|شرط)/.test(descStr)) && (
+                    /^(أولاً|ثانياً|ثالثاً|رابعاً|خامساً|سادساً|سابعاً|ثامناً|تاسعاً|عاشراً|باب|الباب|قسم|القسم|بند\s*رئيسي|أعمال\s)/.test(descStr) ||
+                    descStr.endsWith(':-') ||
+                    descStr.endsWith(':') ||
+                    descStr.length < 75
+                ));
+
+            const isNote = !isHeader && (
+                /note/i.test(codeStr) ||
+                /note/i.test(unitStr) ||
+                isNonPriced
+            );
+
+            if (isHeader) {
+                return `
+                    <tbody class="boq-header-block" style="page-break-inside: avoid !important; break-inside: avoid !important;">
+                        <tr class="boq-header-row" style="background-color: #dbeafe !important;">
+                            <td colspan="4" style="background-color: #dbeafe !important; color: #1e3a8a !important; padding: 9px 12px !important; text-align: right !important; font-weight: 900 !important; font-size: 13.5px !important; border: 1.5px solid #1e3a8a !important; line-height: 1.6 !important;">
+                                <span style="display: inline-block; background-color: #1e3a8a !important; color: #ffffff !important; padding: 2px 9px; border-radius: 5px; font-size: 11.5px; font-weight: 900; margin-left: 8px;">
+                                    ${codeStr || 'عنوان قسم'}
+                                </span>
+                                <span style="color: #1e3a8a !important; font-weight: 900 !important;">${descStr || '-'}</span>
+                            </td>
+                        </tr>
+                    </tbody>
+                `;
+            }
+
+            if (isNote) {
+                return `
+                    <tbody class="boq-note-block" style="page-break-inside: avoid !important; break-inside: avoid !important;">
+                        <tr class="boq-note-row" style="background-color: #fef3c7 !important;">
+                            <td colspan="4" style="background-color: #fef3c7 !important; color: #78350f !important; padding: 8px 12px !important; text-align: right !important; font-weight: 800 !important; font-size: 12.5px !important; border: 1.5px solid #d97706 !important; line-height: 1.65 !important;">
+                                <span style="display: inline-block; background-color: #d97706 !important; color: #ffffff !important; padding: 2px 9px; border-radius: 5px; font-size: 11px; font-weight: 900; margin-left: 8px;">
+                                    ${codeStr || 'ملحوظة'}
+                                </span>
+                                <span style="color: #78350f !important; font-weight: 800 !important;">${descStr || '-'}</span>
+                            </td>
+                        </tr>
+                    </tbody>
+                `;
+            }
+
+            return `
+                <tbody class="boq-item-block" style="page-break-inside: avoid !important; break-inside: avoid !important;">
+                    <tr class="boq-item-desc-row" style="background-color: #f1f5f9 !important;">
+                        <td colspan="4" style="background-color: #f1f5f9 !important; color: #0f172a !important; padding: 8px 12px !important; text-align: right !important; font-weight: 800 !important; font-size: 13px !important; border: 1.5px solid #334155 !important; border-bottom: 1px dashed #64748b !important; line-height: 1.65 !important;">
+                            <span style="display: inline-block; background-color: #0f172a !important; color: #ffffff !important; padding: 2px 9px; border-radius: 5px; font-size: 11.5px; font-weight: 900; margin-left: 8px;">
+                                رقم البند: ${codeStr || '-'}
+                            </span>
+                            <span style="color: #0f172a !important; font-weight: 800 !important;">${descStr || '-'}</span>
+                        </td>
+                    </tr>
+                    <tr class="boq-item-nums-row" style="background-color: #ffffff !important;">
+                        <td style="background-color: #ffffff !important; padding: 6px 8px !important; text-align: center !important; border: 1px solid #334155 !important; border-bottom: 2px solid #0f172a !important;">
+                            <div style="font-size: 10px !important; color: #475569 !important; font-weight: 800 !important; margin-bottom: 2px !important; text-align: center !important;">الوحدة</div>
+                            <div style="font-size: 12px !important; color: #0f172a !important; font-weight: 900 !important; text-align: center !important;">${unitStr || '-'}</div>
+                        </td>
+                        <td style="background-color: #f0fdf4 !important; padding: 6px 8px !important; text-align: center !important; border: 1px solid #334155 !important; border-bottom: 2px solid #0f172a !important;">
+                            <div style="font-size: 10px !important; color: #166534 !important; font-weight: 800 !important; margin-bottom: 2px !important; text-align: center !important;">الكمية</div>
+                            <div style="font-size: 12.5px !important; color: #14532d !important; font-weight: 900 !important; text-align: center !important;">${qty.toLocaleString()}</div>
+                        </td>
+                        <td style="background-color: #eff6ff !important; padding: 6px 8px !important; text-align: center !important; border: 1px solid #334155 !important; border-bottom: 2px solid #0f172a !important;">
+                            <div style="font-size: 10px !important; color: #1e40af !important; font-weight: 800 !important; margin-bottom: 2px !important; text-align: center !important;">الفئة</div>
+                            <div style="font-size: 12.5px !important; color: #1e3a8a !important; font-weight: 900 !important; text-align: center !important;">${price.toLocaleString()}</div>
+                        </td>
+                        <td style="background-color: #fefce8 !important; padding: 6px 8px !important; text-align: center !important; border: 1px solid #334155 !important; border-bottom: 2px solid #0f172a !important;">
+                            <div style="font-size: 10px !important; color: #854d0e !important; font-weight: 800 !important; margin-bottom: 2px !important; text-align: center !important;">الإجمالي</div>
+                            <div style="font-size: 13px !important; color: #0f172a !important; font-weight: 900 !important; text-align: center !important;">${itemTotal.toLocaleString()} ج.م</div>
+                        </td>
+                    </tr>
+                </tbody>
+            `;
+        }).join('');
         
-        const totalValue = batchItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+        const totalValue = batchItems.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0);
         
         const bodyHtml = `
+            <div class="info-box" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:12px; padding:8px 12px !important; font-size:13px !important;">
+                <div><strong>المشروع:</strong> ${projName}</div>
+                <div><strong>المقاول:</strong> ${contractorName}</div>
+                <div><strong>عدد البنود:</strong> ${batchItems.length} بند</div>
+            </div>
             <h2>${batchName}</h2>
-            <table>
+            <table style="width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; border: 2px solid #0f172a !important;">
+                <colgroup>
+                    <col style="width: 20%;" />
+                    <col style="width: 24%;" />
+                    <col style="width: 26%;" />
+                    <col style="width: 30%;" />
+                </colgroup>
                 <thead>
-                    <tr>
-                        <th>بند</th><th>البيان</th><th>الوحدة</th><th>الكمية</th><th>الفئة</th><th>الإجمالي</th>
+                    <tr style="background-color: #cbd5e1 !important;">
+                        <th style="background-color: #cbd5e1 !important; color: #0f172a !important; padding: 8px 6px !important; font-size: 12.5px !important; font-weight: 900 !important; border: 1.5px solid #0f172a !important;">الوحدة</th>
+                        <th style="background-color: #cbd5e1 !important; color: #0f172a !important; padding: 8px 6px !important; font-size: 12.5px !important; font-weight: 900 !important; border: 1.5px solid #0f172a !important;">الكمية</th>
+                        <th style="background-color: #cbd5e1 !important; color: #0f172a !important; padding: 8px 6px !important; font-size: 12.5px !important; font-weight: 900 !important; border: 1.5px solid #0f172a !important;">الفئة</th>
+                        <th style="background-color: #cbd5e1 !important; color: #0f172a !important; padding: 8px 6px !important; font-size: 12.5px !important; font-weight: 900 !important; border: 1.5px solid #0f172a !important;">الإجمالي</th>
                     </tr>
                 </thead>
-                <tbody>${tableRows}</tbody>
+                ${tableBlocks}
                 <tfoot>
-                    <tr>
-                        <td colspan="5" style="font-weight: bold; text-align: left;">الإجمالي العام</td>
-                        <td style="font-weight: bold;">${totalValue.toLocaleString()} ج.م</td>
+                    <tr style="background-color: #dcfce7 !important;">
+                        <td colspan="3" style="background-color: #dcfce7 !important; color: #14532d !important; font-weight: 900 !important; text-align: right !important; padding: 9px 12px !important; font-size: 14px !important; border: 1.5px solid #14532d !important;">الإجمالي العام للمقايسة</td>
+                        <td style="background-color: #dcfce7 !important; color: #14532d !important; font-weight: 900 !important; text-align: center !important; padding: 9px 10px !important; font-size: 15px !important; border: 1.5px solid #14532d !important;">${totalValue.toLocaleString()} ج.م</td>
                     </tr>
                 </tfoot>
             </table>
         `;
         
-        const fullReport = ReportGenerator.buildReport(batchName, bodyHtml);
-        navigate(`/editor/${projectId}/${projectId}`, { state: { initialContent: fullReport, returnToMasterData: true } });
+        if (mode === 'print') {
+            printService.printReport(
+                bodyHtml,
+                batchName,
+                `BOQ-${batchName}`,
+                { subtitle: `مشروع: ${projName} | المقاول: ${contractorName}` }
+            );
+            return;
+        }
+
+        const fullReport = ReportGenerator.buildReport(batchName, bodyHtml, {
+            subtitle: `مشروع: ${projName} | المقاول: ${contractorName}`
+        });
+        onClose();
+        navigate(`/editor/${projectId}/${projectId}`, {
+            state: {
+                initialContent: fullReport,
+                filename: batchName,
+                returnToMasterData: true
+            }
+        });
     };
 
     const [isGeneratingDoc, setIsGeneratingDoc] = useState(false);
@@ -3025,7 +3190,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         if (pickerContext === 'editLog' || editingLogId) { setTempEditLogImages(prev => [...prev, base64]); } 
                         else { setLogImages(prev => [...prev, base64]); } 
                     } 
-                } else if (pickerContext === 'payment') { /* ... */ } 
+                } else if (pickerContext === 'payment') { await analyzePaymentFile(file); } 
                 else if (pickerContext === 'boq') { await analyzeBoqFile(file, file.name); } 
                 else if (pickerContext === 'soil') { await analyzeSoilFile(file); } 
             } 
@@ -3174,10 +3339,141 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         return { groupedItems, batchOrder, grandTotalValue, grandExecutedValue };
     }, [masterData.boqItems]);
 
-    // عرض جميع اليوميات كاملة ومباشرة بدون تقييد أو تجزئة (No pagination / Ready instantly)
-    const visibleLogs = useMemo(() => {
-        return sortLogs(masterData.logs);
+    // قائمة أنواع الأعمال المتاحة للفلترة (تشمل كافة الأنواع واليوميات المسجلة)
+    const filterableWorkCategories = useMemo(() => {
+        const names = new Set<string>();
+        allWorkCategories.forEach(c => { if (c.name) names.add(c.name); });
+        masterData.logs.forEach(l => { if (l.workCategory) names.add(l.workCategory); });
+        return Array.from(names);
+    }, [allWorkCategories, masterData.logs]);
+
+    // خريطة التواريخ المسجل لها يوميات (لتلوين وتمييز الأيام في التقويم)
+    const loggedDatesMap = useMemo(() => {
+        const map = new Map<string, number>();
+        masterData.logs.forEach(l => {
+            if (l && l.date) {
+                const cleanDate = l.date.trim();
+                map.set(cleanDate, (map.get(cleanDate) || 0) + 1);
+            }
+        });
+        return map;
     }, [masterData.logs]);
+
+    // قائمة الشهور التي تحتوي على يوميات لسهولة الانتقال السريع داخل التقويم
+    const loggedMonthsList = useMemo(() => {
+        const monthCounts = new Map<string, number>();
+        masterData.logs.forEach(l => {
+            if (l && l.date && l.date.length >= 7) {
+                const ym = l.date.slice(0, 7);
+                monthCounts.set(ym, (monthCounts.get(ym) || 0) + 1);
+            }
+        });
+        return Array.from(monthCounts.entries())
+            .sort((a, b) => b[0].localeCompare(a[0]))
+            .map(([ym, count]) => {
+                const [y, m] = ym.split('-').map(Number);
+                return { ym, year: y, month: m - 1, count };
+            });
+    }, [masterData.logs]);
+
+    const openCustomCalendar = (target: 'filter' | 'addLog') => {
+        const currentVal = target === 'filter' ? logFilterDate : masterData.logDate;
+        let baseDateStr = currentVal;
+        if (!baseDateStr && masterData.logs.length > 0) {
+            const latestLog = sortLogs(masterData.logs)[0];
+            if (latestLog?.date) baseDateStr = latestLog.date;
+        }
+        if (baseDateStr && /^\d{4}-\d{2}/.test(baseDateStr)) {
+            const [y, m] = baseDateStr.split('-').map(Number);
+            if (y && m) {
+                setCalendarViewYearMonth({ year: y, month: m - 1 });
+                setCalendarPickerTarget(target);
+                return;
+            }
+        }
+        const now = new Date();
+        setCalendarViewYearMonth({ year: now.getFullYear(), month: now.getMonth() });
+        setCalendarPickerTarget(target);
+    };
+
+    // عرض اليوميات مع تطبيق فلتر نوع العمل والتاريخ
+    const visibleLogs = useMemo(() => {
+        const sorted = sortLogs(masterData.logs);
+        return sorted.filter(log => {
+            if (logFilterCategory && log.workCategory !== logFilterCategory) return false;
+            if (logFilterDate && log.date !== logFilterDate) return false;
+            return true;
+        });
+    }, [masterData.logs, logFilterCategory, logFilterDate]);
+
+    // توليد تقرير مجمع PDF لليوميات المعروضة / المفلترة
+    const handleExportCombinedLogsPdf = () => {
+        if (visibleLogs.length === 0) return;
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'المشروع';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+
+        const filterNotes: string[] = [];
+        if (logFilterCategory) filterNotes.push(`نوع العمل: ${logFilterCategory}`);
+        if (logFilterDate) filterNotes.push(`التاريخ: ${logFilterDate}`);
+        const filterSummary = filterNotes.length > 0 ? filterNotes.join(' | ') : 'جميع اليوميات المسجلة';
+
+        const rowsHtml = visibleLogs.map((log, index) => {
+            const matchedBoq = log.boqItemId ? masterData.boqItems.find(b => b.id === log.boqItemId) : undefined;
+            const boqText = (log.boqItemCode || matchedBoq?.itemCode)
+                ? `<div style="margin-top:6px; padding:4px 8px; background:#eef2ff !important; border:1px solid #c7d2fe !important; border-radius:4px; font-size:12px !important; color:#1e1b4b !important;">
+                     <strong>بند المقايسة (${log.boqItemCode || matchedBoq?.itemCode}):</strong> ${log.boqItemDescription || matchedBoq?.description || ''}
+                   </div>`
+                : '';
+
+            const imagesHtml = (log.images && log.images.length > 0)
+                ? `<div style="display:grid; grid-template-columns: repeat(${Math.min(log.images.length, 2)}, 1fr); gap:8px; margin-top:8px; page-break-inside:avoid;">
+                     ${log.images.slice(0, 4).map(img => `
+                         <div style="border:1px solid #cbd5e1; border-radius:6px; overflow:hidden; background:#f8fafc; text-align:center;">
+                             <img src="${img}" style="width:100%; max-height:210px; object-fit:cover; margin:0 !important;" />
+                         </div>
+                     `).join('')}
+                   </div>`
+                : '';
+
+            return `
+                <div style="border:2px solid #0f172a; border-radius:8px; padding:10px 12px; margin-bottom:12px; page-break-inside:avoid; background:#ffffff !important;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #cbd5e1; padding-bottom:6px; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                        <div style="font-size:14px !important; font-weight:900 !important;">
+                            <span>يومية رقم (${index + 1})</span>
+                            <span style="margin:0 8px;">|</span>
+                            <span>التاريخ: <span style="font-family:monospace;">${log.date}</span></span>
+                        </div>
+                        ${log.workCategory ? `<span style="background:#fef3c7 !important; color:#92400e !important; border:1px solid #f59e0b !important; padding:2px 10px; border-radius:6px; font-size:12px !important; font-weight:900 !important;">${log.workCategory}</span>` : ''}
+                    </div>
+                    <div style="font-size:14px !important; line-height:1.6 !important; white-space:pre-wrap;">${log.content || 'توثيق مصور للأعمال المنفذة بالموقع'}</div>
+                    ${boqText}
+                    ${imagesHtml}
+                </div>
+            `;
+        }).join('');
+
+        const bodyHtml = `
+            <div>
+                <div class="info-box" style="margin-bottom:14px; font-size:13px !important; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div><strong>بيان التقرير:</strong> ${filterSummary}</div>
+                    <div><strong>إجمالي عدد اليوميات:</strong> ${visibleLogs.length} يومية</div>
+                </div>
+                ${rowsHtml}
+                <div style="margin-top:24px; display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; text-align:center; page-break-inside:avoid; font-size:13px !important;">
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>المقاول المنفذ</strong><br/><span style="font-size:11.5px;">${contractorName}</span></div>
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>مهندس التنفيذ بالموقع</strong></div>
+                    <div style="border-top:2px solid #000; padding-top:8px; text-align:center !important;"><strong>اعتماد الاستشاري / إدارة المشروع</strong></div>
+                </div>
+            </div>
+        `;
+
+        printService.printReport(
+            bodyHtml,
+            `تقرير مجمع لليوميات والأعمال المنفذة`,
+            `LOGS-${new Date().toISOString().split('T')[0]}`,
+            { subtitle: `مشروع: ${projName} | المقاول: ${contractorName}` }
+        );
+    };
 
     const renderBoqTable = () => { 
         const { groupedItems, batchOrder, grandTotalValue, grandExecutedValue } = boqDerivedData;
@@ -3221,7 +3517,21 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                       }} className="text-emerald-700 text-xs bg-emerald-100/80 border border-emerald-300 hover:bg-emerald-200 px-3 py-1 rounded-lg transition flex items-center gap-1 font-bold shadow-sm" title="إضافة بند لهذا الباب">
                                           <i className="fa-solid fa-plus text-[10px]"></i> بند
                                       </button>
-                                      <button onClick={(e) => { e.stopPropagation(); handleEditBatchAsLetter(groupItems, groupName); }} className="text-indigo-700 text-xs bg-indigo-100/80 border border-indigo-300 hover:bg-indigo-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm" title="تحليل وتصدير خطاب">
+                                      <button
+                                          onClick={(e) => {
+                                              e.stopPropagation();
+                                              setDocActionModal({
+                                                  title: groupName,
+                                                  subtitle: `إجمالي البنود: ${groupItems.length} بند`,
+                                                  printLabel: 'طباعة المقايسة PDF',
+                                                  editLabel: 'تعديل المستند',
+                                                  onPrint: () => handleEditBatchAsLetter(groupItems, groupName, 'print'),
+                                                  onEdit: () => handleEditBatchAsLetter(groupItems, groupName, 'edit')
+                                              });
+                                          }}
+                                          className="text-indigo-700 text-xs bg-indigo-100/80 border border-indigo-300 hover:bg-indigo-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm"
+                                          title="طباعة المقايسة PDF أو تعديل المستند"
+                                      >
                                           <i className="fa-solid fa-file-signature"></i>
                                       </button>
                                       {!isDefault && !isRenaming && (
@@ -3490,87 +3800,87 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     <input type="file" ref={logCameraInputRef} onChange={(e) => handleLogImageSelect(e, false)} accept="image/*" capture="environment" className="hidden" />
                     <input type="file" ref={editLogImageInputRef} onChange={(e) => handleLogImageSelect(e, true)} accept="image/*" multiple className="hidden" />
                     <input type="file" ref={editLogCameraInputRef} onChange={(e) => handleLogImageSelect(e, true)} accept="image/*" capture="environment" className="hidden" />
-                    <input type="file" ref={paymentFileRef} onChange={handlePaymentFileSelect} accept="image/*,application/pdf" className="hidden" />
+                    <input type="file" ref={paymentFileRef} onChange={handlePaymentFileSelect} accept="image/*,application/pdf,.pdf,.xlsx,.xls,.csv,.doc,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,text/csv" className="hidden" />
                     <input type="file" ref={paymentCameraRef} onChange={handlePaymentFileSelect} accept="image/*" capture="environment" className="hidden" />
-                    <input type="file" ref={boqImageRef} onChange={handleBOQAnalysis} accept="image/*,application/pdf" className="hidden" />
+                    <input type="file" ref={boqImageRef} onChange={handleBOQAnalysis} accept="image/*,application/pdf,.pdf,.xlsx,.xls,.csv,.doc,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,text/csv" className="hidden" />
                     <input type="file" ref={boqCameraRef} onChange={handleBOQAnalysis} accept="image/*" capture="environment" className="hidden" />
-                    <input type="file" ref={soilReportInputRef} onChange={handleSoilAnalysis} accept="image/*,application/pdf" className="hidden" />
+                    <input type="file" ref={soilReportInputRef} onChange={handleSoilAnalysis} accept="image/*,application/pdf,.pdf,.xlsx,.xls,.csv,.doc,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,text/csv" className="hidden" />
                     <input type="file" ref={soilCameraRef} onChange={handleSoilAnalysis} accept="image/*" capture="environment" className="hidden" />
 
                     {activeTab === 'logs' && (
                         <div className="flex flex-col gap-2 pb-20">
-                            <div className="bg-white rounded-xl p-2 border border-blue-100 shadow-sm shrink-0">
-                                <div className="flex gap-2 items-center mb-2">
-                                    <input type="date" className="bg-white border border-blue-200 text-xs rounded-lg px-2 py-1.5 outline-none text-slate-700 font-bold w-24 shrink-0" value={masterData.logDate} onChange={(e) => setMasterData({...masterData, logDate: e.target.value})} />
-                                    <button onClick={isRecording ? stopRecording : () => startRecording('log')} className={`w-8 h-8 rounded-lg flex items-center justify-center transition shadow-sm shrink-0 ${isRecording && voiceTarget === 'log' ? 'bg-red-500 text-white animate-pulse' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`} title={isRecording && voiceTarget === 'log' ? 'إيقاف التسجيل' : 'تسجيل صوتي'}><i className={`fa-solid ${isRecording && voiceTarget === 'log' ? 'fa-stop' : 'fa-microphone'} text-xs`}></i></button>
-                                    
-                                    {/* خانة نوع العمل: قائمة منسدلة قياسية متطابقة تماماً مع وضع التعديل وتمنع تمرير الخلفية عند فتحها */}
-                                    <div className="flex-1 min-w-0">
-                                        <select
-                                            value={selectedWorkCategory}
-                                            onChange={(e) => {
-                                                if (e.target.value === '__MANAGE__') {
-                                                    setShowWorkCategoryModal(true);
-                                                } else {
-                                                    setSelectedWorkCategory(e.target.value);
-                                                }
-                                            }}
-                                            className="w-full h-8 px-2 text-xs bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none focus:ring-2 focus:ring-amber-500 truncate"
-                                            title="اختر نوع العمل"
+                            {/* شريط عنوان تبويب اليوميات مع الفلاتر وتوليد PDF وزر إضافة يومية في صف واحد */}
+                            <div className="bg-blue-50/90 border border-blue-200 rounded-xl p-2.5 flex flex-col gap-2 shrink-0 mx-1 mt-1 sticky top-0 z-20 shadow-sm">
+                                <div className="flex items-center justify-between">
+                                    <h4 className="font-bold text-blue-950 text-xs sm:text-sm flex items-center gap-1.5">
+                                        <i className="fa-solid fa-calendar-check text-blue-600"></i>
+                                        <span>يوميات المشروع</span>
+                                        {masterData.logs.length > 0 && (
+                                            <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-mono">
+                                                {visibleLogs.length}
+                                            </span>
+                                        )}
+                                    </h4>
+                                    {(logFilterCategory || logFilterDate) && (
+                                        <span
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => { setLogFilterCategory(''); setLogFilterDate(''); }}
+                                            className="compact-single-line text-red-600 hover:text-red-800 cursor-pointer bg-transparent border-0 p-0 m-0 leading-none select-none"
+                                            style={{ fontSize: '10px', minHeight: 0 }}
+                                            title="إلغاء الفلتر"
                                         >
-                                            <option value="">⚙️ اختر نوع العمل (اختياري)...</option>
-                                            {allWorkCategories.map(cat => (
-                                                <option key={cat.name} value={cat.name}>{cat.name}</option>
-                                            ))}
-                                            <option value="__MANAGE__">➕ إضافة / إدارة أنواع الأعمال...</option>
-                                        </select>
-                                    </div>
-
-                                    <button onClick={() => setSourceModal({ type: 'log', title: 'رفع صورة لليومية' })} className="w-8 h-8 rounded-lg bg-white border border-blue-200 text-blue-700 hover:bg-blue-50 transition flex items-center justify-center shadow-sm shrink-0" title="رفع صورة لليومية">
-                                        <i className="fa-solid fa-camera text-xs"></i>
-                                    </button>
-                                    <button onClick={addLog} disabled={isUploadingImages} className="w-8 h-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition flex items-center justify-center shadow-sm shrink-0 disabled:opacity-50 disabled:cursor-not-allowed" title="إضافة اليومية">
-                                        {isUploadingImages ? <i className="fa-solid fa-circle-notch fa-spin text-xs"></i> : <i className="fa-solid fa-plus text-xs"></i>} 
-                                    </button>
+                                            إلغاء الفلتر
+                                        </span>
+                                    )}
                                 </div>
 
-                                {/* BOQ Item Link Selector */}
-                                {linkableBoqItems.length > 0 && (
-                                    <div className="mb-2 flex items-center gap-1.5">
-                                        <div className="relative flex-1">
-                                            <select
-                                                value={selectedLogBoqItemId}
-                                                onChange={(e) => setSelectedLogBoqItemId(e.target.value)}
-                                                className="w-full bg-indigo-50/70 border border-indigo-200 text-indigo-950 text-[11px] font-bold rounded-lg px-2.5 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-                                            >
-                                                <option value="">🔗 ربط اليومية ببند من المقايسة (اختياري)...</option>
-                                                {linkableBoqItems.map(bItem => (
-                                                    <option key={bItem.id} value={bItem.id}>
-                                                        {bItem.batchName ? `[${bItem.batchName}] ` : ''}بند ({bItem.itemCode}): {(bItem.description || '').slice(0, 65)}{(bItem.description || '').length > 65 ? '...' : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        {selectedLogBoqItemId && (
-                                            <button
-                                                type="button"
-                                                onClick={() => setSelectedLogBoqItemId('')}
-                                                className="w-7 h-7 rounded-lg bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 transition shrink-0"
-                                                title="إلغاء ربط البند"
-                                            >
-                                                <i className="fa-solid fa-times text-xs"></i>
-                                            </button>
-                                        )}
+                                {/* صف واحد يضم: فلتر التاريخ (بتقويم يميز أيام اليوميات) + فلتر نوع العمل + زر أيقونة تقرير مجمع PDF + زر أيقونة إضافة يومية */}
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => openCustomCalendar('filter')}
+                                        className={`h-8 !min-h-0 px-2 text-[11px] rounded-lg font-bold outline-none transition flex items-center justify-between gap-1 w-[106px] sm:w-28 shrink-0 border ${
+                                            logFilterDate
+                                                ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-1 ring-emerald-300'
+                                                : 'bg-white border-blue-200 text-slate-700 hover:border-blue-400'
+                                        }`}
+                                        title="فلتر بالتاريخ (الأيام الملونة مسجل لها يومية)"
+                                    >
+                                        <span className="font-mono text-[10px] truncate">{logFilterDate || 'التاريخ...'}</span>
+                                        <i className={`fa-regular fa-calendar-days text-[11px] shrink-0 ${logFilterDate ? 'text-emerald-600' : 'text-slate-500'}`}></i>
+                                    </button>
+                                    <div className="flex-1 min-w-0">
+                                        <select
+                                            value={logFilterCategory}
+                                            onChange={(e) => setLogFilterCategory(e.target.value)}
+                                            className="w-full h-8 px-2 text-[11px] bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none focus:ring-2 focus:ring-amber-500 truncate"
+                                            title="فلتر بنوع العمل"
+                                        >
+                                            <option value="">كل أنواع الأعمال ({masterData.logs.length})</option>
+                                            {filterableWorkCategories.map(catName => (
+                                                <option key={catName} value={catName}>{catName}</option>
+                                            ))}
+                                        </select>
                                     </div>
-                                )}
-
-                                {isUploadingImages && (
-                                    <div className="mb-2 text-xs text-blue-600 font-bold flex items-center gap-2 bg-blue-50 p-2 rounded-lg">
-                                        <i className="fa-solid fa-gear fa-spin"></i> جاري ضغط الصور وتجهيزها للحفظ...
-                                    </div>
-                                )}
-                                {logImages.length > 0 && <div className="flex gap-2 overflow-x-auto py-1 mb-2">{logImages.map((img, idx) => <div key={idx} className="relative w-12 h-12 shrink-0"><img src={img} alt="" className="w-full h-full object-cover rounded-lg border border-blue-200" /><button onClick={() => setLogImages(prev => prev.filter((_, i) => i !== idx))} className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center text-[8px]"><i className="fa-solid fa-times"></i></button></div>)}</div>}
-                                <textarea className="w-full p-2 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500 transition text-slate-900 resize-y min-h-[60px]" placeholder="ماذا تم إنجازه؟" value={masterData.newLog} onChange={(e) => setMasterData({...masterData, newLog: e.target.value})} rows={2} />
+                                    <button
+                                        type="button"
+                                        onClick={handleExportCombinedLogsPdf}
+                                        disabled={visibleLogs.length === 0}
+                                        className="w-8 h-8 !min-h-0 rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition flex items-center justify-center active:scale-95 shrink-0 disabled:opacity-40 disabled:pointer-events-none"
+                                        title="توليد تقرير مجمع PDF لليوميات"
+                                    >
+                                        <i className="fa-solid fa-file-pdf text-xs"></i>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAddLogModal(true)}
+                                        className="w-8 h-8 !min-h-0 rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition flex items-center justify-center active:scale-95 shrink-0"
+                                        title="إضافة يومية جديدة"
+                                    >
+                                        <i className="fa-solid fa-plus text-xs"></i>
+                                    </button>
+                                </div>
                             </div>
                             
                             <div className="space-y-2 pr-1">
@@ -3821,7 +4131,20 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                         )}
                                                     </div>
                                                     <div className="flex gap-1">
-                                                        <button onClick={() => handlePrintPaymentIPC(pay)} title="طباعة / تصدير المستخلص الرسمي" className="w-7 h-7 rounded-full bg-white/70 text-emerald-700 hover:bg-emerald-600 hover:text-white transition flex items-center justify-center shadow-xs"><i className="fa-solid fa-print text-[10px]"></i></button>
+                                                        <button
+                                                            onClick={() => setDocActionModal({
+                                                                title: `مستخلص جاري رقم (${pay.invoiceNumber || '-'})`,
+                                                                subtitle: `التاريخ: ${pay.date} | الصافي: ${(pay.netPayableAfterDeductions ?? pay.netAmount ?? 0).toLocaleString()} ج.م`,
+                                                                printLabel: 'طباعة PDF',
+                                                                editLabel: 'تعديل المستند',
+                                                                onPrint: () => handlePrintPaymentIPC(pay, 'print'),
+                                                                onEdit: () => handlePrintPaymentIPC(pay, 'edit')
+                                                            })}
+                                                            title="طباعة PDF أو تعديل المستند"
+                                                            className="w-7 h-7 rounded-full bg-white/70 text-emerald-700 hover:bg-emerald-600 hover:text-white transition flex items-center justify-center shadow-xs"
+                                                        >
+                                                            <i className="fa-solid fa-print text-[10px]"></i>
+                                                        </button>
                                                         <button onClick={() => { setEditingPayId(pay.id); setTempEditPayCumulative((pay.cumulativeAmount || pay.netAmount || (pay as any).amount || 0).toString()); setTempEditPayAmount((pay.netAmount || (pay as any).amount || pay.cumulativeAmount || 0).toString()); setTempEditPayNote(pay.note || ''); setTempEditPayDate(pay.date); }} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-blue-600 transition flex items-center justify-center"><i className="fa-solid fa-pen text-[10px]"></i></button>
                                                         <button onClick={() => setPaymentToDeleteId(pay.id)} className="w-7 h-7 rounded-full bg-white/50 text-slate-500 hover:text-red-600 transition flex items-center justify-center"><i className="fa-solid fa-trash text-[10px]"></i></button>
                                                     </div>
@@ -5166,9 +5489,64 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     isGenerating={isGeneratingReport}
                 />
 
+                {/* Small Action Modal for Print PDF vs Edit Document (Payments & BOQ) */}
+                {docActionModal && (
+                    <div
+                        className="fixed inset-0 z-[1960] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+                        onClick={() => setDocActionModal(null)}
+                    >
+                        <div
+                            className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-4 animate-scale-in border border-slate-200 text-right"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-slate-100">
+                                <div className="min-w-0">
+                                    <h3 className="text-slate-900 font-black text-xs sm:text-sm truncate">{docActionModal.title}</h3>
+                                    {docActionModal.subtitle && (
+                                        <p className="text-[10px] text-slate-500 font-bold truncate mt-0.5">{docActionModal.subtitle}</p>
+                                    )}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setDocActionModal(null)}
+                                    className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center shrink-0 transition"
+                                >
+                                    <i className="fa-solid fa-times text-xs"></i>
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const fn = docActionModal.onPrint;
+                                        setDocActionModal(null);
+                                        fn();
+                                    }}
+                                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white p-3 rounded-xl transition flex items-center justify-center gap-2 font-black text-xs shadow-sm active:scale-95"
+                                >
+                                    <i className="fa-solid fa-file-pdf text-sm"></i>
+                                    <span>{docActionModal.printLabel}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const fn = docActionModal.onEdit;
+                                        setDocActionModal(null);
+                                        fn();
+                                    }}
+                                    className="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 p-3 rounded-xl transition flex items-center justify-center gap-2 font-black text-xs active:scale-95"
+                                >
+                                    <i className="fa-solid fa-file-pen text-sm text-indigo-600"></i>
+                                    <span>{docActionModal.editLabel}</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* ... (Modals remain unchanged) ... */}
                 {sourceModal && (
-                    <div className="fixed inset-0 z-[1600] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                    <div className="fixed inset-0 z-[1950] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
                         <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-4 animate-scale-in border border-slate-200 text-center">
                             <h3 className="text-slate-800 font-bold mb-4 text-sm">{sourceModal.title}</h3>
                             <div className="grid grid-cols-1 gap-2">
@@ -5176,7 +5554,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <i className="fa-solid fa-camera"></i> التقاط صورة (الكاميرا)
                                 </button>
                                 <button onClick={() => handleSourceChoice('device')} className="bg-slate-50 text-slate-700 p-3 rounded-xl hover:bg-slate-100 transition flex items-center justify-center gap-2 font-bold text-xs border border-slate-200">
-                                    <i className="fa-regular fa-image"></i> من معرض الجهاز
+                                    <i className={`fa-solid ${sourceModal.type === 'payment' || sourceModal.type === 'boq' || sourceModal.type === 'soil' ? 'fa-file-arrow-up text-emerald-600' : 'fa-image'}`}></i>
+                                    <span>
+                                        {sourceModal.type === 'payment' || sourceModal.type === 'boq' || sourceModal.type === 'soil'
+                                            ? 'رفع ملف (PDF / Excel / Word / صورة)'
+                                            : 'من معرض الجهاز'}
+                                    </span>
                                 </button>
                                 <button onClick={() => handleSourceChoice('app')} className="bg-indigo-50 text-indigo-700 p-3 rounded-xl hover:bg-indigo-100 transition flex items-center justify-center gap-2 font-bold text-xs border border-indigo-200">
                                     <i className="fa-solid fa-folder-open"></i> من ملفات المشروع
@@ -5189,11 +5572,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                 {/* App File Picker Modal */}
                 {showAppFilePicker && (
-                    <div className="fixed inset-0 z-[1700] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                    <div className="fixed inset-0 z-[2000] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
                         {/* ... (Keep existing App Picker) ... */}
                         <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[80vh] animate-scale-in border border-slate-200 overflow-hidden">
                             <div className="p-3 bg-slate-100 border-b border-slate-200 flex justify-between items-center shrink-0">
-                                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><i className="fa-solid fa-folder-tree text-orange-500"></i> اختر صور من المشروع</h3>
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><i className="fa-solid fa-folder-tree text-orange-500"></i> اختر ملفاً أو صورة من المشروع</h3>
                                 <button onClick={() => setShowAppFilePicker(false)} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-500 transition"><i className="fa-solid fa-times"></i></button>
                             </div>
                             <div className="px-3 py-2 bg-white border-b border-slate-100 flex items-center gap-1 overflow-x-auto text-xs whitespace-nowrap">
@@ -5207,12 +5590,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             const isFolder = item.type === ItemType.FOLDER;
                                             const isSelected = selectedPickerItems.has(item.id);
                                             // Filter logic if needed
-                                            if (!isFolder && pickerContext !== 'soil' && !item.mimeType?.match(/(image|pdf|text|word)/)) return null;
+                                            const lowerName = (item.name || '').toLowerCase();
+                                            const isSupportedDoc = /\.(pdf|xlsx|xls|csv|doc|docx)$/i.test(lowerName) || Boolean(item.mimeType?.match(/(image|pdf|text|word|excel|spreadsheet|sheet|csv|msword|officedocument)/i));
+                                            if (!isFolder && pickerContext !== 'soil' && !isSupportedDoc) return null;
                                             
                                             return (
                                                 <div key={item.id} onClick={() => isFolder ? navigatePickerFolder(item) : togglePickerSelection(item.id)} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer border transition ${isFolder ? 'bg-white border-slate-100 hover:bg-yellow-50' : isSelected ? 'bg-blue-50 border-blue-300' : 'bg-white border-transparent hover:bg-slate-50'}`}>
                                                     <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isFolder ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-100 text-slate-500 overflow-hidden'}`}>
-                                                        {isFolder ? <i className="fa-solid fa-folder text-sm"></i> : item.previewUrl ? <img src={item.previewUrl} alt="" className="w-full h-full object-cover" /> : <i className="fa-solid fa-image text-sm"></i>}
+                                                        {isFolder ? <i className="fa-solid fa-folder text-sm"></i> : item.previewUrl ? <img src={item.previewUrl} alt="" className="w-full h-full object-cover" /> : <i className="fa-solid fa-file-lines text-sm"></i>}
                                                     </div>
                                                     <div className="flex-1 min-w-0"><h4 className={`text-xs font-bold truncate ${isSelected ? 'text-blue-800' : 'text-slate-700'}`}>{item.name}</h4></div>
                                                     {isFolder ? <i className="fa-solid fa-chevron-left text-slate-300 text-xs"></i> : <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition ${isSelected ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}><i className="fa-solid fa-check text-[10px]"></i></div>}
@@ -5777,9 +6162,180 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     </div>
                 )}
 
+                {/* Full-Screen Add Daily Log Modal (صندوق حواري بكامل الشاشة لإضافة يومية بكافة الأدوات) */}
+                {showAddLogModal && (
+                    <div className="fixed inset-0 z-[1750] bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-0 animate-fade-in">
+                        <div className="bg-white w-full h-full flex flex-col overflow-hidden animate-scale-in">
+                            {/* Header (بدون جملة الوصف الفرعية وبدون زر الإغلاق العلوي كما هو محدد بالصورة) */}
+                            <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-3 flex items-center shrink-0 shadow-md">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center text-white border border-white/20 shrink-0 shadow-inner">
+                                        <i className="fa-solid fa-calendar-plus text-base"></i>
+                                    </div>
+                                    <h3 className="font-extrabold text-sm sm:text-base text-white truncate">
+                                        إضافة يومية جديدة
+                                    </h3>
+                                </div>
+                            </div>
+
+                            {/* Body with all tools moved from the inline form */}
+                            <div className="flex-1 overflow-y-auto p-3 sm:p-4 bg-slate-50 flex flex-col gap-3">
+                                <div className="bg-white rounded-2xl p-3 border border-blue-100 shadow-sm flex flex-col flex-1 gap-3">
+                                    {/* Top Tools Row: Date, Voice Mic, Wide Work Category Dropdown, Camera Upload (بدون زر + العلوي لتوسيع خانة نوع الأعمال) */}
+                                    <div className="flex gap-1.5 items-center">
+                                        <button
+                                            type="button"
+                                            onClick={() => openCustomCalendar('addLog')}
+                                            className={`h-9 !min-h-0 px-2 text-[11px] rounded-lg font-bold outline-none transition flex items-center justify-between gap-1 w-[104px] sm:w-28 shrink-0 border ${
+                                                masterData.logDate && loggedDatesMap.has(masterData.logDate)
+                                                    ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
+                                                    : 'bg-white border-blue-200 text-slate-700 hover:border-blue-400'
+                                            }`}
+                                            title="اختر تاريخ اليومية (الأيام الملونة مسجل لها يومية)"
+                                        >
+                                            <span className="font-mono text-[10px] truncate">{masterData.logDate || 'التاريخ'}</span>
+                                            <i className="fa-regular fa-calendar-days text-[11px] text-blue-600 shrink-0"></i>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={isRecording ? stopRecording : () => startRecording('log')}
+                                            className={`w-9 h-9 !min-h-0 rounded-lg flex items-center justify-center transition shadow-sm shrink-0 ${
+                                                isRecording && voiceTarget === 'log'
+                                                    ? 'bg-red-500 text-white animate-pulse'
+                                                    : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'
+                                            }`}
+                                            title={isRecording && voiceTarget === 'log' ? 'إيقاف التسجيل' : 'تسجيل صوتي'}
+                                        >
+                                            <i className={`fa-solid ${isRecording && voiceTarget === 'log' ? 'fa-stop' : 'fa-microphone'} text-xs`}></i>
+                                        </button>
+
+                                        {/* خانة نوع العمل بعرض موسّع بالكامل */}
+                                        <div className="flex-1 min-w-0">
+                                            <select
+                                                value={selectedWorkCategory}
+                                                onChange={(e) => {
+                                                    if (e.target.value === '__MANAGE__') {
+                                                        setShowWorkCategoryModal(true);
+                                                    } else {
+                                                        setSelectedWorkCategory(e.target.value);
+                                                    }
+                                                }}
+                                                className="w-full h-9 px-2 text-xs bg-white border border-amber-300 rounded-lg font-bold text-amber-950 outline-none focus:ring-2 focus:ring-amber-500 truncate"
+                                                title="اختر نوع العمل"
+                                            >
+                                                <option value="">نوع العمل (اختياري)...</option>
+                                                {allWorkCategories.map(cat => (
+                                                    <option key={cat.name} value={cat.name}>{cat.name}</option>
+                                                ))}
+                                                <option value="__MANAGE__">➕ إضافة / إدارة أنواع الأعمال...</option>
+                                            </select>
+                                        </div>
+
+                                        <button
+                                            type="button"
+                                            onClick={() => setSourceModal({ type: 'log', title: 'رفع صورة لليومية' })}
+                                            className="w-9 h-9 !min-h-0 rounded-lg bg-white border border-blue-200 text-blue-700 hover:bg-blue-50 transition flex items-center justify-center shadow-sm shrink-0"
+                                            title="رفع صورة لليومية"
+                                        >
+                                            <i className="fa-solid fa-camera text-xs"></i>
+                                        </button>
+                                    </div>
+
+                                    {/* BOQ Item Link Selector */}
+                                    <div className="flex items-center gap-1.5">
+                                        <div className="relative flex-1">
+                                            <select
+                                                value={selectedLogBoqItemId}
+                                                onChange={(e) => setSelectedLogBoqItemId(e.target.value)}
+                                                className="w-full bg-indigo-50/70 border border-indigo-200 text-indigo-950 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                                            >
+                                                <option value="">🔗 ربط اليومية ببند من المقايسة (اختياري)...</option>
+                                                {linkableBoqItems.map(bItem => (
+                                                    <option key={bItem.id} value={bItem.id}>
+                                                        {bItem.batchName ? `[${bItem.batchName}] ` : ''}بند ({bItem.itemCode}): {(bItem.description || '').slice(0, 65)}{(bItem.description || '').length > 65 ? '...' : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        {selectedLogBoqItemId && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedLogBoqItemId('')}
+                                                className="w-8 h-8 rounded-xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center hover:bg-red-100 transition shrink-0"
+                                                title="إلغاء ربط البند"
+                                            >
+                                                <i className="fa-solid fa-times text-xs"></i>
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Uploading indicator */}
+                                    {isUploadingImages && (
+                                        <div className="text-xs text-blue-600 font-bold flex items-center gap-2 bg-blue-50 p-2.5 rounded-xl border border-blue-200">
+                                            <i className="fa-solid fa-gear fa-spin"></i>
+                                            <span>جاري ضغط الصور وتجهيزها للحفظ...</span>
+                                        </div>
+                                    )}
+
+                                    {/* Selected Images Preview */}
+                                    {logImages.length > 0 && (
+                                        <div className="flex gap-2.5 overflow-x-auto py-1.5 px-1 bg-slate-50 rounded-xl border border-slate-200">
+                                            {logImages.map((img, idx) => (
+                                                <div key={idx} className="relative w-20 h-20 shrink-0">
+                                                    <img src={img} alt="" className="w-full h-full object-cover rounded-xl border border-blue-200 shadow-xs" />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setLogImages(prev => prev.filter((_, i) => i !== idx))}
+                                                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow"
+                                                        title="حذف الصورة"
+                                                    >
+                                                        <i className="fa-solid fa-times"></i>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {/* Main Textarea: ماذا تم إنجازه؟ */}
+                                    <textarea
+                                        className="w-full flex-1 p-3 text-sm rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500 transition text-slate-900 font-bold leading-relaxed resize-none min-h-[220px]"
+                                        placeholder="ماذا تم إنجازه؟ اكتب تفاصيل اليومية هنا أو استخدم زر التسجيل الصوتي..."
+                                        value={masterData.newLog}
+                                        onChange={(e) => setMasterData({ ...masterData, newLog: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Footer */}
+                            <div className="p-3 bg-white border-t border-slate-200 flex items-center gap-2.5 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={addLog}
+                                    disabled={isUploadingImages || (!masterData.newLog.trim() && logImages.length === 0)}
+                                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-black text-xs sm:text-sm transition shadow-md flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isUploadingImages ? (
+                                        <i className="fa-solid fa-circle-notch fa-spin"></i>
+                                    ) : (
+                                        <i className="fa-solid fa-check"></i>
+                                    )}
+                                    <span>إضافة وحفظ اليومية</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAddLogModal(false)}
+                                    className="px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs sm:text-sm transition"
+                                >
+                                    إلغاء
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Work Category Selector & Manager Modal (نافذة اختيار وإضافة نوع الأعمال) */}
                 {showWorkCategoryModal && (
-                    <div className="fixed inset-0 z-[1800] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+                    <div className="fixed inset-0 z-[1900] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in">
                         <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[85vh] animate-scale-in border border-slate-200 overflow-hidden">
                             {/* Modal Header */}
                             <div className="p-3.5 bg-gradient-to-r from-amber-600 via-amber-700 to-orange-700 text-white flex justify-between items-center shrink-0">
@@ -6041,19 +6597,16 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <button
                                         type="button"
                                         onClick={() => executeShareAsImage(whatsappShareModalLog)}
-                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-start gap-3 shadow-xs active:scale-[0.98]"
+                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-center gap-3 shadow-xs active:scale-[0.98]"
                                     >
-                                        <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs mt-0.5">
+                                        <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs">
                                             <i className="fa-solid fa-image text-lg"></i>
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between gap-1">
-                                                <span className="text-[10px] font-black text-slate-900 group-hover:text-emerald-950">إرسال اليومية كصورة</span>
+                                                <span className="text-xs font-black text-slate-900 group-hover:text-emerald-950">إرسال اليومية كصورة</span>
                                                 <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-md font-bold">عالية الدقة</span>
                                             </div>
-                                            <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
-                                                تصدير كارت اليومية الرسمي كصورة متناسقة تضم الأيقونة والتاريخ ونوع العمل بصف واحد.
-                                            </p>
                                         </div>
                                     </button>
 
@@ -6061,42 +6614,204 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <button
                                         type="button"
                                         onClick={() => executeShareAsText(whatsappShareModalLog)}
-                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-start gap-3 shadow-xs active:scale-[0.98]"
+                                        className="w-full text-right p-3.5 rounded-2xl border-2 border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition group flex items-center gap-3 shadow-xs active:scale-[0.98]"
                                     >
-                                        <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs mt-0.5">
+                                        <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center shrink-0 transition shadow-xs">
                                             <i className="fa-solid fa-comment-dots text-lg"></i>
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between gap-1">
-                                                <span className="text-[10px] font-black text-slate-900 group-hover:text-blue-950">إرسال كرسالة نصية مع الصور</span>
+                                                <span className="text-xs font-black text-slate-900 group-hover:text-blue-950">إرسال كرسالة نصية مع الصور</span>
                                                 {whatsappShareModalLog.images && whatsappShareModalLog.images.length > 0 && (
                                                     <span className="text-[9px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-md font-bold">
                                                         {whatsappShareModalLog.images.length} صور
                                                     </span>
                                                 )}
                                             </div>
-                                            <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
-                                                إرسال بيان الأعمال والتفاصيل نصياً مع إرفاق صور اليومية الملتقطة.
-                                            </p>
                                         </div>
                                     </button>
                                 </div>
                             )}
-
-                            {/* Footer */}
-                            <div className="mt-4 pt-2 border-t border-slate-100 flex justify-end">
-                                <button
-                                    type="button"
-                                    onClick={() => setWhatsappShareModalLog(null)}
-                                    disabled={isPreparingShare}
-                                    className="px-4 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
-                                >
-                                    إلغاء
-                                </button>
-                            </div>
                         </div>
                     </div>
                 )}
+
+                {/* Custom Interactive Calendar Modal (تقويم مخصص يلوّن ويميّز الأيام المسجل لها يوميات) */}
+                {calendarPickerTarget && (() => {
+                    const { year, month } = calendarViewYearMonth;
+                    const monthNamesAr = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+                    const weekDaysAr = ['ح', 'ن', 'ث', 'ر', 'خ', 'ج', 'س'];
+                    const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 (Sun) to 6 (Sat)
+                    const daysInMonth = new Date(year, month + 1, 0).getDate();
+                    const activeSelectedDate = calendarPickerTarget === 'filter' ? logFilterDate : masterData.logDate;
+                    const todayStr = new Date().toISOString().split('T')[0];
+
+                    const prevMonth = () => {
+                        setCalendarViewYearMonth(prev => prev.month === 0 ? { year: prev.year - 1, month: 11 } : { year: prev.year, month: prev.month - 1 });
+                    };
+                    const nextMonth = () => {
+                        setCalendarViewYearMonth(prev => prev.month === 11 ? { year: prev.year + 1, month: 0 } : { year: prev.year, month: prev.month + 1 });
+                    };
+
+                    const handleSelectDay = (dateStr: string) => {
+                        if (calendarPickerTarget === 'filter') {
+                            setLogFilterDate(dateStr);
+                        } else {
+                            setMasterData(prev => ({ ...prev, logDate: dateStr }));
+                        }
+                        setCalendarPickerTarget(null);
+                    };
+
+                    return (
+                        <div
+                            className="fixed inset-0 z-[2150] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 animate-fade-in"
+                            onClick={() => setCalendarPickerTarget(null)}
+                        >
+                            <div
+                                className="bg-white w-full max-w-xs rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-scale-in"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                {/* Calendar Header */}
+                                <div className="bg-gradient-to-r from-blue-700 to-indigo-800 text-white p-3 flex items-center justify-between">
+                                    <button
+                                        type="button"
+                                        onClick={prevMonth}
+                                        className="w-8 h-8 !min-h-0 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition"
+                                        title="الشهر السابق"
+                                    >
+                                        <i className="fa-solid fa-chevron-right text-xs"></i>
+                                    </button>
+                                    <div className="text-center">
+                                        <div className="text-sm font-black">{monthNamesAr[month]} {year}</div>
+                                        <div className="text-[10px] text-blue-200 font-bold">
+                                            {calendarPickerTarget === 'filter' ? 'اختر يوم لفلترة اليوميات' : 'اختر تاريخ اليومية'}
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={nextMonth}
+                                        className="w-8 h-8 !min-h-0 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition"
+                                        title="الشهر التالي"
+                                    >
+                                        <i className="fa-solid fa-chevron-left text-xs"></i>
+                                    </button>
+                                </div>
+
+                                {/* Quick Jump to Months with Recorded Logs */}
+                                {loggedMonthsList.length > 0 && (
+                                    <div className="px-2.5 py-1.5 bg-emerald-50/70 border-b border-emerald-100 flex items-center gap-1.5 overflow-x-auto hide-scrollbar">
+                                        <span className="text-[9px] font-black text-emerald-800 shrink-0">شهور بها يوميات:</span>
+                                        {loggedMonthsList.map(mItem => {
+                                            const isCurrentMonth = mItem.year === year && mItem.month === month;
+                                            return (
+                                                <button
+                                                    key={mItem.ym}
+                                                    type="button"
+                                                    onClick={() => setCalendarViewYearMonth({ year: mItem.year, month: mItem.month })}
+                                                    className={`!min-h-0 px-2 py-0.5 rounded-full text-[9px] font-bold shrink-0 transition ${
+                                                        isCurrentMonth
+                                                            ? 'bg-emerald-600 text-white shadow-xs'
+                                                            : 'bg-white text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
+                                                    }`}
+                                                >
+                                                    {monthNamesAr[mItem.month]} {mItem.year} ({mItem.count})
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {/* Days Grid */}
+                                <div className="p-3">
+                                    <div className="grid grid-cols-7 gap-1 mb-1.5 text-center">
+                                        {weekDaysAr.map((d, idx) => (
+                                            <div key={idx} className="text-[10px] font-black text-slate-400 py-0.5">
+                                                {d}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="grid grid-cols-7 gap-1.5">
+                                        {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
+                                            <div key={`empty_${idx}`} className="h-9" />
+                                        ))}
+                                        {Array.from({ length: daysInMonth }).map((_, idx) => {
+                                            const dayNum = idx + 1;
+                                            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                                            const logCount = loggedDatesMap.get(dateStr) || 0;
+                                            const hasLog = logCount > 0;
+                                            const isSelected = activeSelectedDate === dateStr;
+                                            const isToday = todayStr === dateStr;
+
+                                            return (
+                                                <button
+                                                    key={dateStr}
+                                                    type="button"
+                                                    onClick={() => handleSelectDay(dateStr)}
+                                                    className={`h-9 !min-h-0 rounded-xl flex flex-col items-center justify-center relative transition font-mono text-xs ${
+                                                        isSelected && hasLog
+                                                            ? 'bg-emerald-700 text-white font-black ring-2 ring-blue-500 shadow-md scale-105'
+                                                            : isSelected
+                                                            ? 'bg-blue-600 text-white font-black ring-2 ring-blue-300 shadow-md'
+                                                            : hasLog
+                                                            ? 'bg-emerald-500 hover:bg-emerald-600 text-white font-black shadow-xs border border-emerald-600'
+                                                            : isToday
+                                                            ? 'bg-blue-50 text-blue-700 border border-blue-300 font-black hover:bg-blue-100'
+                                                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold border border-slate-100'
+                                                    }`}
+                                                    title={hasLog ? `مسجل ${logCount} يومية في ${dateStr}` : dateStr}
+                                                >
+                                                    <span className="leading-none">{dayNum}</span>
+                                                    {hasLog && (
+                                                        <span className={`w-1.5 h-1.5 rounded-full mt-0.5 ${isSelected ? 'bg-amber-300' : 'bg-white'}`}></span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {/* Legend */}
+                                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[10px] font-bold text-slate-600">
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="w-3 h-3 rounded bg-emerald-500 inline-block border border-emerald-600"></span>
+                                            <span>يوم مسجل به يومية</span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="w-3 h-3 rounded bg-blue-600 inline-block"></span>
+                                            <span>اليوم المحدد</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Footer Actions */}
+                                <div className="px-3 py-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleSelectDay(todayStr)}
+                                        className="!min-h-0 px-3 py-1.5 rounded-xl bg-blue-100 hover:bg-blue-200 text-blue-800 text-[11px] font-black transition"
+                                    >
+                                        اليوم
+                                    </button>
+                                    {calendarPickerTarget === 'filter' && logFilterDate && (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setLogFilterDate(''); setCalendarPickerTarget(null); }}
+                                            className="!min-h-0 px-3 py-1.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 text-[11px] font-black transition"
+                                        >
+                                            عرض الكل
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarPickerTarget(null)}
+                                        className="!min-h-0 px-4 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 text-[11px] font-bold transition mr-auto"
+                                    >
+                                        إغلاق
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
 
                 {/* Unified Consulting Center (المركز الاستشاري الموحد) */}
                 {showProjectAI && (
