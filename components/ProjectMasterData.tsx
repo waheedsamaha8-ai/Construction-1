@@ -13,6 +13,7 @@ import { Project, ProjectLog, ProjectPayment, BOQItem, BOQItemReportType, BOQIte
 import html2canvas from 'html2canvas';
 import InteractiveReportViewer, { formatInteractiveReportHtml, applyTableColumnWidthToHtml } from './InteractiveReportViewer';
 import ProjectAI from './ProjectAI';
+import ProjectQCTab from './ProjectQCTab';
 
 interface ProjectMasterDataProps {
     projectId: string;
@@ -91,7 +92,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const navigate = useNavigate();
     
     // --- State Management ---
-    const [activeTab, setActiveTab] = useState<'logs' | 'payments' | 'boq' | 'soil'>('logs');
+    const [activeTab, setActiveTab] = useState<'logs' | 'payments' | 'boq' | 'soil' | 'qc'>('logs');
     const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
     
     // Report Modal State
@@ -702,7 +703,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
     }, [isOpen, projectId]);
 
-    const triggerAutoSave = async (newData: any, flags?: { _allowEmptyBoq?: boolean; _allowEmptyPayments?: boolean; _allowEmptyLogs?: boolean; _allowEmptyReports?: boolean }) => {
+    const triggerAutoSave = async (newData: any, flags?: { _allowEmptyBoq?: boolean; _allowEmptyPayments?: boolean; _allowEmptyLogs?: boolean; _allowEmptyReports?: boolean; _allowEmptyChecklists?: boolean }) => {
         if (!projectId) return;
         const now = Date.now();
         lastLocalEditRef.current = now;
@@ -3783,11 +3784,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     </div>
                 </div>
 
-                {/* Tabs */}
-                <div className="flex border-b border-slate-200 bg-slate-50 overflow-x-auto hide-scrollbar shrink-0">
-                    {['logs', 'payments', 'boq', 'soil'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex-1 py-3 text-[10px] font-bold transition whitespace-nowrap px-4 ${activeTab === tab ? 'border-b-2 border-blue-600 text-blue-700 bg-white' : 'text-slate-500 hover:bg-slate-100'}`}>
-                            {tab === 'logs' ? 'يوميات' : tab === 'payments' ? 'مستخلصات' : tab === 'boq' ? 'مقايسة' : 'تقارير'}
+                {/* Tabs - 5 Equal Buttons */}
+                <div className="grid grid-cols-5 border-b border-slate-200 bg-slate-50 shrink-0 w-full">
+                    {(['logs', 'payments', 'boq', 'soil', 'qc'] as const).map(tab => (
+                        <button
+                            key={tab}
+                            onClick={() => setActiveTab(tab)}
+                            className={`master-data-tab-btn w-full py-2.5 text-[10px] sm:text-xs font-bold transition whitespace-nowrap px-1 text-center ${
+                                activeTab === tab
+                                    ? 'border-b-2 border-blue-600 text-blue-700 bg-white'
+                                    : 'text-slate-500 hover:bg-slate-100'
+                            }`}
+                        >
+                            {tab === 'logs' ? 'يوميات' : tab === 'payments' ? 'مستخلصات' : tab === 'boq' ? 'مقايسة' : tab === 'soil' ? 'تقارير' : 'استلامات'}
                         </button>
                     ))}
                 </div>
@@ -5443,6 +5452,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                 </div>
                             )}
                         </div>
+                    )}
+
+                    {activeTab === 'qc' && (
+                        <ProjectQCTab
+                            projectId={projectId}
+                            projectName={masterData.projectName || seedProject?.name || initialProjectData?.name || 'المشروع'}
+                            contractorName={masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام'}
+                            checklists={masterData.checklists || []}
+                            onUpdateChecklists={(updatedChecklists, allowEmpty) => {
+                                const newData = {
+                                    ...masterData,
+                                    checklists: updatedChecklists
+                                };
+                                setMasterData(newData);
+                                triggerAutoSave(newData, allowEmpty ? { _allowEmptyChecklists: true } : undefined);
+                            }}
+                            onCloseMasterData={onClose}
+                        />
                     )}
 
                     {/* --- MODALS FOR DCS & QHSE REMOVED --- */}

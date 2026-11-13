@@ -96,6 +96,14 @@ body {
         line-height: 1.3 !important;
         white-space: nowrap !important;
     }
+    .master-data-tab-btn {
+        font-size: 11px !important;
+        line-height: 1.2 !important;
+        padding-left: 2px !important;
+        padding-right: 2px !important;
+        min-height: 38px !important;
+        white-space: nowrap !important;
+    }
     .fa-solid, .fa-regular, .fa-brands { font-size: 1.1em; }
     button { min-height: 44px; }
     
@@ -103,6 +111,25 @@ body {
     td, th {
         padding: 4px 6px !important;
     }
+}
+
+table.pricing-compact-table th,
+table.pricing-compact-table th *,
+.prose table.pricing-compact-table th,
+.report-body table.pricing-compact-table th {
+    font-size: 11px !important;
+    padding: 5px 6px !important;
+    line-height: 1.35 !important;
+    white-space: normal !important;
+}
+
+table.pricing-compact-table td,
+table.pricing-compact-table td *,
+.prose table.pricing-compact-table td,
+.report-body table.pricing-compact-table td {
+    font-size: 11px !important;
+    padding: 5px 6px !important;
+    line-height: 1.35 !important;
 }
 
 .prose {

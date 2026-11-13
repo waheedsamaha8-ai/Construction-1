@@ -281,15 +281,25 @@ export interface ChecklistItem {
   text: string;
   isChecked: boolean;
   notes?: string;
+  ecpStandard?: string;
+  result?: 'pass' | 'fail' | 'note' | 'na';
 }
 
 export interface Checklist {
   id: string;
+  docType?: string; // 'IR' | 'MIR' | 'NCR' | 'SI' | 'MOM' | 'RFI' | 'SAM' | 'ITR' | 'CPP'
+  docFields?: Record<string, string>;
   refNumber: string;
   activityName: string; // e.g., "صب خرسانة سقف", "أعمال مباني"
+  category?: string;
+  ecpCode?: string;
   items: ChecklistItem[];
-  status: 'Open' | 'Completed' | 'Verified';
+  status: 'Open' | 'Completed' | 'Verified' | 'Approved' | 'ApprovedWithNotes' | 'Rejected' | string;
   inspectorName?: string;
+  contractorEngineer?: string;
+  consultantEngineer?: string;
+  generalNotes?: string;
+  photos?: string[];
   date: string;
   location?: string;
   htmlContent?: string; // NEW: AI Generated HTML

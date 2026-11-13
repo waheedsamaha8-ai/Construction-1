@@ -897,17 +897,17 @@ function mergeProjectData(localP: Project | undefined, remoteP: Project): Projec
         }
     }
 
-    const mergeById = <T extends { id: string }>(localArr: T[] = [], remoteArr: T[] = []): T[] => {
+    const mergeById = <T extends { id: string }>(localArr: T[] = [], remoteArr: T[] = [], allowEmptyLocal?: boolean, allowEmptyRemote?: boolean): T[] => {
         if (localIsNewer) {
-            return (localArr.length > 0 || remoteArr.length === 0) ? localArr : remoteArr;
+            return (allowEmptyLocal || localArr.length > 0 || remoteArr.length === 0) ? localArr : remoteArr;
         }
-        return (remoteArr.length > 0 || localArr.length === 0) ? remoteArr : localArr;
+        return (allowEmptyRemote || remoteArr.length > 0 || localArr.length === 0) ? remoteArr : localArr;
     };
 
     const mergedRfis = mergeById(localP.rfis, remoteP.rfis);
     const mergedSubmittals = mergeById(localP.submittals, remoteP.submittals);
     const mergedCorr = mergeById(localP.correspondence, remoteP.correspondence);
-    const mergedChecklists = mergeById(localP.checklists, remoteP.checklists);
+    const mergedChecklists = mergeById(localP.checklists, remoteP.checklists, !!(localP as any)._allowEmptyChecklists, !!(remoteP as any)._allowEmptyChecklists);
     const mergedNcrs = mergeById(localP.ncrs, remoteP.ncrs);
 
     return {
@@ -1693,11 +1693,15 @@ export const api = {
           if (existing.engineeringReports && existing.engineeringReports.length > 0 && Array.isArray(safeUpdates.engineeringReports) && safeUpdates.engineeringReports.length === 0 && !safeUpdates._allowEmptyReports) {
               safeUpdates.engineeringReports = existing.engineeringReports;
           }
+          if (existing.checklists && existing.checklists.length > 0 && Array.isArray(safeUpdates.checklists) && safeUpdates.checklists.length === 0 && !safeUpdates._allowEmptyChecklists) {
+              safeUpdates.checklists = existing.checklists;
+          }
       }
       if (Array.isArray(safeUpdates.boqItems) && safeUpdates.boqItems.length > 0) safeUpdates._allowEmptyBoq = false;
       if (Array.isArray(safeUpdates.payments) && safeUpdates.payments.length > 0) safeUpdates._allowEmptyPayments = false;
       if (Array.isArray(safeUpdates.executionLogs) && safeUpdates.executionLogs.length > 0) safeUpdates._allowEmptyLogs = false;
       if (Array.isArray(safeUpdates.engineeringReports) && safeUpdates.engineeringReports.length > 0) safeUpdates._allowEmptyReports = false;
+      if (Array.isArray(safeUpdates.checklists) && safeUpdates.checklists.length > 0) safeUpdates._allowEmptyChecklists = false;
 
       // Apply updates on top of existing
       const rawMerged: Project = {
