@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 
 export const formatInteractiveReportHtml = (rawHtml: string): string => {
     if (!rawHtml) return '';
@@ -407,19 +407,30 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
     const containerRef = useRef<HTMLDivElement>(null);
     const editableRef = useRef<HTMLDivElement>(null);
     const saveTimerRef = useRef<any>(null);
+    const lastCommittedHtmlRef = useRef<string | null>(null);
+    const hasInitializedDomRef = useRef<boolean>(false);
 
-    const formattedHtml = formatInteractiveReportHtml(htmlContent);
+    const formattedHtml = useMemo(() => formatInteractiveReportHtml(htmlContent), [htmlContent]);
 
-    // Sync external htmlContent into editableRef ONLY when not actively focused & typing
+    // Sync external htmlContent into editableRef ONLY when external content genuinely changes and NOT during active editing
     useEffect(() => {
         if (!editableRef.current) return;
-        if (document.activeElement !== editableRef.current) {
-            editableRef.current.innerHTML = formattedHtml;
+        if (hasInitializedDomRef.current && htmlContent === lastCommittedHtmlRef.current) {
+            return;
         }
-    }, [formattedHtml, isDirectEditing]);
+        if (isDirectEditing && hasInitializedDomRef.current) {
+            return;
+        }
+        if (editableRef.current.contains(document.activeElement)) {
+            return;
+        }
+        editableRef.current.innerHTML = formattedHtml;
+        hasInitializedDomRef.current = true;
+    }, [formattedHtml, htmlContent, isDirectEditing]);
 
     const commitHtmlChange = (newHtml: string) => {
         if (!onContentChange) return;
+        lastCommittedHtmlRef.current = newHtml;
         setAutoSaveStatus('saving');
         onContentChange(newHtml);
         setAutoSaveStatus('saved');
@@ -799,10 +810,9 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                 suppressContentEditableWarning={true}
                 onInput={handleDirectInput}
                 onBlur={handleDirectBlur}
-                className={`interactive-report-body max-w-none text-slate-900 leading-relaxed w-full transition-all ${
+                className={`interactive-report-body max-w-none text-slate-900 leading-relaxed w-full ${
                     isDirectEditing ? 'is-editable cursor-text p-2' : ''
                 }`}
-                dangerouslySetInnerHTML={{ __html: formattedHtml }}
             />
 
             {/* Column Width Percentage Modal */}

@@ -120,9 +120,22 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const lastTouchRef = useRef<{ x: number; y: number; dist: number } | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [isImgGesturing, setIsImgGesturing] = useState(false);
+
+  // Refs for jump-free focal-point Image zoom & pan
+  const imgStageRef = useRef<HTMLDivElement>(null);
+  const imgTransformRef = useRef<HTMLDivElement>(null);
+  const imgZoomRef = useRef({ scale: 1, x: 0, y: 0 });
+
+  // Refs for jump-free focal-point PDF zoom & native momentum scroll
+  const pdfViewportRef = useRef<HTMLDivElement>(null);
+  const pdfSizerRef = useRef<HTMLDivElement>(null);
+  const pdfPagesWrapperRef = useRef<HTMLDivElement>(null);
+  const pdfScaleRef = useRef(1);
+  const [pdfBaseWidth, setPdfBaseWidth] = useState(0);
+  const pdfBaseWidthRef = useRef(0);
+  const [pdfContentHeight, setPdfContentHeight] = useState(0);
+  const pdfContentHeightRef = useRef(0);
 
   const [isEditing, setIsEditing] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -171,6 +184,11 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   useEffect(() => {
       setScale(1);
       setPosition({ x: 0, y: 0 });
+      imgZoomRef.current = { scale: 1, x: 0, y: 0 };
+      pdfScaleRef.current = 1;
+      pdfContentHeightRef.current = 0;
+      setPdfContentHeight(0);
+      setIsImgGesturing(false);
       setAnalysisResult(null);
       setIsAnalysisOpen(false);
       setLoadError(false);
@@ -383,67 +401,468 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
   const handleNext = () => { if (currentIndex < siblings.length - 1) setCurrentIndex(prev => prev + 1); };
   const handlePrev = () => { if (currentIndex > 0) setCurrentIndex(prev => prev - 1); };
+  const navCallbacksRef = useRef({ handleNext, handlePrev });
+  navCallbacksRef.current = { handleNext, handlePrev };
 
-  // --- Touch Handlers (Unified for Image & PDF) ---
-  const handleTouchStart = (e: React.TouchEvent) => { if (e.touches.length === 1) { setIsDragging(true); lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, dist: 0 }; } else if (e.touches.length === 2) { const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); lastTouchRef.current = { x: 0, y: 0, dist }; } };
-  const handleTouchMove = (e: React.TouchEvent) => { if (e.touches.length === 1 && isDragging && scale > 1) { if (!lastTouchRef.current) return; const dx = e.touches[0].clientX - lastTouchRef.current.x; const dy = e.touches[0].clientY - lastTouchRef.current.y; setPosition(prev => ({ x: prev.x + dx, y: prev.y + dy })); lastTouchRef.current = { ...lastTouchRef.current, x: e.touches[0].clientX, y: e.touches[0].clientY }; } else if (e.touches.length === 2) { const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (lastTouchRef.current && lastTouchRef.current.dist > 0) { const delta = dist - lastTouchRef.current.dist; const newScale = Math.min(Math.max(1, scale + delta * 0.01), 5); setScale(newScale); if (newScale === 1) setPosition({ x: 0, y: 0 }); } if (lastTouchRef.current) lastTouchRef.current.dist = dist; } };
-  const handleTouchEnd = (e: React.TouchEvent) => { if (scale === 1 && isDragging && lastTouchRef.current && e.changedTouches.length > 0) { const dx = e.changedTouches[0].clientX - lastTouchRef.current.x; const dy = e.changedTouches[0].clientY - lastTouchRef.current.y; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) { if (dx > 0) handleNext(); else handlePrev(); } } setIsDragging(false); lastTouchRef.current = null; };
-  const handleDoubleTap = () => { if (scale > 1) { setScale(1); setPosition({ x: 0, y: 0 }); } else { setScale(2.5); } };
+  // --- Focal-Point Helpers for Image Zoom ---
+  const clampImagePos = (s: number, x: number, y: number, rect: DOMRect) => {
+      if (s <= 1) return { x: 0, y: 0 };
+      const minX = rect.width * (1 - s);
+      const minY = rect.height * (1 - s);
+      return {
+          x: Math.min(0, Math.max(minX, x)),
+          y: Math.min(0, Math.max(minY, y)),
+      };
+  };
+
+  const applyImageTransform = (s: number, x: number, y: number) => {
+      imgZoomRef.current = { scale: s, x, y };
+      if (imgTransformRef.current) {
+          imgTransformRef.current.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`;
+      }
+      setScale(s);
+      setPosition({ x, y });
+  };
+
+  const zoomImageAtPoint = (targetScale: number, fx: number, fy: number) => {
+      const stage = imgStageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const prev = imgZoomRef.current;
+      const nextScale = Math.min(5, Math.max(1, targetScale));
+      if (nextScale === 1) {
+          applyImageTransform(1, 0, 0);
+          return;
+      }
+      const ratio = prev.scale > 0 ? nextScale / prev.scale : 1;
+      const rawX = fx - (fx - prev.x) * ratio;
+      const rawY = fy - (fy - prev.y) * ratio;
+      const clamped = clampImagePos(nextScale, rawX, rawY, rect);
+      applyImageTransform(nextScale, clamped.x, clamped.y);
+  };
+
+  // --- Focal-Point Helpers for PDF Zoom ---
+  const zoomPdfAtPoint = (targetScale: number, prevMidX: number, prevMidY: number, newMidX: number, newMidY: number) => {
+      const vp = pdfViewportRef.current;
+      const sizer = pdfSizerRef.current;
+      const wrapper = pdfPagesWrapperRef.current;
+      if (!vp || !sizer || !wrapper) return;
+
+      const oldScale = pdfScaleRef.current;
+      const nextScale = Math.min(5, Math.max(1, targetScale));
+      const baseW = pdfBaseWidthRef.current || vp.clientWidth;
+      const contentH = pdfContentHeightRef.current || wrapper.offsetHeight;
+
+      const contentX = (vp.scrollLeft + prevMidX) / oldScale;
+      const contentY = (vp.scrollTop + prevMidY) / oldScale;
+
+      pdfScaleRef.current = nextScale;
+      wrapper.style.transform = `scale(${nextScale})`;
+      if (baseW > 0) sizer.style.width = `${baseW * nextScale}px`;
+      if (contentH > 0) sizer.style.height = `${contentH * nextScale}px`;
+
+      vp.scrollLeft = Math.max(0, contentX * nextScale - newMidX);
+      vp.scrollTop = Math.max(0, contentY * nextScale - newMidY);
+      setScale(nextScale);
+  };
+
+  // --- Native Non-Passive Touch Listeners for Image (Exact Focal-Point Pinch & Pan) ---
+  useEffect(() => {
+      if (!isImage || !displayUrl) return;
+      const stage = imgStageRef.current;
+      if (!stage) return;
+
+      let session: {
+          mode: 'pan' | 'pinch';
+          x: number;
+          y: number;
+          startX: number;
+          startY: number;
+          dist: number;
+          midX: number;
+          midY: number;
+          wasPinch: boolean;
+      } | null = null;
+      let lastTapTime = 0;
+
+      const onTouchStart = (e: TouchEvent) => {
+          if (e.touches.length === 1) {
+              const t = e.touches[0];
+              session = {
+                  mode: 'pan',
+                  x: t.clientX,
+                  y: t.clientY,
+                  startX: t.clientX,
+                  startY: t.clientY,
+                  dist: 0,
+                  midX: 0,
+                  midY: 0,
+                  wasPinch: false,
+              };
+              if (imgZoomRef.current.scale > 1) {
+                  setIsImgGesturing(true);
+              }
+          } else if (e.touches.length === 2) {
+              e.preventDefault();
+              const rect = stage.getBoundingClientRect();
+              const t0 = e.touches[0];
+              const t1 = e.touches[1];
+              const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+              const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+              const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+              session = {
+                  mode: 'pinch',
+                  x: 0,
+                  y: 0,
+                  startX: 0,
+                  startY: 0,
+                  dist,
+                  midX,
+                  midY,
+                  wasPinch: true,
+              };
+              setIsImgGesturing(true);
+          }
+      };
+
+      const onTouchMove = (e: TouchEvent) => {
+          if (e.touches.length === 2) {
+              e.preventDefault();
+              const rect = stage.getBoundingClientRect();
+              const t0 = e.touches[0];
+              const t1 = e.touches[1];
+              const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+              const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+              const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+
+              if (!session || session.mode !== 'pinch') {
+                  session = { mode: 'pinch', x: 0, y: 0, startX: 0, startY: 0, dist, midX, midY, wasPinch: true };
+                  setIsImgGesturing(true);
+                  return;
+              }
+
+              const prev = imgZoomRef.current;
+              const rawScale = session.dist > 0 ? prev.scale * (dist / session.dist) : prev.scale;
+              const nextScale = Math.min(5, Math.max(1, rawScale));
+              const ratio = prev.scale > 0 ? nextScale / prev.scale : 1;
+
+              const rawX = midX - (session.midX - prev.x) * ratio;
+              const rawY = midY - (session.midY - prev.y) * ratio;
+              const clamped = clampImagePos(nextScale, rawX, rawY, rect);
+
+              applyImageTransform(nextScale, clamped.x, clamped.y);
+              session.dist = dist;
+              session.midX = midX;
+              session.midY = midY;
+              session.wasPinch = true;
+          } else if (e.touches.length === 1 && imgZoomRef.current.scale > 1) {
+              e.preventDefault();
+              const t = e.touches[0];
+              if (!session || session.mode !== 'pan') {
+                  session = {
+                      mode: 'pan',
+                      x: t.clientX,
+                      y: t.clientY,
+                      startX: t.clientX,
+                      startY: t.clientY,
+                      dist: 0,
+                      midX: 0,
+                      midY: 0,
+                      wasPinch: session?.wasPinch ?? false,
+                  };
+                  setIsImgGesturing(true);
+                  return;
+              }
+              const dx = t.clientX - session.x;
+              const dy = t.clientY - session.y;
+              const rect = stage.getBoundingClientRect();
+              const prev = imgZoomRef.current;
+              const clamped = clampImagePos(prev.scale, prev.x + dx, prev.y + dy, rect);
+              applyImageTransform(prev.scale, clamped.x, clamped.y);
+              session.x = t.clientX;
+              session.y = t.clientY;
+          }
+      };
+
+      const onTouchEnd = (e: TouchEvent) => {
+          if (e.touches.length === 1) {
+              const t = e.touches[0];
+              session = {
+                  mode: 'pan',
+                  x: t.clientX,
+                  y: t.clientY,
+                  startX: t.clientX,
+                  startY: t.clientY,
+                  dist: 0,
+                  midX: 0,
+                  midY: 0,
+                  wasPinch: true,
+              };
+              setIsImgGesturing(imgZoomRef.current.scale > 1);
+              return;
+          }
+
+          if (e.touches.length === 0) {
+              setIsImgGesturing(false);
+              if (session && !session.wasPinch && e.changedTouches.length > 0) {
+                  const t = e.changedTouches[0];
+                  const dx = t.clientX - session.startX;
+                  const dy = t.clientY - session.startY;
+
+                  if (imgZoomRef.current.scale === 1 && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+                      if (dx > 0) navCallbacksRef.current.handleNext();
+                      else navCallbacksRef.current.handlePrev();
+                  } else if (Math.hypot(dx, dy) < 12) {
+                      const now = Date.now();
+                      if (now - lastTapTime < 280) {
+                          lastTapTime = 0;
+                          const rect = stage.getBoundingClientRect();
+                          const fx = t.clientX - rect.left;
+                          const fy = t.clientY - rect.top;
+                          zoomImageAtPoint(imgZoomRef.current.scale > 1 ? 1 : 2.5, fx, fy);
+                      } else {
+                          lastTapTime = now;
+                      }
+                  }
+              }
+              session = null;
+          }
+      };
+
+      stage.addEventListener('touchstart', onTouchStart, { passive: false });
+      stage.addEventListener('touchmove', onTouchMove, { passive: false });
+      stage.addEventListener('touchend', onTouchEnd, { passive: false });
+      stage.addEventListener('touchcancel', onTouchEnd, { passive: false });
+
+      return () => {
+          stage.removeEventListener('touchstart', onTouchStart);
+          stage.removeEventListener('touchmove', onTouchMove);
+          stage.removeEventListener('touchend', onTouchEnd);
+          stage.removeEventListener('touchcancel', onTouchEnd);
+      };
+  }, [isImage, displayUrl]);
+
+  // --- Native Non-Passive Touch & Resize Listeners for PDF (Exact Focal-Point Pinch without Scroll Reset) ---
+  useEffect(() => {
+      if (!isPdf || pdfRenderError) return;
+      const vp = pdfViewportRef.current;
+      const wrapper = pdfPagesWrapperRef.current;
+      if (!vp || !wrapper) return;
+
+      const updateBaseWidth = () => {
+          const w = vp.clientWidth;
+          if (w > 0 && pdfScaleRef.current === 1) {
+              pdfBaseWidthRef.current = w;
+              setPdfBaseWidth(w);
+          } else if (w > 0 && pdfBaseWidthRef.current === 0) {
+              pdfBaseWidthRef.current = w;
+              setPdfBaseWidth(w);
+          }
+      };
+      updateBaseWidth();
+
+      const vpObserver = new ResizeObserver(updateBaseWidth);
+      vpObserver.observe(vp);
+
+      const contentObserver = new ResizeObserver(() => {
+          const h = wrapper.offsetHeight;
+          if (h > 0) {
+              pdfContentHeightRef.current = h;
+              setPdfContentHeight(h);
+              if (pdfSizerRef.current) {
+                  pdfSizerRef.current.style.height = `${h * pdfScaleRef.current}px`;
+              }
+          }
+      });
+      contentObserver.observe(wrapper);
+
+      let pinch: { dist: number; midX: number; midY: number } | null = null;
+      let singleStart: { x: number; y: number; wasPinch: boolean } | null = null;
+      let lastTapTime = 0;
+
+      const onTouchStart = (e: TouchEvent) => {
+          if (e.touches.length === 1) {
+              singleStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, wasPinch: false };
+          } else if (e.touches.length === 2) {
+              e.preventDefault();
+              if (singleStart) singleStart.wasPinch = true;
+              const rect = vp.getBoundingClientRect();
+              const t0 = e.touches[0];
+              const t1 = e.touches[1];
+              pinch = {
+                  dist: Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY),
+                  midX: (t0.clientX + t1.clientX) / 2 - rect.left,
+                  midY: (t0.clientY + t1.clientY) / 2 - rect.top,
+              };
+          }
+      };
+
+      const onTouchMove = (e: TouchEvent) => {
+          if (e.touches.length === 2) {
+              e.preventDefault();
+              const rect = vp.getBoundingClientRect();
+              const t0 = e.touches[0];
+              const t1 = e.touches[1];
+              const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+              const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+              const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+
+              if (!pinch) {
+                  pinch = { dist, midX, midY };
+                  return;
+              }
+              const rawScale = pinch.dist > 0 ? pdfScaleRef.current * (dist / pinch.dist) : pdfScaleRef.current;
+              zoomPdfAtPoint(rawScale, pinch.midX, pinch.midY, midX, midY);
+              pinch = { dist, midX, midY };
+          }
+      };
+
+      const onTouchEnd = (e: TouchEvent) => {
+          if (e.touches.length < 2) {
+              pinch = null;
+          }
+          if (e.touches.length === 0) {
+              if (singleStart && !singleStart.wasPinch && e.changedTouches.length > 0) {
+                  const t = e.changedTouches[0];
+                  if (Math.hypot(t.clientX - singleStart.x, t.clientY - singleStart.y) < 12) {
+                      const now = Date.now();
+                      if (now - lastTapTime < 280) {
+                          lastTapTime = 0;
+                          const rect = vp.getBoundingClientRect();
+                          const fx = t.clientX - rect.left;
+                          const fy = t.clientY - rect.top;
+                          zoomPdfAtPoint(pdfScaleRef.current > 1 ? 1 : 2.5, fx, fy, fx, fy);
+                      } else {
+                          lastTapTime = now;
+                      }
+                  }
+              }
+              singleStart = null;
+          }
+      };
+
+      vp.addEventListener('touchstart', onTouchStart, { passive: false });
+      vp.addEventListener('touchmove', onTouchMove, { passive: false });
+      vp.addEventListener('touchend', onTouchEnd, { passive: false });
+      vp.addEventListener('touchcancel', onTouchEnd, { passive: false });
+
+      return () => {
+          vpObserver.disconnect();
+          contentObserver.disconnect();
+          vp.removeEventListener('touchstart', onTouchStart);
+          vp.removeEventListener('touchmove', onTouchMove);
+          vp.removeEventListener('touchend', onTouchEnd);
+          vp.removeEventListener('touchcancel', onTouchEnd);
+      };
+  }, [isPdf, pdfRenderError, pdfDoc, numPages]);
+
+  const handleImageDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+      const stage = imgStageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      zoomImageAtPoint(imgZoomRef.current.scale > 1 ? 1 : 2.5, e.clientX - rect.left, e.clientY - rect.top);
+  };
+
+  const handlePdfDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+      const vp = pdfViewportRef.current;
+      if (!vp) return;
+      const rect = vp.getBoundingClientRect();
+      const fx = e.clientX - rect.left;
+      const fy = e.clientY - rect.top;
+      zoomPdfAtPoint(pdfScaleRef.current > 1 ? 1 : 2.5, fx, fy, fx, fy);
+  };
 
   const renderContent = () => {
       // ... (Keep existing Render Content logic from original FileViewer.tsx, including DWG, PDF, Image etc.) ...
       if (loadError) return <div className="flex flex-col items-center justify-center text-white z-10 h-full p-6 text-center"><i className="fa-solid fa-triangle-exclamation text-yellow-500 text-5xl mb-4"></i><p className="font-bold mb-2 text-lg">تعذر عرض الملف</p>{currentItem.webViewLink && <a href={currentItem.webViewLink} target="_blank" rel="noreferrer" className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-500 mt-4">فتح في Drive</a>}</div>;
       if (isDwg) return <DwgViewer item={currentItem} onClose={onClose} />;
       
-      // Updated PDF Viewer with Pinch-to-Zoom
+      // Updated PDF Viewer with True Focal-Point Pinch-to-Zoom & Preserved Scroll Position
       if (isPdf && !pdfRenderError) return (
-        <div 
-            className="w-full h-full relative bg-slate-800 touch-none overflow-hidden" 
-            onTouchStart={handleTouchStart} 
-            onTouchMove={handleTouchMove} 
-            onTouchEnd={handleTouchEnd} 
-            onDoubleClick={handleDoubleTap}
+        <div
+            ref={pdfViewportRef}
+            dir="ltr"
+            className="w-full h-full relative bg-slate-800 overflow-auto custom-scrollbar"
+            style={{ touchAction: 'pan-x pan-y', WebkitOverflowScrolling: 'touch' }}
+            onDoubleClick={handlePdfDoubleClick}
         >
-            <div 
-                className={`absolute inset-0 flex flex-col items-stretch pt-0 pb-16 transition-transform duration-75 ease-out ${scale === 1 ? 'overflow-y-auto custom-scrollbar' : 'overflow-visible'}`} 
-                style={{ 
-                    transform: `scale(${scale}) translate(${position.x / scale}px, ${position.y / scale}px)`,
-                    transformOrigin: 'top left'
+            <div
+                ref={pdfSizerRef}
+                style={{
+                    width: pdfBaseWidth ? `${pdfBaseWidth * scale}px` : '100%',
+                    height: pdfContentHeight ? `${pdfContentHeight * scale}px` : 'auto',
+                    position: 'relative',
                 }}
             >
-                {(isPdfLoading || !pdfDoc) && (
-                    <div className="flex flex-col items-center justify-center mt-20">
-                        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                        <p className="text-white font-bold">{downloadProgress}% جاري المعالجة...</p>
-                    </div>
-                )}
-                {pdfDoc && Array.from({ length: numPages }, (_, i) => (
-                    <div key={i + 1} className="w-full px-0 m-0 flex justify-center">
-                        <PdfPage pageNum={i + 1} pdfDoc={pdfDoc} scale={1} />
-                    </div>
-                ))}
+                <div
+                    ref={pdfPagesWrapperRef}
+                    dir="rtl"
+                    className="flex flex-col items-stretch pt-0 pb-16 will-change-transform"
+                    style={{
+                        width: pdfBaseWidth ? `${pdfBaseWidth}px` : '100%',
+                        transformOrigin: '0 0',
+                        transform: `scale(${scale})`,
+                    }}
+                >
+                    {(isPdfLoading || !pdfDoc) && (
+                        <div className="flex flex-col items-center justify-center mt-20">
+                            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+                            <p className="text-white font-bold">{downloadProgress}% جاري المعالجة...</p>
+                        </div>
+                    )}
+                    {pdfDoc && Array.from({ length: numPages }, (_, i) => (
+                        <div key={i + 1} className="w-full px-0 m-0 flex justify-center">
+                            <PdfPage pageNum={i + 1} pdfDoc={pdfDoc} scale={1} />
+                        </div>
+                    ))}
+                </div>
             </div>
         </div>
       );
       
-      // FIX: Ensure Image is perfectly centered using margin-auto and flex
-      if (isImage) return <div className="w-full h-full flex items-center justify-center overflow-hidden p-0 relative touch-none select-none" onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onDoubleClick={handleDoubleTap}>
-          {!displayUrl && <div className="absolute inset-0 flex flex-col items-center justify-center z-20"><div className="relative w-16 h-16 flex items-center justify-center"><div className="absolute inset-0 border-4 border-blue-500/30 rounded-full"></div><div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div><span className="text-xs font-bold text-white relative z-10">{downloadProgress}%</span></div></div>}
-          {displayUrl && 
-            <img 
-                ref={containerRef as any} 
-                src={displayUrl} 
-                alt={currentItem.name} 
-                className={`max-w-full max-h-full object-contain shadow-2xl z-10 transition-transform duration-75 ease-out will-change-transform ${!isHighResLoaded ? 'blur-sm scale-95 opacity-80' : 'blur-0 scale-100 opacity-100'} transition-all duration-300 m-auto block`} 
-                style={{ 
-                    transform: `scale(${scale}) translate(${position.x / scale}px, ${position.y / scale}px)`,
-                    objectPosition: 'center center'
-                }} 
-                draggable={false} 
-            />
-          }
-          {siblings.length > 1 && scale === 1 && (<> {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>} {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>} </>)}
-      </div>;
+      // Updated Image Viewer with True Focal-Point Pinch-to-Zoom & Pan
+      if (isImage) return (
+        <div
+            ref={imgStageRef}
+            dir="ltr"
+            className="w-full h-full overflow-hidden p-0 relative touch-none select-none"
+            onDoubleClick={handleImageDoubleClick}
+        >
+            {!displayUrl && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-20">
+                    <div className="relative w-16 h-16 flex items-center justify-center">
+                        <div className="absolute inset-0 border-4 border-blue-500/30 rounded-full"></div>
+                        <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                        <span className="text-xs font-bold text-white relative z-10">{downloadProgress}%</span>
+                    </div>
+                </div>
+            )}
+            {displayUrl && (
+                <div
+                    ref={imgTransformRef}
+                    className={`w-full h-full flex items-center justify-center will-change-transform ${isImgGesturing ? '' : 'transition-transform duration-150 ease-out'}`}
+                    style={{
+                        transformOrigin: '0 0',
+                        transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
+                    }}
+                >
+                    <img
+                        src={displayUrl}
+                        alt={currentItem.name}
+                        className={`max-w-full max-h-full object-contain shadow-2xl z-10 transition-opacity duration-300 ${!isHighResLoaded ? 'blur-sm opacity-80' : 'blur-0 opacity-100'} m-auto block`}
+                        style={{ objectPosition: 'center center' }}
+                        draggable={false}
+                    />
+                </div>
+            )}
+            {siblings.length > 1 && scale === 1 && (
+                <>
+                    {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>}
+                    {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>}
+                </>
+            )}
+        </div>
+      );
       
       // FIX: Ensure Video is perfectly centered & 100% mobile compatible with automatic fallbacks
       if (isVideo) {
@@ -669,8 +1088,12 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                             {(isImage || isPdf) && scale !== 1 && (
                                 <button
                                     onClick={() => {
-                                        setScale(1);
-                                        setPosition({ x: 0, y: 0 });
+                                        if (isPdf && pdfViewportRef.current) {
+                                            const vp = pdfViewportRef.current;
+                                            zoomPdfAtPoint(1, vp.clientWidth / 2, vp.clientHeight / 2, vp.clientWidth / 2, vp.clientHeight / 2);
+                                        } else {
+                                            applyImageTransform(1, 0, 0);
+                                        }
                                         setShowActionsMenu(false);
                                     }}
                                     className="w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"

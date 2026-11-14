@@ -447,6 +447,29 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [reportAutoSaveStatus, setReportAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
     const reportEditableContentRef = useRef<HTMLDivElement>(null);
     const reportAutoSaveTimeoutRef = useRef<any>(null);
+    const lastBoqCommittedHtmlRef = useRef<string | null>(null);
+    const lastBoqReportKeyRef = useRef<string>('');
+
+    useEffect(() => {
+        if (!viewingBoqReport || !reportEditableContentRef.current) {
+            lastBoqReportKeyRef.current = '';
+            lastBoqCommittedHtmlRef.current = null;
+            return;
+        }
+        const targetId = viewingBoqReportItem?.id || editingBoqItem?.id || '';
+        const reportKey = `${targetId}_${viewingBoqReport.type}`;
+        const isSameReport = reportKey === lastBoqReportKeyRef.current;
+
+        if (isSameReport && viewingBoqReport.content === lastBoqCommittedHtmlRef.current) {
+            return;
+        }
+        if (isSameReport && (isDirectEditingReport || reportEditableContentRef.current.contains(document.activeElement))) {
+            return;
+        }
+        reportEditableContentRef.current.innerHTML = enhanceReportHtml(viewingBoqReport.content);
+        lastBoqReportKeyRef.current = reportKey;
+        lastBoqCommittedHtmlRef.current = viewingBoqReport.content;
+    }, [viewingBoqReport, viewingBoqReportItem?.id, editingBoqItem?.id, isDirectEditingReport]);
     const [editingColumnModal, setEditingColumnModal] = useState<{
         tableIndex: number;
         columnIndex: number;
@@ -2272,6 +2295,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         if (!viewingBoqReport) return;
         const currentHtml = reportEditableContentRef.current ? reportEditableContentRef.current.innerHTML : viewingBoqReport.content;
         const updatedHtml = applyTableColumnWidthToHtml(currentHtml, tableIdx, colIdx, percent);
+        lastBoqCommittedHtmlRef.current = updatedHtml;
+        if (reportEditableContentRef.current) {
+            reportEditableContentRef.current.innerHTML = updatedHtml;
+        }
         handleUpdateReportContent(updatedHtml);
         setEditingColumnModal(null);
     };
@@ -2334,6 +2361,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             const targetItem = viewingBoqReportItem || editingBoqItem;
             if (!targetItem) return;
 
+            lastBoqCommittedHtmlRef.current = currentHtml;
             const updatedReport: BOQItemSavedReport = {
                 ...viewingBoqReport,
                 content: currentHtml,
@@ -2378,6 +2406,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const targetItem = viewingBoqReportItem || editingBoqItem;
         if (!targetItem) return;
 
+        lastBoqCommittedHtmlRef.current = currentHtml;
         const updatedReport: BOQItemSavedReport = {
             ...viewingBoqReport,
             content: currentHtml,
@@ -4863,57 +4892,55 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         )}
 
+                                        <style>{`
+                                            .report-content { font-size: 13px !important; color: #1e293b !important; line-height: 1.65 !important; width: 100% !important; max-width: 100% !important; }
+                                            .report-content .report-container, .report-content .report-body { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; border: none !important; }
+                                            .report-content .report-header { display: none !important; }
+                                            .report-content p, .report-content li, .report-content div { font-size: 13px !important; line-height: 1.65 !important; }
+                                            .report-content .table-responsive-wrapper { width: 100% !important; max-width: 100% !important; overflow-x: auto !important; overflow-y: hidden !important; -webkit-overflow-scrolling: touch !important; touch-action: pan-x pan-y !important; margin: 12px 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; padding: 0 0 6px 0 !important; box-shadow: none !important; display: block !important; }
+                                            .report-content table, .report-content .editable-table { width: 100% !important; min-width: 580px !important; table-layout: auto !important; border-collapse: collapse !important; margin: 0 !important; font-size: 12.5px !important; border: 1px solid #cbd5e1 !important; background: #ffffff !important; }
+                                            .report-content th, .report-content td { border: 1px solid #cbd5e1 !important; padding: 8px 10px !important; line-height: 1.55 !important; vertical-align: middle !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; word-wrap: normal !important; hyphens: none !important; }
+                                            .report-content th { background-color: #f1f5f9 !important; color: #1e3a8a !important; font-weight: 800 !important; font-size: 12.5px !important; text-align: center !important; cursor: pointer !important; position: relative !important; user-select: none !important; transition: all 0.15s ease !important; }
+                                            .report-content th * { color: #1e3a8a !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
+                                            .report-content th:hover { background-color: #e0e7ff !important; color: #3730a3 !important; }
+                                            .report-content td { text-align: right !important; font-size: 12.5px !important; color: #0f172a !important; }
+                                            .report-content td * { white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
+                                            .report-content tr:nth-child(even) td { background-color: #f8fafc !important; }
+                                            .report-content table.boq-summary-mini-table { min-width: 420px !important; margin: 0 !important; }
+                                            .report-content table.boq-summary-mini-table th { padding: 5px 6px !important; font-size: 11px !important; font-weight: 800 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; }
+                                            .report-content table.boq-summary-mini-table td { padding: 5px 6px !important; font-size: 11.5px !important; font-weight: 700 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; background-color: #ffffff !important; }
+                                            .report-content h1 { color: #1e3a8a !important; font-size: 15px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: center !important; background: transparent !important; border: none !important; border-bottom: 2px solid #1e3a8a !important; border-radius: 0 !important; padding: 0 0 8px 0 !important; margin: 6px 0 12px 0 !important; width: 100% !important; display: block !important; }
+                                            .report-content h2 { color: #1e3a8a !important; font-size: 14px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1.5px solid #cbd5e1 !important; border-right: 4px solid #1e3a8a !important; border-radius: 0 !important; padding: 2px 8px 6px 0 !important; margin: 14px 0 8px 0 !important; width: 100% !important; display: block !important; }
+                                            .report-content h3,
+                                            .report-content h4 { color: #1e3a8a !important; font-size: 13px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1px solid #e2e8f0 !important; border-right: 3px solid #3b82f6 !important; border-radius: 0 !important; padding: 2px 8px 4px 0 !important; margin: 10px 0 6px 0 !important; width: 100% !important; display: block !important; }
+                                            .report-content .info-box { background-color: #eff6ff !important; border: 1px solid #bfdbfe !important; border-right: 4px solid #2563eb !important; color: #1e3a8a !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                            .report-content .success-box { background-color: #f0fdf4 !important; border: 1px solid #bbf7d0 !important; border-right: 4px solid #16a34a !important; color: #14532d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                            .report-content .warning-box { background-color: #fef2f2 !important; border: 1px solid #fecaca !important; border-right: 4px solid #dc2626 !important; color: #7f1d1d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                            .report-content .cost-box, .report-content .highlight-box { background-color: #fffbeb !important; border: 1px solid #fde68a !important; border-right: 4px solid #d97706 !important; color: #78350f !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
+                                            .report-content.is-editable td:focus,
+                                            .report-content.is-editable th:focus,
+                                            .report-content.is-editable p:focus,
+                                            .report-content.is-editable h2:focus,
+                                            .report-content.is-editable h3:focus,
+                                            .report-content.is-editable h4:focus,
+                                            .report-content.is-editable div:focus {
+                                                outline: 2px dashed #6366f1 !important;
+                                                background-color: #f5f3ff !important;
+                                                border-radius: 4px;
+                                            }
+                                        `}</style>
                                         <div 
                                             ref={reportEditableContentRef}
                                             contentEditable={isDirectEditingReport}
                                             suppressContentEditableWarning={true}
                                             onInput={handleReportDirectInput}
                                             onBlur={handleReportDirectBlur}
-                                            className={`bg-white rounded-2xl shadow p-4 sm:p-10 max-w-5xl mx-auto prose prose-sm text-slate-800 leading-relaxed report-content transition-all ${
+                                            className={`bg-white rounded-2xl shadow p-4 sm:p-10 max-w-5xl mx-auto prose prose-sm text-slate-800 leading-relaxed report-content ${
                                                 isDirectEditingReport 
                                                     ? 'is-editable ring-4 ring-indigo-500/20 border-2 border-indigo-400 bg-white cursor-text' 
                                                     : 'border border-slate-200'
                                             }`}
-                                        >
-                                            <style>{`
-                                                .report-content { font-size: 13px !important; color: #1e293b !important; line-height: 1.65 !important; width: 100% !important; max-width: 100% !important; }
-                                                .report-content .report-container, .report-content .report-body { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; border: none !important; }
-                                                .report-content .report-header { display: none !important; }
-                                                .report-content p, .report-content li, .report-content div { font-size: 13px !important; line-height: 1.65 !important; }
-                                                .report-content .table-responsive-wrapper { width: 100% !important; max-width: 100% !important; overflow-x: auto !important; overflow-y: hidden !important; -webkit-overflow-scrolling: touch !important; touch-action: pan-x pan-y !important; margin: 12px 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; padding: 0 0 6px 0 !important; box-shadow: none !important; display: block !important; }
-                                                .report-content table, .report-content .editable-table { width: 100% !important; min-width: 580px !important; table-layout: auto !important; border-collapse: collapse !important; margin: 0 !important; font-size: 12.5px !important; border: 1px solid #cbd5e1 !important; background: #ffffff !important; }
-                                                .report-content th, .report-content td { border: 1px solid #cbd5e1 !important; padding: 8px 10px !important; line-height: 1.55 !important; vertical-align: middle !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; word-wrap: normal !important; hyphens: none !important; }
-                                                .report-content th { background-color: #f1f5f9 !important; color: #1e3a8a !important; font-weight: 800 !important; font-size: 12.5px !important; text-align: center !important; cursor: pointer !important; position: relative !important; user-select: none !important; transition: all 0.15s ease !important; }
-                                                .report-content th * { color: #1e3a8a !important; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
-                                                .report-content th:hover { background-color: #e0e7ff !important; color: #3730a3 !important; }
-                                                .report-content td { text-align: right !important; font-size: 12.5px !important; color: #0f172a !important; }
-                                                .report-content td * { white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
-                                                .report-content tr:nth-child(even) td { background-color: #f8fafc !important; }
-                                                .report-content table.boq-summary-mini-table { min-width: 420px !important; margin: 0 !important; }
-                                                .report-content table.boq-summary-mini-table th { padding: 5px 6px !important; font-size: 11px !important; font-weight: 800 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; }
-                                                .report-content table.boq-summary-mini-table td { padding: 5px 6px !important; font-size: 11.5px !important; font-weight: 700 !important; text-align: center !important; min-width: 50px !important; line-height: 1.35 !important; background-color: #ffffff !important; }
-                                                .report-content h1 { color: #1e3a8a !important; font-size: 15px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: center !important; background: transparent !important; border: none !important; border-bottom: 2px solid #1e3a8a !important; border-radius: 0 !important; padding: 0 0 8px 0 !important; margin: 6px 0 12px 0 !important; width: 100% !important; display: block !important; }
-                                                .report-content h2 { color: #1e3a8a !important; font-size: 14px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1.5px solid #cbd5e1 !important; border-right: 4px solid #1e3a8a !important; border-radius: 0 !important; padding: 2px 8px 6px 0 !important; margin: 14px 0 8px 0 !important; width: 100% !important; display: block !important; }
-                                                .report-content h3,
-                                                .report-content h4 { color: #1e3a8a !important; font-size: 13px !important; font-weight: 800 !important; line-height: 1.45 !important; text-align: right !important; background: transparent !important; border: none !important; border-bottom: 1px solid #e2e8f0 !important; border-right: 3px solid #3b82f6 !important; border-radius: 0 !important; padding: 2px 8px 4px 0 !important; margin: 10px 0 6px 0 !important; width: 100% !important; display: block !important; }
-                                                .report-content .info-box { background-color: #eff6ff !important; border: 1px solid #bfdbfe !important; border-right: 4px solid #2563eb !important; color: #1e3a8a !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
-                                                .report-content .success-box { background-color: #f0fdf4 !important; border: 1px solid #bbf7d0 !important; border-right: 4px solid #16a34a !important; color: #14532d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
-                                                .report-content .warning-box { background-color: #fef2f2 !important; border: 1px solid #fecaca !important; border-right: 4px solid #dc2626 !important; color: #7f1d1d !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
-                                                .report-content .cost-box, .report-content .highlight-box { background-color: #fffbeb !important; border: 1px solid #fde68a !important; border-right: 4px solid #d97706 !important; color: #78350f !important; padding: 10px 12px !important; margin: 10px 0 !important; border-radius: 8px !important; }
-                                                .report-content.is-editable td:focus,
-                                                .report-content.is-editable th:focus,
-                                                .report-content.is-editable p:focus,
-                                                .report-content.is-editable h2:focus,
-                                                .report-content.is-editable h3:focus,
-                                                .report-content.is-editable h4:focus,
-                                                .report-content.is-editable div:focus {
-                                                    outline: 2px dashed #6366f1 !important;
-                                                    background-color: #f5f3ff !important;
-                                                    border-radius: 4px;
-                                                }
-                                            `}</style>
-                                            <div dangerouslySetInnerHTML={{ __html: enhanceReportHtml(viewingBoqReport.content) }} />
-                                        </div>
+                                        />
                                     </div>
 
                                     {/* Modal to adjust column width percentage */}

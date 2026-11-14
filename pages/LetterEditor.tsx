@@ -288,11 +288,16 @@ const LetterEditor: React.FC = () => {
 
   const A4_WIDTH_PX = 794; 
 
-  const calculateSize = useCallback(() => {
+  const lastMeasuredWidthRef = useRef<number>(0);
+  const contentHeightRef = useRef<number>(1123);
+
+  const calculateSize = useCallback((force: boolean = false) => {
         if (!containerRef.current) return;
         const containerW = containerRef.current.clientWidth || window.innerWidth;
         if (containerW === 0) return;
-        
+        if (!force && lastMeasuredWidthRef.current === containerW) return;
+        lastMeasuredWidthRef.current = containerW;
+
         if (isMobileZoom) {
             // Fluid Mobile View
             setScale(1);
@@ -300,7 +305,6 @@ const LetterEditor: React.FC = () => {
             setVisualHeight(0);
         } else {
             // Exact Print Preview Scale (A4)
-            // On mobile, paper should span nicely across the screen width (~95% width)
             const gutter = containerW < 500 ? 8 : 32;
             let targetWidth = Math.max(containerW - gutter, 280);
             if (containerW >= 850) {
@@ -313,21 +317,25 @@ const LetterEditor: React.FC = () => {
             
             setScale(newScale);
             setVisualWidth(targetWidth);
-            setVisualHeight(contentHeight * newScale);
+            setVisualHeight(contentHeightRef.current * newScale);
         }
-  }, [isMobileZoom, contentHeight]);
+  }, [isMobileZoom]);
 
   useEffect(() => {
-    calculateSize();
-    const handleResize = () => requestAnimationFrame(calculateSize);
+    calculateSize(true);
+    const handleResize = () => requestAnimationFrame(() => calculateSize(false));
+    const handleOrientation = () => requestAnimationFrame(() => calculateSize(true));
     
     window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
+    window.addEventListener('orientationchange', handleOrientation);
 
     const contentObserver = new ResizeObserver((entries) => {
         for (const entry of entries) {
             const newHeight = Math.max(entry.target.scrollHeight, 1123);
-            if (Math.abs(newHeight - contentHeight) > 10) setContentHeight(newHeight);
+            if (Math.abs(newHeight - contentHeightRef.current) > 10) {
+                contentHeightRef.current = newHeight;
+                setContentHeight(newHeight);
+            }
         }
     });
     const paperContent = document.getElementById('letter-content-area');
@@ -335,10 +343,10 @@ const LetterEditor: React.FC = () => {
     
     return () => { 
         window.removeEventListener('resize', handleResize); 
-        window.removeEventListener('orientationchange', handleResize);
+        window.removeEventListener('orientationchange', handleOrientation);
         contentObserver.disconnect(); 
     };
-  }, [calculateSize, contentHeight]);
+  }, [calculateSize]);
 
   useEffect(() => {
       if (!isMobileZoom) {
@@ -448,7 +456,22 @@ const LetterEditor: React.FC = () => {
               }
           }
       }
-      setFormats({ bold: isBold, italic: isItalic, underline: isUnderline, align: align, blockType: blockType, fontSize: currentFontSize, list: isUl, color: colorHex, hasSelection });
+      setFormats(prev => {
+          if (
+              prev.bold === isBold &&
+              prev.italic === isItalic &&
+              prev.underline === isUnderline &&
+              prev.align === align &&
+              prev.blockType === blockType &&
+              prev.fontSize === currentFontSize &&
+              prev.list === isUl &&
+              prev.color === colorHex &&
+              prev.hasSelection === hasSelection
+          ) {
+              return prev;
+          }
+          return { bold: isBold, italic: isItalic, underline: isUnderline, align: align, blockType: blockType, fontSize: currentFontSize, list: isUl, color: colorHex, hasSelection };
+      });
   }, []);
 
   useEffect(() => {
@@ -480,14 +503,16 @@ const LetterEditor: React.FC = () => {
           setShowQuoteTools(true); setShowBoxTools(false); setShowTableTools(false); setShowImageTools(false); e.stopPropagation(); return; 
       }
       
-      setActiveElement(target); setShowBoxTools(false); setShowQuoteTools(false);
+      setShowBoxTools(false); setShowQuoteTools(false);
       
       if (target.tagName === 'IMG') { 
+          setActiveElement(target);
           setShowImageTools(true); setShowTableTools(false); 
           target.classList.add('active-editing-element');
       } 
       else if (target.closest('table')) { 
           const table = target.closest('table') as HTMLElement;
+          setActiveElement(target);
           table.classList.add('active-editing-element');
           setShowTableTools(true); 
           setShowImageTools(false); 
@@ -497,7 +522,10 @@ const LetterEditor: React.FC = () => {
               setCurrentRowHeight(h.replace('px', ''));
           }
       } 
-      else { setShowTableTools(false); setShowImageTools(false); }
+      else {
+          if (activeElement !== null) setActiveElement(null);
+          setShowTableTools(false); setShowImageTools(false);
+      }
   };
 
   const handleKeyUp = () => { checkFormats(); };
@@ -513,7 +541,7 @@ const LetterEditor: React.FC = () => {
           sel.removeAllRanges();
           sel.addRange(savedRange.current);
       } else if (!sel?.rangeCount) {
-          editorRef.current?.focus();
+          editorRef.current?.focus({ preventScroll: true });
       }
       
       // Special handling for Font Size to apply to header/footer or current block
@@ -659,7 +687,7 @@ const LetterEditor: React.FC = () => {
   };
   
   // Helpers (Keep existing helpers: unwrapElement, insertTextBox, etc.)
-  const unwrapElement = (element: HTMLElement) => { if (!element || !element.parentNode) return; const parent = element.parentNode; while (element.firstChild) parent.insertBefore(element.firstChild, element); parent.removeChild(element); editorRef.current?.focus(); };
+  const unwrapElement = (element: HTMLElement) => { if (!element || !element.parentNode) return; const parent = element.parentNode; while (element.firstChild) parent.insertBefore(element.firstChild, element); parent.removeChild(element); editorRef.current?.focus({ preventScroll: true }); };
   const insertTextBox = () => { 
       const boxId = `box-${Date.now()}`; 
       const html = `<div class="box-row" style="display: flex; gap: 8px; width: 100%; margin: 5px 0; align-items: stretch; box-sizing: border-box;"><div id="${boxId}" class="editable-box info-box active-editing-element" style="flex: 1; min-width: 0; border: 1px solid #cbd5e1; padding: 4px 10px; background-color: #f8fafc; min-height: 30px; box-sizing: border-box; word-break: break-word; overflow-wrap: break-word; font-size: 14px; border-radius: 8px;"><p>&nbsp;</p></div></div><p><br></p>`; 
@@ -761,25 +789,7 @@ const LetterEditor: React.FC = () => {
       }
   };
 
-  // Keep selection state synced whenever user highlights text inside the editor
-  useEffect(() => {
-      const onSelectionChange = () => {
-          const sel = window.getSelection();
-          if (!sel || !editorRef.current) return;
-          if (sel.rangeCount > 0) {
-              const range = sel.getRangeAt(0);
-              if (editorRef.current.contains(range.commonAncestorContainer)) {
-                  const hasText = !sel.isCollapsed && sel.toString().trim().length > 0;
-                  if (hasText) {
-                      savedRange.current = range.cloneRange();
-                  }
-                  setFormats(prev => prev.hasSelection === hasText ? prev : { ...prev, hasSelection: hasText });
-              }
-          }
-      };
-      document.addEventListener('selectionchange', onSelectionChange);
-      return () => document.removeEventListener('selectionchange', onSelectionChange);
-  }, []);
+  // Selection & format state is kept synced via checkFormats selectionchange listener above
 
   // --- AI SMART REFINE FOR SELECTED WORD, PHRASE, OR LINE ---
   const openSmartRefineModal = () => {
@@ -817,7 +827,7 @@ const LetterEditor: React.FC = () => {
       try {
           const refined = await aiHelper.refineSelectedLetterText(refineTargetText, contextText, instruction);
           if (refined && refined.trim()) {
-              editorRef.current.focus();
+              editorRef.current.focus({ preventScroll: true });
               const s = window.getSelection();
               if (s && refineRangeRef.current) {
                   s.removeAllRanges();
@@ -874,7 +884,7 @@ const LetterEditor: React.FC = () => {
           return;
       }
 
-      editorRef.current.focus();
+      editorRef.current.focus({ preventScroll: true });
       const sel = window.getSelection();
       if (savedRange.current && sel && editorRef.current.contains(savedRange.current.commonAncestorContainer)) {
           try {
@@ -1658,8 +1668,7 @@ const LetterEditor: React.FC = () => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'flex-start',
-        overflow: 'visible',
-        transition: 'width 0.2s, height 0.2s' 
+        overflow: 'visible'
       };
 
   // The "Paper" Container style
@@ -1836,7 +1845,10 @@ const LetterEditor: React.FC = () => {
                 border-radius: 4px;
             }
             
-            /* Hidden Elements for Editing */
+            /* Hidden Elements for Editing (higher specificity than #paper-container .report-header) */
+            #paper-container .report-header.hidden-element,
+            #paper-container .report-footer.hidden-element,
+            #paper-container .hidden-element,
             .hidden-element { display: none !important; }
        `}</style>
 
@@ -2127,7 +2139,7 @@ const LetterEditor: React.FC = () => {
                         {/* Section 3: Footer */}
                         <div className="space-y-4">
                             <h4 className="font-bold text-sm text-slate-500 border-b pb-1">تذييل الصفحة (الفوتر)</h4>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 p-2 bg-slate-50 rounded-lg border border-slate-200">
                                 <input
                                     type="checkbox"
                                     checked={showFooter}
@@ -2139,9 +2151,21 @@ const LetterEditor: React.FC = () => {
                                     }}
                                     className="w-5 h-5 accent-blue-600"
                                 />
-                                <div className="flex-1">
-                                    <textarea value={footerText} onChange={(e) => setFooterText(e.target.value)} placeholder="اكتب نص تذييل الصفحة هنا..." className="w-full p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none" disabled={!showFooter}></textarea>
-                                </div>
+                                <label
+                                    className="text-sm font-bold text-slate-800 cursor-pointer flex-1"
+                                    onClick={() => {
+                                        const next = !showFooter;
+                                        setShowFooter(next);
+                                        if (next && !footerText.trim()) {
+                                            setFooterText('تقرير هندسي استشاري - جميع الحقوق محفوظة');
+                                        }
+                                    }}
+                                >
+                                    إظهار تذييل الصفحة (Footer) في الصفحة والطباعة
+                                </label>
+                            </div>
+                            <div className={`transition-opacity ${!showFooter ? 'opacity-50 pointer-events-none' : ''}`}>
+                                <textarea value={footerText} onChange={(e) => setFooterText(e.target.value)} placeholder="اكتب نص تذييل الصفحة هنا..." className="w-full p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none" disabled={!showFooter}></textarea>
                             </div>
 
                             {/* Footer Color Picker */}
@@ -2755,7 +2779,7 @@ const LetterEditor: React.FC = () => {
                  </div>
              )}
              
-             <div id="paper-container" className={`shadow-2xl relative transition-all duration-300 ${isMobileZoom ? 'is-mobile-zoom' : 'is-print-preview'}`} style={wrapperStyle}>
+             <div id="paper-container" className={`shadow-2xl relative ${isMobileZoom ? 'is-mobile-zoom' : 'is-print-preview'}`} style={wrapperStyle}>
                 <div 
                     ref={paperRef}
                     style={{
