@@ -162,6 +162,30 @@ const getPrintStyles = (marginCm: number = 0.5) => {
             break-inside: avoid;
         }
 
+        table.qc-signatures-table,
+        table.qc-photos-table {
+            width: 100% !important;
+            min-width: 100% !important;
+            table-layout: fixed !important;
+        }
+
+        table.qc-signatures-table {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
+
+        table.qc-photos-table {
+            page-break-inside: auto !important;
+        }
+
+        table.qc-photos-table img {
+            width: 100% !important;
+            max-width: 100% !important;
+            object-fit: cover !important;
+            margin: 0 auto !important;
+            display: block !important;
+        }
+
         .report-footer {
             margin-top: auto !important;
             margin-bottom: 0 !important;

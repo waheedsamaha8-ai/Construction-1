@@ -4,7 +4,8 @@
 
 import { marketService } from './ai/market';
 import { calculatorService } from './ai/calculator';
-import { tipsService } from './ai/tips';
+import { tipsService, getStoredAiTips } from './ai/tips';
+export type { StoredAiTip } from './ai/tips';
 import { consultantService } from './ai/consultant';
 import { analysisService } from './ai/analysis';
 
@@ -23,6 +24,7 @@ export const aiHelper = {
 
     // --- Engineering Tips ---
     ...tipsService,
+    getStoredAiTips,
 
     // --- Analysis (Images, Docs, Soil, Reports, Audio) ---
     ...analysisService,

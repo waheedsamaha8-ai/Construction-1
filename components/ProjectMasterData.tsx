@@ -421,8 +421,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [paymentToDeleteId, setPaymentToDeleteId] = useState<string | null>(null);
     
     // NEW: Item Editing State inside Payment
+    const OVER_125_PAYMENT_TAB = 'بنود متجاوزة عن 125%';
     const [editingPaymentItemIndex, setEditingPaymentItemIndex] = useState<{paymentId: string, itemIndex: number} | null>(null);
     const [tempPaymentItem, setTempPaymentItem] = useState<PaymentItem | null>(null);
+    const [editingOriginalTotalQty, setEditingOriginalTotalQty] = useState<number>(0);
+    const [editingQtySettlementMode, setEditingQtySettlementMode] = useState<'none' | 'contract' | 'limit125' | 'splitOver125'>('none');
+    const [paymentGroupTabFilter, setPaymentGroupTabFilter] = useState<string>('الكل');
 
     // NEW: Smart IPC / Automatic Payment Generator State
     const [showSmartPaymentModal, setShowSmartPaymentModal] = useState(false);
@@ -1425,21 +1429,44 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     // --- ITEM EDITING LOGIC (STRICT MATH) ---
-    const handleStartEditItem = (paymentId: string, item: PaymentItem, index: number) => {
+    const handleStartEditItem = (paymentId: string, item: PaymentItem, index: number, matchedBoqExecQty?: number) => {
+        const pay = masterData.payments.find(p => p.id === paymentId);
+        const linkedOverItem = pay?.items?.find((it, idx) =>
+            idx !== index &&
+            it.batchName === OVER_125_PAYMENT_TAB &&
+            String(it.itemCode || '').trim() === String(item.itemCode || '').trim()
+        );
+        const combinedWithSplit = linkedOverItem
+            ? (Number(item.totalQuantity) || 0) + (Number(linkedOverItem.totalQuantity) || 0)
+            : 0;
+        const preservedSourceTotal = Math.max(
+            Number(item.originalTotalQuantity) || 0,
+            Number(item.totalQuantity) || 0,
+            Number(matchedBoqExecQty) || 0,
+            combinedWithSplit
+        );
+
         setEditingPaymentItemIndex({ paymentId, itemIndex: index });
-        setTempPaymentItem({...item});
+        setTempPaymentItem({ ...item, originalTotalQuantity: preservedSourceTotal });
+        setEditingOriginalTotalQty(preservedSourceTotal);
+        setEditingQtySettlementMode(
+            linkedOverItem ? 'splitOver125' : (item.settlementMode || 'none')
+        );
     };
 
     const handleTempItemChange = (field: keyof PaymentItem, value: any) => {
+        if (field === 'totalQuantity' || field === 'prevQuantity' || field === 'currQuantity') {
+            setEditingQtySettlementMode('none');
+        }
         setTempPaymentItem(prev => {
             if (!prev) return null;
             const updated = { ...prev, [field]: value };
-            
+
             const prevQ = parseFloat(updated.prevQuantity as any) || 0;
             const currQ = parseFloat(updated.currQuantity as any) || 0;
             const price = parseFloat(updated.unitPrice as any) || 0;
             const ratio = parseFloat(updated.completionRatio as any) || 100;
-            
+
             // STRICT MATH: Reverse Calculation if Total is changed
             if (field === 'totalQuantity') {
                 const newTotal = parseFloat(value) || 0;
@@ -1450,41 +1477,167 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 // Forward Calculation: Total = Prev + Curr
                 updated.totalQuantity = prevQ + currQ;
             }
-            
+
+            if ((field === 'totalQuantity' || field === 'currQuantity' || field === 'prevQuantity') && (Number(updated.totalQuantity) || 0) > editingOriginalTotalQty) {
+                const nextMax = Number(updated.totalQuantity) || 0;
+                setEditingOriginalTotalQty(nextMax);
+                updated.originalTotalQuantity = nextMax;
+            }
+
             // Recalculate Value: Value = Total Qty * Unit Price * (Ratio/100)
             // Note: Total Quantity is already updated above based on which field changed
             updated.totalValue = (updated.totalQuantity || 0) * price * (ratio / 100);
-            
+
             return updated;
         });
     };
 
+    const applyPaymentQuantitySettlementOption = (mode: 'contract' | 'limit125' | 'splitOver125' | 'restore') => {
+        if (!tempPaymentItem) return;
+        const contractQ = Number(tempPaymentItem.contractQuantity) || 0;
+        if (contractQ <= 0 && mode !== 'restore') return;
+
+        const prevQ = Number(tempPaymentItem.prevQuantity) || 0;
+        const price = Number(tempPaymentItem.unitPrice) || 0;
+        const ratio = Number(tempPaymentItem.completionRatio) || 100;
+        const max125 = Number((contractQ * 1.25).toFixed(3));
+        const sourceTotal = Math.max(
+            editingOriginalTotalQty,
+            Number(tempPaymentItem.originalTotalQuantity) || 0,
+            Number(tempPaymentItem.totalQuantity) || 0
+        );
+
+        let targetTotal = sourceTotal;
+        if (mode === 'contract') {
+            targetTotal = Number(contractQ.toFixed(3));
+        } else if (mode === 'limit125') {
+            targetTotal = sourceTotal > max125 ? max125 : Number(sourceTotal.toFixed(3));
+        } else if (mode === 'splitOver125' || mode === 'restore') {
+            targetTotal = Number(sourceTotal.toFixed(3));
+        }
+
+        const newCurr = Number((targetTotal - prevQ).toFixed(3));
+        const newVal = Math.round(targetTotal * price * (ratio / 100));
+
+        setEditingQtySettlementMode(mode === 'restore' ? 'none' : mode);
+        setTempPaymentItem(prev => prev ? ({
+            ...prev,
+            totalQuantity: targetTotal,
+            currQuantity: newCurr,
+            totalValue: newVal,
+            originalTotalQuantity: sourceTotal,
+            settlementMode: mode === 'restore' ? 'none' : mode
+        }) : null);
+    };
+
     const saveItemEdit = () => {
         if (!editingPaymentItemIndex || !tempPaymentItem) return;
-        
+
         const { paymentId, itemIndex } = editingPaymentItemIndex;
-        
+
         // 1. Update the items array in the target payment
         const targetPaymentIndex = masterData.payments.findIndex(p => p.id === paymentId);
         if (targetPaymentIndex === -1) return;
-        
+
         const updatedPayments = [...masterData.payments];
         const payment = { ...updatedPayments[targetPaymentIndex] };
-        
-        // Update item in array
-        const newItems = [...(payment.items || [])];
-        newItems[itemIndex] = tempPaymentItem;
+
+        let newItems = [...(payment.items || [])];
+        const contractQ = Number(tempPaymentItem.contractQuantity) || 0;
+        const max125 = Number((contractQ * 1.25).toFixed(3));
+        const fullTotal = Math.max(
+            editingOriginalTotalQty,
+            Number(tempPaymentItem.originalTotalQuantity) || 0,
+            Number(tempPaymentItem.totalQuantity) || 0
+        );
+        const currentTotal = Number(tempPaymentItem.totalQuantity) || 0;
+        const excessQty = Number((fullTotal - max125).toFixed(3));
+
+        if (editingQtySettlementMode === 'splitOver125' && contractQ > 0 && excessQty > 0) {
+            const prevQ = Number(tempPaymentItem.prevQuantity) || 0;
+            const price = Number(tempPaymentItem.unitPrice) || 0;
+            const ratio = Number(tempPaymentItem.completionRatio) || 100;
+
+            const origPrev = Number(Math.min(prevQ, max125).toFixed(3));
+            const origTotal = max125;
+            const origCurr = Number((origTotal - origPrev).toFixed(3));
+            const origVal = Math.round(origTotal * price * (ratio / 100));
+
+            const excessPrev = Number(Math.max(0, prevQ - max125).toFixed(3));
+            const excessTotal = excessQty;
+            const excessCurr = Number((excessTotal - excessPrev).toFixed(3));
+            const excessVal = Math.round(excessTotal * price * (ratio / 100));
+
+            const matchedBoqForBatch = tempPaymentItem.boqItemId
+                ? masterData.boqItems.find(b => b.id === tempPaymentItem.boqItemId)
+                : masterData.boqItems.find(b => String(b.itemCode).trim() === String(tempPaymentItem.itemCode).trim());
+            const resolvedOrigBatch = (tempPaymentItem.batchName || matchedBoqForBatch?.batchName || 'المقايسة الأساسية').trim();
+
+            newItems[itemIndex] = {
+                ...tempPaymentItem,
+                batchName: resolvedOrigBatch,
+                prevQuantity: origPrev,
+                currQuantity: origCurr,
+                totalQuantity: origTotal,
+                totalValue: origVal,
+                originalTotalQuantity: fullTotal,
+                settlementMode: 'splitOver125'
+            };
+
+            const baseDesc = (tempPaymentItem.description || '').replace(/\s*\(كمية متجاوزة عن 125%\)\s*$/g, '').trim();
+            const excessItem: PaymentItem = {
+                batchName: OVER_125_PAYMENT_TAB,
+                itemCode: tempPaymentItem.itemCode,
+                description: `${baseDesc} (كمية متجاوزة عن 125%)`,
+                unit: tempPaymentItem.unit,
+                contractQuantity: 0,
+                prevQuantity: excessPrev,
+                currQuantity: excessCurr,
+                totalQuantity: excessTotal,
+                unitPrice: price,
+                completionRatio: ratio,
+                totalValue: excessVal
+            };
+
+            const existingExcessIdx = newItems.findIndex((it, idx) =>
+                idx !== itemIndex &&
+                it.batchName === OVER_125_PAYMENT_TAB &&
+                String(it.itemCode || '').trim() === String(tempPaymentItem.itemCode || '').trim()
+            );
+            if (existingExcessIdx >= 0) {
+                newItems[existingExcessIdx] = excessItem;
+            } else {
+                newItems.push(excessItem);
+            }
+        } else {
+            const preservedSource = Math.max(fullTotal, currentTotal);
+            newItems[itemIndex] = {
+                ...tempPaymentItem,
+                originalTotalQuantity: preservedSource,
+                settlementMode: editingQtySettlementMode
+            };
+            // If user switched away from splitOver125, remove any auto-split excess row for this same itemCode
+            if (tempPaymentItem.batchName !== OVER_125_PAYMENT_TAB) {
+                const targetCode = String(tempPaymentItem.itemCode || '').trim();
+                newItems = newItems.filter((it, idx) => !(
+                    idx !== itemIndex &&
+                    it.batchName === OVER_125_PAYMENT_TAB &&
+                    String(it.itemCode || '').trim() === targetCode
+                ));
+            }
+        }
+
         payment.items = newItems;
-        
+
         // 2. Recalculate Payment Totals (Cumulative & Gross Current Work)
         const newCumulative = newItems.reduce((sum, item) => sum + (item.totalValue || 0), 0);
         payment.cumulativeAmount = newCumulative;
-        
+
         const newGrossCurrent = newItems.reduce((sum, item) => {
             const currVal = (item.currQuantity || 0) * (item.unitPrice || 0) * ((item.completionRatio || 100) / 100);
             return sum + Math.round(currVal);
         }, 0);
-        
+
         payment.grossCurrentWork = newGrossCurrent;
         const retAmt = Math.round(newGrossCurrent * ((payment.retentionPercent || 0) / 100));
         const advAmt = Math.round(newGrossCurrent * ((payment.advanceDeductionPercent || 0) / 100));
@@ -1497,21 +1650,23 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         payment.taxesAndOtherAmount = taxAmt;
         payment.netPayableAfterDeductions = netAfterDed;
         payment.netAmount = netAfterDed;
-        
+
         updatedPayments[targetPaymentIndex] = payment;
 
-        // Also sync executedQuantity to BOQ if linked
+        // Also sync executedQuantity to BOQ if linked (preserve max executed qty)
         const updatedBoqItems = masterData.boqItems.map(b => {
             if (tempPaymentItem.boqItemId && b.id === tempPaymentItem.boqItemId) {
-                return { ...b, executedQuantity: Math.max(Number(b.executedQuantity) || 0, Number(tempPaymentItem.totalQuantity) || 0) };
+                return { ...b, executedQuantity: Math.max(Number(b.executedQuantity) || 0, fullTotal, currentTotal) };
             }
             return b;
         });
-        
+
         const newData = { ...masterData, payments: updatedPayments, boqItems: updatedBoqItems };
         setMasterData(newData);
         setEditingPaymentItemIndex(null);
         setTempPaymentItem(null);
+        setEditingQtySettlementMode('none');
+        setEditingOriginalTotalQty(0);
         triggerAutoSave(newData);
     };
 
@@ -4214,7 +4369,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </div>
                                                     <p className="text-slate-900 text-sm leading-relaxed font-bold whitespace-pre-wrap mt-1 opacity-80">{pay.note}</p>
                                                 </div>
-                                                {pay.items && pay.items.length > 0 && <button onClick={() => setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id)} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>}
+                                                {pay.items && pay.items.length > 0 && <button onClick={() => { setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id); setPaymentGroupTabFilter('الكل'); }} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>}
                                                 {expandedPaymentId === pay.id && pay.items && (() => {
                                                     // Group payment items by BOQ (تقسيم البنود في المستخلص طبقا للمقايسات)
                                                     const groupedPaymentItems: {
@@ -4246,26 +4401,86 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                         groupedPaymentItems[gIdx].subtotalValue += Number(item.totalValue) || 0;
                                                     });
 
+                                                    groupedPaymentItems.sort((a, b) => {
+                                                        if (a.batchName === OVER_125_PAYMENT_TAB) return 1;
+                                                        if (b.batchName === OVER_125_PAYMENT_TAB) return -1;
+                                                        return 0;
+                                                    });
+
+                                                    const activeTabFilter = groupedPaymentItems.some(g => g.batchName === paymentGroupTabFilter)
+                                                        ? paymentGroupTabFilter
+                                                        : 'الكل';
+
+                                                    const visibleGroups = activeTabFilter === 'الكل'
+                                                        ? groupedPaymentItems
+                                                        : groupedPaymentItems.filter(g => g.batchName === activeTabFilter);
+
                                                     return (
                                                         <div className="mt-2 space-y-3">
-                                                            {groupedPaymentItems.map((group, gIdx) => (
-                                                                <div key={gIdx} className="bg-white rounded-xl border-2 border-indigo-200/80 overflow-hidden shadow-xs">
+                                                            {groupedPaymentItems.length > 1 && (
+                                                                <div className="flex items-center gap-2 bg-white/90 p-1.5 rounded-xl border border-slate-200">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setPaymentGroupTabFilter('الكل')}
+                                                                        className={`!min-h-0 px-3 py-1.5 rounded-lg text-[10.5px] font-bold transition shrink-0 ${
+                                                                            activeTabFilter === 'الكل'
+                                                                                ? 'bg-slate-800 text-white shadow-xs'
+                                                                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                                                        }`}
+                                                                    >
+                                                                        الكل ({pay.items.length})
+                                                                    </button>
+                                                                    <select
+                                                                        value={activeTabFilter}
+                                                                        onChange={(e) => setPaymentGroupTabFilter(e.target.value)}
+                                                                        className={`flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border text-[10.5px] font-bold outline-none transition ${
+                                                                            activeTabFilter === OVER_125_PAYMENT_TAB
+                                                                                ? 'bg-rose-50 border-rose-300 text-rose-900'
+                                                                                : activeTabFilter !== 'الكل'
+                                                                                    ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
+                                                                                    : 'bg-slate-50 border-slate-200 text-slate-800'
+                                                                        }`}
+                                                                    >
+                                                                        <option value="الكل">كل أنواع المقايسات ({groupedPaymentItems.length})</option>
+                                                                        {groupedPaymentItems.map((g) => (
+                                                                            <option key={g.batchName} value={g.batchName}>
+                                                                                {g.batchName} ({g.entries.length} بند)
+                                                                            </option>
+                                                                        ))}
+                                                                    </select>
+                                                                </div>
+                                                            )}
+
+                                                            {visibleGroups.map((group) => {
+                                                                const isOver125Group = group.batchName === OVER_125_PAYMENT_TAB;
+                                                                return (
+                                                                <div key={group.batchName} className={`bg-white rounded-xl border-2 overflow-hidden shadow-xs ${isOver125Group ? 'border-rose-300' : 'border-indigo-200/80'}`}>
                                                                     {/* BOQ Group Header */}
-                                                                    <div className="bg-gradient-to-r from-indigo-50 via-blue-50 to-indigo-50 px-3 py-2 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-2">
+                                                                    <div className={`px-3 py-2 border-b flex flex-wrap items-center justify-between gap-2 ${
+                                                                        isOver125Group
+                                                                            ? 'bg-gradient-to-r from-rose-50 via-amber-50 to-rose-50 border-rose-200'
+                                                                            : 'bg-gradient-to-r from-indigo-50 via-blue-50 to-indigo-50 border-indigo-200'
+                                                                    }`}>
                                                                         <div className="flex items-center gap-2 min-w-0">
-                                                                            <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-                                                                                <i className="fa-solid fa-layer-group text-[10px]"></i>
+                                                                            <div className={`w-6 h-6 rounded-lg text-white flex items-center justify-center shrink-0 shadow-2xs ${isOver125Group ? 'bg-rose-600' : 'bg-indigo-600'}`}>
+                                                                                <i className={`fa-solid ${isOver125Group ? 'fa-triangle-exclamation' : 'fa-layer-group'} text-[10px]`}></i>
                                                                             </div>
-                                                                            <span className="font-black text-indigo-950 text-xs sm:text-sm truncate">
+                                                                            <span className={`font-black text-xs sm:text-sm truncate ${isOver125Group ? 'text-rose-950' : 'text-indigo-950'}`}>
                                                                                 {group.batchName}
                                                                             </span>
-                                                                            <span className="bg-indigo-100 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0">
+                                                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 border ${
+                                                                                isOver125Group
+                                                                                    ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                                                                    : 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                                                                            }`}>
                                                                                 {group.entries.length} بند
                                                                             </span>
                                                                         </div>
-                                                                        <div className="bg-white px-2.5 py-1 rounded-lg border border-indigo-200 text-[10px] font-bold text-indigo-900 shadow-2xs shrink-0">
-                                                                            <span className="text-slate-500 ml-1">إجمالي المقايسة:</span>
-                                                                            <span className="font-mono font-black text-indigo-800">{group.subtotalValue.toLocaleString()} ج.م</span>
+                                                                        <div className={`bg-white px-2.5 py-1 rounded-lg border text-[10px] font-bold shadow-2xs shrink-0 ${
+                                                                            isOver125Group ? 'border-rose-200 text-rose-900' : 'border-indigo-200 text-indigo-900'
+                                                                        }`}>
+                                                                            <span className="text-slate-500 ml-1">{isOver125Group ? 'إجمالي التجاوز:' : 'إجمالي المقايسة:'}</span>
+                                                                            <span className={`font-mono font-black ${isOver125Group ? 'text-rose-800' : 'text-indigo-800'}`}>{group.subtotalValue.toLocaleString()} ج.م</span>
                                                                         </div>
                                                                     </div>
 
@@ -4275,6 +4490,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                             const isEditingThisItem = editingPaymentItemIndex && editingPaymentItemIndex.paymentId === pay.id && editingPaymentItemIndex.itemIndex === i;
                                                                             const quantityColorClass = getQuantityStatusColor(item.totalQuantity || 0, item.contractQuantity || 0);
                                                                             const itemLinkedLogs = matchedBoq ? (logsByBoqItemId.get(matchedBoq.id) || []) : [];
+
+                                                                            const editContractQ = Number(tempPaymentItem?.contractQuantity) || 0;
+                                                                            const editCurrentTotalQ = Number(tempPaymentItem?.totalQuantity) || 0;
+                                                                            const editSourceTotalQ = Math.max(
+                                                                                editingOriginalTotalQty,
+                                                                                Number(tempPaymentItem?.originalTotalQuantity) || 0,
+                                                                                editCurrentTotalQ
+                                                                            );
+                                                                            const editMax125Q = Number((editContractQ * 1.25).toFixed(3));
+                                                                            const editExcessOver125 = Number(Math.max(0, editSourceTotalQ - editMax125Q).toFixed(3));
+                                                                            const showExceedSettlementOptions = isEditingThisItem && editContractQ > 0 && (
+                                                                                editSourceTotalQ > editContractQ || editingQtySettlementMode !== 'none'
+                                                                            );
 
                                                                             return (
                                                                                 <div key={i} className={`rounded-xl border p-2 text-[10px] transition ${isEditingThisItem ? 'bg-yellow-50 border-yellow-300 shadow-md' : 'bg-white border-slate-200 shadow-2xs'}`}>
@@ -4302,13 +4530,84 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                                                 <span className="font-black text-blue-800 font-mono">{(tempPaymentItem.totalValue || 0).toLocaleString()}</span>
                                                                                             </div>
 
+                                                                                            {showExceedSettlementOptions && (
+                                                                                                <div className="bg-amber-50/90 border border-amber-300 rounded-xl p-2 space-y-1.5">
+                                                                                                    <div className="flex items-center justify-between gap-1 text-[9.5px] font-black text-amber-900">
+                                                                                                        <span className="flex items-center gap-1">
+                                                                                                            <i className="fa-solid fa-scale-balanced text-amber-600"></i>
+                                                                                                            خيارات تسوية الكمية المتجاوزة للتعاقدية:
+                                                                                                        </span>
+                                                                                                        <div className="flex items-center gap-1 shrink-0">
+                                                                                                            {editSourceTotalQ > editCurrentTotalQ && (
+                                                                                                                <button
+                                                                                                                    type="button"
+                                                                                                                    onClick={() => applyPaymentQuantitySettlementOption('restore')}
+                                                                                                                    className="!min-h-0 px-1.5 py-0.5 rounded bg-white border border-slate-300 hover:bg-slate-100 text-[8.5px] font-bold text-slate-700"
+                                                                                                                    title="إرجاع الكمية الأصلية المنفذة"
+                                                                                                                >
+                                                                                                                    إرجاع ({editSourceTotalQ.toLocaleString()})
+                                                                                                                </button>
+                                                                                                            )}
+                                                                                                            <span className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-[9px] text-rose-800">
+                                                                                                                125%
+                                                                                                            </span>
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                                                                                        <button
+                                                                                                            type="button"
+                                                                                                            onClick={() => applyPaymentQuantitySettlementOption('contract')}
+                                                                                                            className={`!min-h-0 px-2 py-1.5 rounded-lg border text-[9.5px] font-bold text-right flex items-center justify-between gap-1 transition ${
+                                                                                                                editingQtySettlementMode === 'contract'
+                                                                                                                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                                                                                                                    : 'bg-white text-slate-800 border-slate-300 hover:bg-emerald-50 hover:border-emerald-400'
+                                                                                                            }`}
+                                                                                                        >
+                                                                                                            <span>تصرف مثل الكمية التعاقدية</span>
+                                                                                                            <span className="font-mono font-black shrink-0">({editContractQ.toLocaleString()})</span>
+                                                                                                        </button>
+                                                                                                        <button
+                                                                                                            type="button"
+                                                                                                            onClick={() => applyPaymentQuantitySettlementOption('limit125')}
+                                                                                                            className={`!min-h-0 px-2 py-1.5 rounded-lg border text-[9.5px] font-bold text-right flex items-center justify-between gap-1 transition ${
+                                                                                                                editingQtySettlementMode === 'limit125'
+                                                                                                                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                                                                                                                    : 'bg-white text-slate-800 border-slate-300 hover:bg-blue-50 hover:border-blue-400'
+                                                                                                            }`}
+                                                                                                        >
+                                                                                                            <span>تصرف في حدود 125%</span>
+                                                                                                            <span className="font-mono font-black shrink-0">({Math.min(editSourceTotalQ, editMax125Q).toLocaleString()})</span>
+                                                                                                        </button>
+                                                                                                        {editExcessOver125 > 0 && (
+                                                                                                            <button
+                                                                                                                type="button"
+                                                                                                                onClick={() => applyPaymentQuantitySettlementOption('splitOver125')}
+                                                                                                                className={`!min-h-0 sm:col-span-2 px-2 py-1.5 rounded-lg border text-[9.5px] font-bold text-right flex items-center justify-between gap-1 transition ${
+                                                                                                                    editingQtySettlementMode === 'splitOver125'
+                                                                                                                        ? 'bg-rose-600 text-white border-rose-700 shadow-xs'
+                                                                                                                        : 'bg-white text-rose-900 border-rose-300 hover:bg-rose-50 hover:border-rose-400'
+                                                                                                                }`}
+                                                                                                            >
+                                                                                                                <span>عمل بند بالكمية المتجاوزة عن 125% تحت تبويب «{OVER_125_PAYMENT_TAB}»</span>
+                                                                                                                <span className="font-mono font-black shrink-0">(+{editExcessOver125.toLocaleString()})</span>
+                                                                                                            </button>
+                                                                                                        )}
+                                                                                                    </div>
+                                                                                                    {editingQtySettlementMode === 'splitOver125' && editExcessOver125 > 0 && (
+                                                                                                        <div className="bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 text-[9px] font-bold text-rose-900 leading-relaxed">
+                                                                                                            عند الضغط على «حفظ فوري»: سيُصرف البند الأصلي بحد أقصى 125% ({editMax125Q.toLocaleString()}) ويُضاف بند مستقل بالكمية المتجاوزة ({editExcessOver125.toLocaleString()}) تحت تبويب «{OVER_125_PAYMENT_TAB}».
+                                                                                                        </div>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            )}
+
                                                                                             <div className="flex gap-2 mt-1">
                                                                                                 <button onClick={saveItemEdit} className="flex-1 bg-green-600 text-white py-1.5 rounded-lg font-bold hover:bg-green-700">حفظ فوري</button>
-                                                                                                <button onClick={() => { setEditingPaymentItemIndex(null); setTempPaymentItem(null); }} className="flex-1 bg-slate-200 text-slate-700 py-1.5 rounded-lg font-bold hover:bg-slate-300">إلغاء</button>
+                                                                                                <button onClick={() => { setEditingPaymentItemIndex(null); setTempPaymentItem(null); setEditingQtySettlementMode('none'); setEditingOriginalTotalQty(0); }} className="flex-1 bg-slate-200 text-slate-700 py-1.5 rounded-lg font-bold hover:bg-slate-300">إلغاء</button>
                                                                                             </div>
                                                                                         </div>
                                                                                     ) : (
-                                                                                        <div onClick={() => handleStartEditItem(pay.id, item, i)} className="cursor-pointer hover:bg-blue-50/40 transition p-1 rounded-lg">
+                                                                                        <div onClick={() => handleStartEditItem(pay.id, item, i, matchedBoq?.executedQuantity)} className="cursor-pointer hover:bg-blue-50/40 transition p-1 rounded-lg">
                                                                                             {/* Row 1: Code & Desc */}
                                                                                             <div className="flex gap-2 items-center font-bold text-slate-800 mb-1.5">
                                                                                                 <span className="bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200 font-mono text-sm shrink-0">{item.itemCode || '-'}</span>
@@ -4358,7 +4657,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                         })}
                                                                     </div>
                                                                 </div>
-                                                            ))}
+                                                                );
+                                                            })}
                                                         </div>
                                                     );
                                                 })()}

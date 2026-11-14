@@ -54,6 +54,62 @@ const LOCAL_STORAGE_PROJECTS_KEY = 'construction_pro_projects_sync';
 const LOCAL_STORAGE_RECENT_FILES_KEY = 'construction_pro_recent_files_sync';
 const LOCAL_STORAGE_MARKET_PRICES_KEY = 'construction_pro_market_prices'; 
 const LOCAL_STORAGE_FOLDER_CACHE_KEY = 'construction_pro_folder_cache_v1';
+const DELETED_PROJECTS_STORAGE_KEY = 'construction_pro_deleted_projects_v1';
+const DELETED_FILES_STORAGE_KEY = 'construction_pro_deleted_files_v1';
+const TOMBSTONE_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+const deletedProjectsMap = new Map<string, number>();
+const deletedFilesMap = new Map<string, number>();
+
+const loadTombstoneMap = (storageKey: string, targetMap: Map<string, number>) => {
+    try {
+        const raw = localStorage.getItem(storageKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        const now = Date.now();
+        if (parsed && typeof parsed === 'object') {
+            Object.entries(parsed).forEach(([id, ts]) => {
+                const timestamp = Number(ts) || 0;
+                if (id && now - timestamp < TOMBSTONE_TTL_MS) {
+                    targetMap.set(id, timestamp);
+                }
+            });
+        }
+    } catch {}
+};
+
+loadTombstoneMap(DELETED_PROJECTS_STORAGE_KEY, deletedProjectsMap);
+loadTombstoneMap(DELETED_FILES_STORAGE_KEY, deletedFilesMap);
+
+const persistTombstoneMap = (storageKey: string, map: Map<string, number>, maxEntries: number = 300) => {
+    try {
+        const now = Date.now();
+        const entries = Array.from(map.entries())
+            .filter(([id, ts]) => Boolean(id) && (now - ts < TOMBSTONE_TTL_MS))
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, maxEntries);
+        map.clear();
+        const obj: Record<string, number> = {};
+        for (const [id, ts] of entries) {
+            map.set(id, ts);
+            obj[id] = ts;
+        }
+        localStorage.setItem(storageKey, JSON.stringify(obj));
+    } catch {}
+};
+
+const isProjectDeleted = (projectOrId: Partial<Project> | string | null | undefined): boolean => {
+    if (!projectOrId) return false;
+    if (typeof projectOrId === 'string') return deletedProjectsMap.has(projectOrId);
+    if (projectOrId.id && deletedProjectsMap.has(projectOrId.id)) return true;
+    if (projectOrId.driveFolderId && deletedProjectsMap.has(projectOrId.driveFolderId)) return true;
+    return false;
+};
+
+const isFileDeleted = (id: string | null | undefined): boolean => {
+    if (!id) return false;
+    return deletedFilesMap.has(id);
+};
 
 let memoryMarketPrices: MarketItem[] | null = null;
 const marketPricesSubscribers = new Set<(prices: MarketItem[]) => void>();
@@ -107,13 +163,19 @@ const safeSetLocalStorage = (key: string, value: string) => {
     }
 };
 
-// Hydrate memory cache synchronously on startup for 0ms navigation
+// Hydrate memory cache synchronously on startup for 0ms navigation (filtering any deleted tombstones)
 try {
     const rawProjects = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
     if (rawProjects) {
         const parsedProjects = JSON.parse(rawProjects);
-        if (Array.isArray(parsedProjects) && parsedProjects.length > 0) {
-            contentCache.set('projects_list', { timestamp: Date.now(), data: parsedProjects });
+        if (Array.isArray(parsedProjects)) {
+            const cleanedProjects = parsedProjects.filter((p: any) => p && !isProjectDeleted(p));
+            if (cleanedProjects.length !== parsedProjects.length) {
+                safeSetLocalStorage(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(cleanedProjects));
+            }
+            if (cleanedProjects.length > 0) {
+                contentCache.set('projects_list', { timestamp: Date.now(), data: cleanedProjects });
+            }
         }
     }
     const rawMarket = localStorage.getItem(LOCAL_STORAGE_MARKET_PRICES_KEY);
@@ -127,11 +189,25 @@ try {
     if (rawFolders) {
         const parsedFolders = JSON.parse(rawFolders);
         if (parsedFolders && typeof parsedFolders === 'object') {
+            let changed = false;
             Object.entries(parsedFolders).forEach(([k, v]: [string, any]) => {
+                if (isFileDeleted(k) || isProjectDeleted(k)) {
+                    delete parsedFolders[k];
+                    changed = true;
+                    return;
+                }
                 if (v && Array.isArray(v.data)) {
-                    contentCache.set(k, { timestamp: v.timestamp || Date.now(), data: v.data });
+                    const filtered = v.data.filter((item: any) => item && !isFileDeleted(item.id));
+                    if (filtered.length !== v.data.length) {
+                        v.data = filtered;
+                        changed = true;
+                    }
+                    contentCache.set(k, { timestamp: v.timestamp || Date.now(), data: filtered });
                 }
             });
+            if (changed) {
+                safeSetLocalStorage(LOCAL_STORAGE_FOLDER_CACHE_KEY, JSON.stringify(parsedFolders));
+            }
         }
     }
 } catch (e) {}
@@ -162,9 +238,201 @@ const updateCache = (key: string, data: any) => {
     }
 };
 
+const removeItemsFromFolderCaches = (idsToRemove: string[], folderKeysToDelete: string[] = []) => {
+    const idSet = new Set(idsToRemove.filter(Boolean));
+    const folderKeySet = new Set(folderKeysToDelete.filter(Boolean));
+
+    folderKeySet.forEach(fk => contentCache.delete(fk));
+    if (idSet.size > 0) {
+        contentCache.forEach((value, key) => {
+            if (key === 'projects_list') return;
+            if (Array.isArray(value.data)) {
+                value.data = value.data.filter((f: any) => f && !idSet.has(f.id));
+            }
+        });
+    }
+
+    try {
+        const raw = localStorage.getItem(LOCAL_STORAGE_FOLDER_CACHE_KEY);
+        if (raw) {
+            const store = JSON.parse(raw);
+            let changed = false;
+            folderKeySet.forEach(fk => {
+                if (fk in store) {
+                    delete store[fk];
+                    changed = true;
+                }
+            });
+            if (idSet.size > 0) {
+                Object.keys(store).forEach(fk => {
+                    if (store[fk] && Array.isArray(store[fk].data)) {
+                        const filtered = store[fk].data.filter((f: any) => f && !idSet.has(f.id));
+                        if (filtered.length !== store[fk].data.length) {
+                            store[fk].data = filtered;
+                            changed = true;
+                        }
+                    }
+                });
+            }
+            if (changed) {
+                safeSetLocalStorage(LOCAL_STORAGE_FOLDER_CACHE_KEY, JSON.stringify(store));
+            }
+        }
+    } catch {}
+};
+
 const saveToSyncCache = (key: string, data: any) => {
     safeSetLocalStorage(key, JSON.stringify(data));
 };
+
+const purgeDeletedIdsFromLocalStores = async (deletedProjIds: string[], deletedFileIds: string[]) => {
+    if (deletedProjIds.length > 0) {
+        const projSet = new Set(deletedProjIds);
+        const cachedProjs = contentCache.get('projects_list');
+        if (cachedProjs && Array.isArray(cachedProjs.data)) {
+            cachedProjs.data = cachedProjs.data.filter((p: Project) => p && !projSet.has(p.id) && (!p.driveFolderId || !projSet.has(p.driveFolderId)));
+        }
+        try {
+            const raw = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    const filtered = parsed.filter((p: Project) => p && !projSet.has(p.id) && (!p.driveFolderId || !projSet.has(p.driveFolderId)));
+                    if (filtered.length !== parsed.length) {
+                        saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, filtered);
+                    }
+                }
+            }
+        } catch {}
+        for (const pid of projSet) {
+            dbService.deleteItem('projects', pid).catch(() => {});
+        }
+        try {
+            const allProjs = await dbService.getAllItems<Project>('projects');
+            for (const p of allProjs) {
+                if (p && (projSet.has(p.id) || (p.driveFolderId && projSet.has(p.driveFolderId)))) {
+                    await dbService.deleteItem('projects', p.id).catch(() => {});
+                }
+            }
+        } catch {}
+    }
+
+    if (deletedFileIds.length > 0) {
+        removeItemsFromFolderCaches(deletedFileIds, deletedFileIds);
+        const fileSet = new Set(deletedFileIds);
+        try {
+            const recentRaw = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY);
+            if (recentRaw) {
+                const recent = JSON.parse(recentRaw);
+                if (Array.isArray(recent)) {
+                    const filtered = recent.filter((f: any) => f && !fileSet.has(f.id));
+                    if (filtered.length !== recent.length) {
+                        safeSetLocalStorage(LOCAL_STORAGE_RECENT_FILES_KEY, JSON.stringify(filtered));
+                    }
+                }
+            }
+        } catch {}
+        for (const fid of fileSet) {
+            dbService.deleteItem('files', fid).catch(() => {});
+            dbService.deleteItem('file_blobs', fid).catch(() => {});
+            try { localStorage.removeItem(`vthumb_${fid}`); } catch {}
+        }
+    }
+};
+
+const markProjectsDeleted = async (ids: string[], syncCloud: boolean = true) => {
+    const cleaned = [...new Set(ids.map(id => String(id || '').trim()).filter(Boolean))];
+    if (cleaned.length === 0) return;
+    const now = Date.now();
+    cleaned.forEach(id => deletedProjectsMap.set(id, now));
+    persistTombstoneMap(DELETED_PROJECTS_STORAGE_KEY, deletedProjectsMap, 200);
+    await purgeDeletedIdsFromLocalStores(cleaned, []);
+
+    if (syncCloud && typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+            const payload: Record<string, number> = {};
+            Array.from(deletedProjectsMap.entries())
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 60)
+                .forEach(([k, v]) => { payload[k] = v; });
+            setDoc(doc(db, 'market_data', 'deleted_projects_sync'), {
+                ids: payload,
+                updatedAt: new Date(now).toISOString(),
+            }, { merge: true }).catch(() => {});
+        } catch {}
+    }
+};
+
+const markFilesDeleted = async (ids: string[], syncCloud: boolean = true) => {
+    const cleaned = [...new Set(ids.map(id => String(id || '').trim()).filter(Boolean))];
+    if (cleaned.length === 0) return;
+    const now = Date.now();
+    cleaned.forEach(id => deletedFilesMap.set(id, now));
+    persistTombstoneMap(DELETED_FILES_STORAGE_KEY, deletedFilesMap, 400);
+    await purgeDeletedIdsFromLocalStores([], cleaned);
+
+    if (syncCloud && typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+            const payload: Record<string, number> = {};
+            Array.from(deletedFilesMap.entries())
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 120)
+                .forEach(([k, v]) => { payload[k] = v; });
+            setDoc(doc(db, 'market_data', 'deleted_files_sync'), {
+                ids: payload,
+                updatedAt: new Date(now).toISOString(),
+            }, { merge: true }).catch(() => {});
+        } catch {}
+    }
+};
+
+// Cross-device real-time tombstone sync (purges files/projects deleted on other devices before opening folders)
+if (typeof window !== 'undefined') {
+    setTimeout(() => {
+        if (!navigator.onLine) return;
+        try {
+            onSnapshot(doc(db, 'market_data', 'deleted_projects_sync'), (snap) => {
+                if (!snap.exists()) return;
+                const idsObj = snap.data()?.ids;
+                if (!idsObj || typeof idsObj !== 'object') return;
+                const now = Date.now();
+                const newlyDeleted: string[] = [];
+                Object.entries(idsObj).forEach(([id, ts]) => {
+                    const timestamp = Number(ts) || 0;
+                    if (id && now - timestamp < TOMBSTONE_TTL_MS && !deletedProjectsMap.has(id)) {
+                        deletedProjectsMap.set(id, timestamp);
+                        newlyDeleted.push(id);
+                    }
+                });
+                if (newlyDeleted.length > 0) {
+                    persistTombstoneMap(DELETED_PROJECTS_STORAGE_KEY, deletedProjectsMap, 200);
+                    purgeDeletedIdsFromLocalStores(newlyDeleted, []);
+                }
+            }, () => {});
+        } catch {}
+
+        try {
+            onSnapshot(doc(db, 'market_data', 'deleted_files_sync'), (snap) => {
+                if (!snap.exists()) return;
+                const idsObj = snap.data()?.ids;
+                if (!idsObj || typeof idsObj !== 'object') return;
+                const now = Date.now();
+                const newlyDeleted: string[] = [];
+                Object.entries(idsObj).forEach(([id, ts]) => {
+                    const timestamp = Number(ts) || 0;
+                    if (id && now - timestamp < TOMBSTONE_TTL_MS && !deletedFilesMap.has(id)) {
+                        deletedFilesMap.set(id, timestamp);
+                        newlyDeleted.push(id);
+                    }
+                });
+                if (newlyDeleted.length > 0) {
+                    persistTombstoneMap(DELETED_FILES_STORAGE_KEY, deletedFilesMap, 400);
+                    purgeDeletedIdsFromLocalStores([], newlyDeleted);
+                }
+            }, () => {});
+        } catch {}
+    }, 400);
+}
 
 // --- AUTH SERVICE DEFINITION (STRICT ONLINE ONLY) ---
 const authService = {
@@ -785,8 +1053,8 @@ const DEFAULT_STARTER_PROJECT: Project = {
 };
 
 const ensureStarterProjectIfNeeded = async (projects: Project[]): Promise<Project[]> => {
-    const validProjects = projects.filter(p => p && p.name && p.name !== ARCHIVE_FOLDER_NAME);
-    if (validProjects.length === 0) {
+    const validProjects = projects.filter(p => p && p.name && p.name !== ARCHIVE_FOLDER_NAME && !isProjectDeleted(p));
+    if (validProjects.length === 0 && !isProjectDeleted(DEFAULT_STARTER_PROJECT.id) && !isProjectDeleted('starter_demo_project')) {
         try {
             await dbService.putItem('projects', DEFAULT_STARTER_PROJECT);
             saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, [DEFAULT_STARTER_PROJECT]);
@@ -936,7 +1204,7 @@ function deduplicateProjects(projects: Project[]): Project[] {
     const hasRealProjects = projects.some(p => p && p.id && p.id !== 'starter_demo_project' && p.name !== ARCHIVE_FOLDER_NAME);
 
     for (const p of projects) {
-        if (!p || !p.id || p.name === ARCHIVE_FOLDER_NAME) continue;
+        if (!p || !p.id || p.name === ARCHIVE_FOLDER_NAME || isProjectDeleted(p)) continue;
         if (p.id === 'starter_demo_project' && hasRealProjects) {
             dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
             continue;
@@ -992,8 +1260,8 @@ export const api = {
   signInGuest: authService.signInGuest,
   signOut: authService.signOut,
   sync: syncService, 
-  getSyncProjects(): Project[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY); if (stored) return deduplicateProjects(JSON.parse(stored)); } catch(e) {} return []; },
-  getSyncRecentFiles(): FileItem[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY); if (stored) return JSON.parse(stored); } catch(e) {} return []; },
+  getSyncProjects(): Project[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY); if (stored) return deduplicateProjects(JSON.parse(stored)).filter(p => !isProjectDeleted(p)); } catch(e) {} return []; },
+  getSyncRecentFiles(): FileItem[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY); if (stored) return JSON.parse(stored).filter((f: any) => f && !isFileDeleted(f.id)); } catch(e) {} return []; },
   getSyncTasks(): Task[] { return [...localTasks]; },
   
   // --- OFFLINE-READY DOWNLOAD FUNCTION ---
@@ -1122,7 +1390,7 @@ export const api = {
       const cleanTarget = name.replace(/\.html$/i, '').trim();
       try {
           const allLocal = await dbService.getAllItems<FileItem>('files');
-          const localMatch = allLocal.find(f => f && f.name && f.name.replace(/\.html$/i, '').trim() === cleanTarget);
+          const localMatch = allLocal.find(f => f && !isFileDeleted(f.id) && f.name && f.name.replace(/\.html$/i, '').trim() === cleanTarget);
           if (localMatch) {
               return { id: localMatch.id, parentId: localMatch.parentId || '' };
           }
@@ -1131,8 +1399,9 @@ export const api = {
       try {
           const query = `(name = '${cleanTarget}' or name = '${cleanTarget}.html') and trashed = false`;
           const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=files(id, parents)`);
-          if (result.files && result.files.length > 0) {
-              const file = result.files[0];
+          const validDriveFiles = (result.files || []).filter((f: any) => f && !isFileDeleted(f.id));
+          if (validDriveFiles.length > 0) {
+              const file = validDriveFiles[0];
               return { id: file.id, parentId: file.parents ? file.parents[0] : '' };
           }
       } catch(e) {}
@@ -1142,17 +1411,17 @@ export const api = {
 
   async saveToArchive(title: string, content: string, sectionName?: string): Promise<string> { triggerLoadingStart(); try { const archiveId = await this.getArchiveFolderId(); if (!archiveId) { throw new Error("Could not find archive folder"); } let targetFolderId = archiveId; if (sectionName) { const archiveContents = await this.getContents(archiveId, true); const sectionFolder = archiveContents.find(f => f.name === sectionName && f.type === ItemType.FOLDER); if (sectionFolder) { targetFolderId = sectionFolder.id; } } const htmlDoc = createCardHtml(title, content); const file = await this.saveLetter(targetFolderId, title, htmlDoc); return file.id; } finally { triggerLoadingStop(); } },
   getCachedContents(folderId: string): FileItem[] | null {
-      if (!folderId) return null;
+      if (!folderId || isFileDeleted(folderId)) return null;
       const cached = contentCache.get(folderId);
       if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-          return cached.data;
+          return Array.isArray(cached.data) ? cached.data.filter((f: FileItem) => f && !isFileDeleted(f.id)) : cached.data;
       }
       return null;
   },
   async getLocalContents(folderId: string, includeSystemFolders: boolean = false): Promise<FileItem[]> {
-      if (!folderId) return [];
+      if (!folderId || isFileDeleted(folderId)) return [];
       try {
-          const allFiles = await dbService.getAllItems<FileItem>('files');
+          const allFiles = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id));
           const isCountable = (f: FileItem) => {
               const n = (f.name || '').toLowerCase();
               return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
@@ -1186,7 +1455,7 @@ export const api = {
   getCachedProjects(): Project[] | null {
       const cached = contentCache.get('projects_list');
       if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-          return cached.data;
+          return Array.isArray(cached.data) ? cached.data.filter((p: Project) => !isProjectDeleted(p)) : cached.data;
       }
       const sync = this.getSyncProjects();
       if (sync && sync.length > 0) {
@@ -1197,9 +1466,11 @@ export const api = {
   },
   async getLocalProjects(): Promise<Project[]> { 
       const localProjects = await dbService.getAllItems<Project>('projects'); 
-      let processed = localProjects.filter(p => p.name !== ARCHIVE_FOLDER_NAME).map(enrichProjectWithAI); 
+      let processed = localProjects.filter(p => p && p.name !== ARCHIVE_FOLDER_NAME && !isProjectDeleted(p)).map(enrichProjectWithAI); 
       processed = deduplicateProjects(processed);
-      processed = await ensureStarterProjectIfNeeded(processed);
+      if (!navigator.onLine || authService.isGuest()) {
+          processed = await ensureStarterProjectIfNeeded(processed);
+      }
       saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, processed); 
       return processed; 
   },
@@ -1336,16 +1607,19 @@ export const api = {
           ]);
           let firestoreProjects: Project[] = []; 
           if (querySnapshot && !querySnapshot.empty) { 
-              firestoreProjects = querySnapshot.docs.map(doc => { 
-                  const data = doc.data() as any; 
-                  const localMatch = processedLocal.find(p => p.id === doc.id) || syncLocal.find(p => p.id === doc.id);
-                  return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data })); 
-              }); 
+              firestoreProjects = querySnapshot.docs
+                  .filter((docSnap: any) => !isProjectDeleted(docSnap.id))
+                  .map((docSnap: any) => { 
+                      const data = docSnap.data() as any; 
+                      const localMatch = processedLocal.find(p => p.id === docSnap.id) || syncLocal.find(p => p.id === docSnap.id); 
+                      return mergeProjectData(localMatch, enrichProjectWithAI({ id: docSnap.id, ...data })); 
+                  })
+                  .filter((p: Project) => !isProjectDeleted(p)); 
           }
           const projectMap = new Map<string, Project>();
           firestoreProjects.forEach(p => projectMap.set(p.id, p));
 
-          // Auto-discover Google Drive projects if authenticated
+          // Auto-discover Google Drive projects if authenticated (skipping deleted tombstones)
           if (accessToken) {
               try {
                   const rootId = await this.ensureRootFolder();
@@ -1354,7 +1628,7 @@ export const api = {
                       const driveRes = await fetchDrive(`files?q=${encodeURIComponent(driveQuery)}&fields=files(id,name,createdTime)`);
                       if (driveRes.files && driveRes.files.length > 0) {
                           for (const folder of driveRes.files) {
-                              if (folder.name === ARCHIVE_FOLDER_NAME) continue;
+                              if (folder.name === ARCHIVE_FOLDER_NAME || isProjectDeleted(folder.id)) continue;
                               const existing = Array.from(projectMap.values()).find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
                               if (existing) {
                                   if (!existing.driveFolderId) existing.driveFolderId = folder.id;
@@ -1384,16 +1658,32 @@ export const api = {
               } catch(e) {}
           }
 
+          // Preserve ONLY genuinely pending offline-created projects from sync_queue (never deleted ones)
+          const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+          const pendingCreateIds = new Set(
+              queueItems
+                  .filter(q => q.action === SyncActionType.CREATE_PROJECT && q.payload?.id)
+                  .map(q => q.payload.id)
+          );
+
           processedLocal.forEach(p => { 
-              if (!projectMap.has(p.id) && p.id !== 'starter_demo_project') { 
+              if (!projectMap.has(p.id) && pendingCreateIds.has(p.id) && !isProjectDeleted(p) && p.id !== 'starter_demo_project') { 
                   projectMap.set(p.id, p); 
               } 
           });
           
-          let mergedProjects = Array.from(projectMap.values());
+          let mergedProjects = deduplicateProjects(Array.from(projectMap.values()));
           if (mergedProjects.some(p => p.id !== 'starter_demo_project')) {
               mergedProjects = mergedProjects.filter(p => p.id !== 'starter_demo_project');
               dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
+          }
+
+          // Prune stale projects from IndexedDB that were deleted on Firestore/other devices
+          const validIds = new Set(mergedProjects.map(p => p.id));
+          for (const lp of processedLocal) {
+              if (!validIds.has(lp.id)) {
+                  dbService.deleteItem('projects', lp.id).catch(() => {});
+              }
           }
 
           for (const fp of mergedProjects) dbService.putItem('projects', fp).catch(()=>{}); 
@@ -1409,15 +1699,19 @@ export const api = {
       if (!navigator.onLine || authService.isGuest()) return;
       try {
           const querySnapshot = await getDocs(collection(db, "projects"));
+          const allLocalProjects = await dbService.getAllItems<Project>('projects').catch(() => []);
+          const syncProjects = this.getSyncProjects();
+
           let firestoreProjects: Project[] = [];
           if (!querySnapshot.empty) {
-              const localProjects = await this.getLocalProjects();
-              const syncProjects = this.getSyncProjects();
-              firestoreProjects = querySnapshot.docs.map(doc => {
-                  const data = doc.data() as any;
-                  const localMatch = localProjects.find(p => p.id === doc.id) || syncProjects.find(p => p.id === doc.id);
-                  return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data }));
-              });
+              firestoreProjects = querySnapshot.docs
+                  .filter(d => !isProjectDeleted(d.id))
+                  .map(d => {
+                      const data = d.data() as any;
+                      const localMatch = allLocalProjects.find(p => p.id === d.id) || syncProjects.find(p => p.id === d.id);
+                      return mergeProjectData(localMatch, enrichProjectWithAI({ id: d.id, ...data }));
+                  })
+                  .filter(p => !isProjectDeleted(p));
           }
           const projectMap = new Map<string, Project>();
           firestoreProjects.forEach(p => projectMap.set(p.id, p));
@@ -1429,14 +1723,13 @@ export const api = {
                       const driveQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
                       const driveRes = await fetchDrive(`files?q=${encodeURIComponent(driveQuery)}&fields=files(id,name,createdTime)`);
                       if (driveRes.files && driveRes.files.length > 0) {
-                          const localProjects = await this.getLocalProjects();
                           for (const folder of driveRes.files) {
-                              if (folder.name === ARCHIVE_FOLDER_NAME) continue;
+                              if (folder.name === ARCHIVE_FOLDER_NAME || isProjectDeleted(folder.id)) continue;
                               const existing = Array.from(projectMap.values()).find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
                               if (existing) {
                                   if (!existing.driveFolderId) existing.driveFolderId = folder.id;
                               } else {
-                                  const localMatch = localProjects.find(p => p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name);
+                                  const localMatch = allLocalProjects.find(p => !isProjectDeleted(p) && (p.id === folder.id || p.driveFolderId === folder.id || p.name === folder.name));
                                   const discovered: Project = localMatch || {
                                       id: folder.id,
                                       name: folder.name,
@@ -1461,55 +1754,105 @@ export const api = {
               } catch(e) {}
           }
 
-          let list = Array.from(projectMap.values());
+          const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+          const pendingCreateIds = new Set(
+              queueItems
+                  .filter(q => q.action === SyncActionType.CREATE_PROJECT && q.payload?.id)
+                  .map(q => q.payload.id)
+          );
+          allLocalProjects.forEach(p => {
+              if (p && !projectMap.has(p.id) && pendingCreateIds.has(p.id) && !isProjectDeleted(p) && p.id !== 'starter_demo_project') {
+                  projectMap.set(p.id, enrichProjectWithAI(p));
+              }
+          });
+
+          let list = deduplicateProjects(Array.from(projectMap.values()));
           if (list.some(p => p.id !== 'starter_demo_project')) {
               list = list.filter(p => p.id !== 'starter_demo_project');
               dbService.deleteItem('projects', 'starter_demo_project').catch(() => {});
           }
 
-          if (list.length > 0) {
-              updateCache('projects_list', list);
-              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
-              for (const p of list) {
-                  dbService.putItem('projects', p).catch(() => {});
+          // Prune deleted projects from IndexedDB so they never flash on return to Home
+          const validIds = new Set(list.map(p => p.id));
+          for (const lp of allLocalProjects) {
+              if (lp && lp.id && !validIds.has(lp.id)) {
+                  dbService.deleteItem('projects', lp.id).catch(() => {});
               }
+          }
+
+          updateCache('projects_list', list);
+          saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
+          for (const p of list) {
+              dbService.putItem('projects', p).catch(() => {});
           }
       } catch (e) {}
   },
 
   // Instant real-time multi-device project synchronization listener
   subscribeToProjectsList(onUpdate: (projects: Project[]) => void): () => void {
-      // 1. Deliver local sync cache instantly (0ms)
+      // 1. Deliver local sync cache instantly (0ms), filtered against deleted tombstones
       const cached = this.getSyncProjects();
       if (cached && cached.length > 0) {
           onUpdate(cached);
       }
 
-      this.getLocalProjects().then(local => {
-          if (local && local.length > 0) {
+      if (!navigator.onLine || authService.isGuest()) {
+          this.getLocalProjects().then(local => {
               onUpdate(local);
-          }
-      }).catch(() => {});
+          }).catch(() => {});
+          return () => {};
+      }
 
-      if (!navigator.onLine || authService.isGuest()) return () => {};
+      // If no local sync cache exists yet, use IndexedDB briefly until Firestore snapshot arrives
+      if (!cached || cached.length === 0) {
+          this.getLocalProjects().then(local => {
+              if (local && local.length > 0) {
+                  onUpdate(local);
+              }
+          }).catch(() => {});
+      }
 
       try {
           const unsub = onSnapshot(collection(db, "projects"), async (snapshot) => {
-              if (!snapshot.empty) {
-                  const localProjects = await this.getLocalProjects().catch(() => []);
-                  const syncProjects = this.getSyncProjects();
-                  const list = snapshot.docs.map(doc => {
-                      const data = doc.data() as any;
-                      const localMatch = localProjects.find(p => p.id === doc.id) || syncProjects.find(p => p.id === doc.id);
-                      return mergeProjectData(localMatch, enrichProjectWithAI({ id: doc.id, ...data }));
-                  });
-                  updateCache('projects_list', list);
-                  saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
-                  for (const p of list) {
-                      dbService.putItem('projects', p).catch(() => {});
+              const allLocalProjects = await dbService.getAllItems<Project>('projects').catch(() => []);
+              const syncProjects = this.getSyncProjects();
+
+              const cloudList = snapshot.docs
+                  .filter(d => !isProjectDeleted(d.id))
+                  .map(d => {
+                      const data = d.data() as any;
+                      const localMatch = allLocalProjects.find(p => p.id === d.id) || syncProjects.find(p => p.id === d.id);
+                      return mergeProjectData(localMatch, enrichProjectWithAI({ id: d.id, ...data }));
+                  })
+                  .filter(p => !isProjectDeleted(p));
+
+              const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+              const pendingCreateIds = new Set(
+                  queueItems
+                      .filter(q => q.action === SyncActionType.CREATE_PROJECT && q.payload?.id)
+                      .map(q => q.payload.id)
+              );
+
+              const pendingLocals = allLocalProjects
+                  .filter(p => p && pendingCreateIds.has(p.id) && !cloudList.some(c => c.id === p.id) && !isProjectDeleted(p))
+                  .map(enrichProjectWithAI);
+
+              const list = deduplicateProjects([...cloudList, ...pendingLocals]);
+
+              // Prune IndexedDB of any project no longer in Firestore (and not pending creation)
+              const validIds = new Set(list.map(p => p.id));
+              for (const lp of allLocalProjects) {
+                  if (lp && lp.id && !validIds.has(lp.id)) {
+                      dbService.deleteItem('projects', lp.id).catch(() => {});
                   }
-                  onUpdate(list);
               }
+
+              updateCache('projects_list', list);
+              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
+              for (const p of list) {
+                  dbService.putItem('projects', p).catch(() => {});
+              }
+              onUpdate(list);
           }, (err) => {
               if (err.code !== 'permission-denied') {
                   console.warn("Real-time projects listener warning:", err);
@@ -1523,13 +1866,13 @@ export const api = {
 
   subscribeToProject(projectId: string, onUpdate: (data: Project) => void): () => void { 
       // STRICT: No offline subscription
-      if (!navigator.onLine) return () => {};
+      if (!navigator.onLine || isProjectDeleted(projectId)) return () => {};
 
       let docData: Project | null = null;
       let logsData: ProjectLog[] = [];
 
       const mergeAndEmit = async () => {
-          if (!docData) return;
+          if (!docData || isProjectDeleted(projectId)) return;
           const local = await dbService.getItem<Project>('projects', projectId).catch(() => null);
           const remoteDoc = { ...docData };
           if (logsData && logsData.length > 0) {
@@ -1549,11 +1892,13 @@ export const api = {
       };
 
       const unsubDoc = onSnapshot(doc(db, "projects", projectId), (docSnapshot) => { 
-          if (docSnapshot.exists()) { 
+          if (docSnapshot.exists() && !isProjectDeleted(projectId)) { 
               const data = docSnapshot.data() as any; 
               docData = enrichProjectWithAI({ id: docSnapshot.id, ...data }); 
               mergeAndEmit();
-          } 
+          } else if (!docSnapshot.exists()) {
+              markProjectsDeleted([projectId], false).catch(() => {});
+          }
       }, (error) => {
           if (error.code === 'permission-denied') {
               console.warn("Firestore Sync Paused: Permissions missing. Data will be served locally.");
@@ -1669,7 +2014,7 @@ export const api = {
       return newProject; 
   },
   async updateProject(id: string, updates: Partial<Project>, isSyncProcess = false): Promise<Project | null> { 
-      if (!authService.isAuthenticated()) return null; 
+      if (!authService.isAuthenticated() || isProjectDeleted(id)) return null; 
       contentCache.delete('projects_list'); 
       let existing: Project | null = null;
       try { existing = (await dbService.getItem<Project>('projects', id)) || null; } catch(e) {}
@@ -1865,15 +2210,71 @@ export const api = {
   async deleteProject(id: string): Promise<void> { 
       if (!authService.isAuthenticated()) return; 
       triggerLoadingStart(); 
-      contentCache.delete('projects_list'); 
-      try { await dbService.deleteItem('projects', id); } catch(e) {} 
-      localStorage.removeItem(LOCAL_STORAGE_PROJECTS_KEY); 
-      
+
+      // Capture existing project (and its driveFolderId) before purging
+      let existingProject: Project | undefined;
+      try {
+          existingProject = await dbService.getItem<Project>('projects', id);
+      } catch {}
+      if (!existingProject) {
+          existingProject = this.getSyncProjects().find(p => p.id === id);
+      }
+      const driveFolderId = existingProject?.driveFolderId;
+      const idsToDelete = [...new Set([id, driveFolderId].filter(Boolean) as string[])];
+
+      // 1. Immediately mark deleted & purge all local caches (memory, localStorage, IndexedDB, sync_queue)
+      await markProjectsDeleted(idsToDelete, true);
+
+      try {
+          const allLocalFiles = await dbService.getAllItems<FileItem>('files').catch(() => []);
+          const folderSet = new Set<string>(idsToDelete);
+          let expanded = true;
+          while (expanded) {
+              expanded = false;
+              for (const f of allLocalFiles) {
+                  if (f && f.parentId && folderSet.has(f.parentId) && !folderSet.has(f.id)) {
+                      folderSet.add(f.id);
+                      expanded = true;
+                  }
+              }
+          }
+          const descendantFileIds = Array.from(folderSet);
+          removeItemsFromFolderCaches(descendantFileIds, descendantFileIds);
+          for (const fid of descendantFileIds) {
+              if (!idsToDelete.includes(fid)) {
+                  dbService.deleteItem('files', fid).catch(() => {});
+                  dbService.deleteItem('file_blobs', fid).catch(() => {});
+                  try { localStorage.removeItem(`vthumb_${fid}`); } catch {}
+              }
+          }
+      } catch {}
+
+      try {
+          const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+          for (const qi of queueItems) {
+              const pId = qi.payload?.id || qi.payload?.updates?.id;
+              if (pId && idsToDelete.includes(pId)) {
+                  await dbService.deleteFromQueue(qi.id).catch(() => {});
+              }
+          }
+      } catch {}
+
       if (!authService.isGuest()) {
           try { 
               await deleteDoc(doc(db, "projects", id)); 
-              await fetchDrive(`files/${id}`, { method: 'DELETE' }); 
+              if (driveFolderId && driveFolderId !== id) {
+                  await deleteDoc(doc(db, "projects", driveFolderId)).catch(() => {});
+              }
           } catch (e) {} 
+
+          const driveTarget = (driveFolderId && !isSyntheticDriveId(driveFolderId))
+              ? driveFolderId
+              : (!isSyntheticDriveId(id) ? id : '');
+          if (driveTarget) {
+              try {
+                  await fetchDrive(`files/${driveTarget}`, { method: 'DELETE' });
+              } catch (e) {}
+          }
       }
       triggerLoadingStop(); 
   },
@@ -1886,9 +2287,10 @@ export const api = {
           return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
       };
 
-      // 1. Check memory cache and IndexedDB
-      const memCached = this.getCachedContents(targetId);
-      const allFiles = await dbService.getAllItems<FileItem>('files'); 
+      // 1. Check memory cache and IndexedDB (always filtering tombstoned deleted files)
+      const memCachedRaw = this.getCachedContents(targetId);
+      const memCached = memCachedRaw ? memCachedRaw.filter(f => f && !isFileDeleted(f.id)) : null;
+      const allFiles = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id)); 
 
       // Build map of previous known counts so we never overwrite a known count with 0
       const knownCountsMap = new Map<string, { fileCount: number; folderCount: number }>();
@@ -1948,7 +2350,7 @@ export const api = {
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(targetId)) {
           const resultList = localChildren.length > 0 ? localChildren : (memCached || []);
           await syncParentFolderCounts(resultList);
-          if (resultList.length > 0) updateCache(targetId, resultList);
+          updateCache(targetId, resultList);
           return resultList; 
       }
       
@@ -1967,33 +2369,62 @@ export const api = {
               }
           });
 
-          const data: FileItem[] = (result.files || []).map((f: any) => {
-              let savedThumb = localPreviewMap.get(f.id) || '';
-              if (!savedThumb) {
-                  try {
-                      const lsThumb = localStorage.getItem(`vthumb_${f.id}`);
-                      if (lsThumb && lsThumb.startsWith('data:image')) savedThumb = lsThumb;
-                  } catch (e) {}
-              }
-              const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
-              const known = isFolder ? knownCountsMap.get(f.id) : undefined;
-              return { 
-                  id: f.id, 
-                  parentId: targetId, 
-                  name: f.name, 
-                  type: isFolder ? ItemType.FOLDER : ItemType.FILE, 
-                  mimeType: f.mimeType, 
-                  createdTime: f.createdTime, 
-                  webViewLink: f.webViewLink, 
-                  previewUrl: savedThumb || f.thumbnailLink, 
-                  thumbnailLink: f.thumbnailLink,
-                  webContentLink: f.webContentLink, 
-                  fileCount: known ? known.fileCount : 0, 
-                  folderCount: known ? known.folderCount : 0, 
-                  size: f.size ? parseInt(f.size) : 0 
-              };
-          }); 
+          const data: FileItem[] = (result.files || [])
+              .filter((f: any) => f && !isFileDeleted(f.id))
+              .map((f: any) => {
+                  let savedThumb = localPreviewMap.get(f.id) || '';
+                  if (!savedThumb) {
+                      try {
+                          const lsThumb = localStorage.getItem(`vthumb_${f.id}`);
+                          if (lsThumb && lsThumb.startsWith('data:image')) savedThumb = lsThumb;
+                      } catch (e) {}
+                  }
+                  const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
+                  const known = isFolder ? knownCountsMap.get(f.id) : undefined;
+                  return { 
+                      id: f.id, 
+                      parentId: targetId, 
+                      name: f.name, 
+                      type: isFolder ? ItemType.FOLDER : ItemType.FILE, 
+                      mimeType: f.mimeType, 
+                      createdTime: f.createdTime, 
+                      webViewLink: f.webViewLink, 
+                      previewUrl: savedThumb || f.thumbnailLink, 
+                      thumbnailLink: f.thumbnailLink,
+                      webContentLink: f.webContentLink, 
+                      fileCount: known ? known.fileCount : 0, 
+                      folderCount: known ? known.folderCount : 0, 
+                      size: f.size ? parseInt(f.size) : 0 
+                  };
+              }); 
           
+          // Prune stale IndexedDB files under targetId that are no longer on Google Drive (prevents deleted files flashing on re-entry!)
+          const driveIds = new Set(data.map(d => d.id));
+          const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+          const pendingUploadTempIds = new Set(
+              queueItems
+                  .filter(q => q.action === SyncActionType.UPLOAD_FILE && q.payload?.tempId)
+                  .map(q => q.payload.tempId)
+          );
+
+          const staleIds: string[] = [];
+          const nowMs = Date.now();
+          for (const lc of localChildren) {
+              if (!driveIds.has(lc.id)) {
+                  const ageMs = nowMs - (new Date(lc.createdTime || 0).getTime() || 0);
+                  const isPendingSynthetic = isSyntheticDriveId(lc.id) && (pendingUploadTempIds.has(lc.id) || ageMs < 30000);
+                  if (!isPendingSynthetic) {
+                      staleIds.push(lc.id);
+                      dbService.deleteItem('files', lc.id).catch(() => {});
+                      dbService.deleteItem('file_blobs', lc.id).catch(() => {});
+                      try { localStorage.removeItem(`vthumb_${lc.id}`); } catch {}
+                  }
+              }
+          }
+          if (staleIds.length > 0) {
+              removeItemsFromFolderCaches(staleIds);
+          }
+
           for (const item of data) { dbService.putItem('files', item).catch(() => {}); } 
           updateCache(targetId, data); 
           await syncParentFolderCounts(data);
@@ -2140,21 +2571,57 @@ export const api = {
       if (!authService.isAuthenticated()) return; 
       const existingFile = await dbService.getItem<FileItem>('files', id).catch(() => null);
       const effectiveParentId = parentId || existingFile?.parentId || '';
-      if (effectiveParentId) contentCache.delete(effectiveParentId); 
-      try { await dbService.deleteItem('file_blobs', id); } catch(e){}
-      contentCache.forEach((value, key) => { if (Array.isArray(value.data)) { value.data = value.data.filter((f: any) => f.id !== id); } }); 
-      try { const recentRaw = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY); if (recentRaw) { const recent = JSON.parse(recentRaw); const updatedRecent = recent.filter((f: any) => f.id !== id); localStorage.setItem(LOCAL_STORAGE_RECENT_FILES_KEY, JSON.stringify(updatedRecent)); } } catch (e) { } 
+
+      // Collect id and any recursive descendants (when deleting a folder)
+      const idsToDelete: string[] = [id];
+      try {
+          const allLocal = await dbService.getAllItems<FileItem>('files');
+          const idSet = new Set<string>([id]);
+          let expanded = true;
+          while (expanded) {
+              expanded = false;
+              for (const f of allLocal) {
+                  if (f && f.parentId && idSet.has(f.parentId) && !idSet.has(f.id)) {
+                      idSet.add(f.id);
+                      idsToDelete.push(f.id);
+                      expanded = true;
+                  }
+              }
+          }
+      } catch {}
+
+      // Immediately tombstone & purge from memory, localStorage folder cache, recent files, IndexedDB, and sync_queue
+      await markFilesDeleted(idsToDelete, true);
+
+      try {
+          const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
+          for (const qi of queueItems) {
+              if (qi.payload?.tempId && idsToDelete.includes(qi.payload.tempId)) {
+                  await dbService.deleteFromQueue(qi.id).catch(() => {});
+              }
+          }
+      } catch {}
+
+      // Recompute parent folder counts accurately from remaining items
       try { 
-          await dbService.deleteItem('files', id); 
           if (effectiveParentId) {
+              const allRemaining = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id));
+              const siblings = allRemaining.filter(f => f.parentId === effectiveParentId);
+              const isCountable = (f: { name?: string }) => {
+                  const n = (f.name || '').toLowerCase();
+                  return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
+              };
+              const countableSiblings = siblings.filter(isCountable);
+              const newFileCount = countableSiblings.filter(s => s.type !== ItemType.FOLDER).length;
+              const newFolderCount = countableSiblings.filter(s => s.type === ItemType.FOLDER).length;
+
               const parentFolder = await dbService.getItem<FileItem>('files', effectiveParentId);
               if (parentFolder) {
-                  const newCount = Math.max(0, (parentFolder.fileCount || 1) - 1);
-                  await dbService.putItem('files', { ...parentFolder, fileCount: newCount });
+                  await dbService.putItem('files', { ...parentFolder, fileCount: newFileCount, folderCount: newFolderCount });
                   if (parentFolder.parentId) {
                       const grandParentCached = this.getCachedContents(parentFolder.parentId);
                       if (grandParentCached) {
-                          updateCache(parentFolder.parentId, grandParentCached.map(f => f.id === effectiveParentId ? { ...f, fileCount: newCount } : f));
+                          updateCache(parentFolder.parentId, grandParentCached.map(f => f.id === effectiveParentId ? { ...f, fileCount: newFileCount, folderCount: newFolderCount } : f));
                       }
                   }
               }
@@ -2296,12 +2763,12 @@ export const api = {
       triggerLoadingStart(); 
       try { const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { 'Authorization': `Bearer ${accessToken}` } }); const text = await response.text(); const blob = new Blob([text], {type: 'text/html'}); await dbService.putBlob(fileId, blob); return text; } finally { triggerLoadingStop(); } 
   },
-  async searchFiles(queryText: string): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; triggerLoadingStart(); try { const result = await fetchDrive(`files?q=name contains '${queryText}' and trashed = false&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, size: f.size ? parseInt(f.size) : 0 })); } finally { triggerLoadingStop(); } },
+  async searchFiles(queryText: string): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; triggerLoadingStart(); try { const result = await fetchDrive(`files?q=name contains '${queryText}' and trashed = false&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).filter((f: any) => f && !isFileDeleted(f.id)).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, size: f.size ? parseInt(f.size) : 0 })); } finally { triggerLoadingStop(); } },
   async getTasks(): Promise<Task[]> { return [...localTasks]; },
   async addTask(content: string): Promise<Task> { const newTask = { id: `t${Date.now()}`, content, isDone: false, createdAt: new Date().toISOString() }; localTasks = [newTask, ...localTasks]; safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); return newTask; },
   async toggleTask(id: string): Promise<void> { const index = localTasks.findIndex(t => t.id === id); if (index !== -1) { localTasks[index].isDone = !localTasks[index].isDone; safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); } },
   async deleteTask(id: string): Promise<void> { localTasks = localTasks.filter(t => t.id !== id); safeSetLocalStorage(STORAGE_KEYS.TASKS, JSON.stringify(localTasks)); },
-  async getRecentFiles(): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; try { const result = await fetchDrive(`files?q=trashed = false and mimeType != 'application/vnd.google-apps.folder' and name != 'metadata.json'&pageSize=10&orderBy=createdTime desc&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, webContentLink: f.webContentLink, size: f.size ? parseInt(f.size) : 0 })); } catch (e) { return []; } },
+  async getRecentFiles(): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; try { const result = await fetchDrive(`files?q=trashed = false and mimeType != 'application/vnd.google-apps.folder' and name != 'metadata.json'&pageSize=10&orderBy=createdTime desc&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).filter((f: any) => f && !isFileDeleted(f.id)).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, webContentLink: f.webContentLink, size: f.size ? parseInt(f.size) : 0 })); } catch (e) { return []; } },
   subscribeToMarketPrices(onUpdate: (prices: MarketItem[]) => void): () => void {
       marketPricesSubscribers.add(onUpdate);
       if (memoryMarketPrices && memoryMarketPrices.length > 0) {

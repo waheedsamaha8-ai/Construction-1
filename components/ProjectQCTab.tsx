@@ -1,10 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Checklist } from '../types';
+import { Checklist, QCSigner } from '../types';
 import {
     QC_TEMPLATES,
     QC_DOC_TYPES,
     QC_STATUS_META,
+    QC_WORK_CATEGORIES,
     QCChecklistItemData,
     QCItemResult,
     QCDocType,
@@ -25,29 +26,20 @@ interface ProjectQCTabProps {
     onCloseMasterData: () => void;
 }
 
-const QC_CATEGORIES = [
-    'الكل',
-    'الأعمال المساحية وتجهيز الموقع',
-    'أعمال الحفر والإحلال والأساسات',
-    'أعمال الخرسانة المسلحة',
-    'أعمال المنشآت المعدنية (Steel)',
-    'أعمال المباني والقواطيع',
-    'أعمال العزل',
-    'أعمال البياض والمحارة',
-    'أعمال الأرضيات والرخام',
-    'أعمال الدهانات',
-    'أعمال الأسقف المعلقة',
-    'أعمال النجارة والألوميتال والكريتال',
-    'أعمال السباكة والصرف والحريق',
-    'أعمال الكهرباء والتيار الخفيف والتكييف',
-    'أعمال الموقع العام والطرق',
-    'توريدات ومواد إنشائية ومعمارية'
-];
-
 const DEFAULT_ITEMS_BY_DOC_TYPE: Record<QCDocType, { activityName: string; items: { criterion: string; ecpStandard: string }[] }> = {
     IR: {
         activityName: QC_TEMPLATES[0].title,
         items: QC_TEMPLATES[0].defaultItems
+    },
+    MAR: {
+        activityName: 'طلب اعتماد مادة / مصنّع فني قبل التوريد (Material Approval Request)',
+        items: [
+            { criterion: 'مطابقة المواصفات الفنية والكتالوجات المعتمدة لمواصفات المشروع والمقايسة', ecpStandard: 'مطابق لجدول الكميات والمواصفات الفنية (Specs)' },
+            { criterion: 'إرفاق شهادات الجودة والاختبارات المعملية والمنشأ (ISO / EOS / ASTM)', ecpStandard: 'شهادات اختبار سارية ومعتمدة من جهات محايدة' },
+            { criterion: 'اعتمادية الشركة المصنعة / المورد وسابقة الأعمال بالمشاريع المماثلة', ecpStandard: 'قائمة الموردين المعتمدين (Approved Vendor List)' },
+            { criterion: 'إرفاق جدول المقارنة الفنية (Compliance Sheet) ومطابقة العينة المرفقة', ecpStandard: 'تغطية كافة البنود القياسية بدون انحرافات جوهرية' },
+            { criterion: 'توفر المادة بالسوق المحلي والالتزام ببرنامج التوريد الزمني وشروط الضمان', ecpStandard: 'ضمان المصنّع وعدم تعارض التوريد مع الجدول الزمني' }
+        ]
     },
     MIR: {
         activityName: 'فحص واستلام توريد حديد التسليح بالموقع (Rebar Steel MIR)',
@@ -150,10 +142,15 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
     const [location, setLocation] = useState('');
     const [contractorEngineer, setContractorEngineer] = useState('');
     const [consultantEngineer, setConsultantEngineer] = useState('');
+    const [showContractorEngineer, setShowContractorEngineer] = useState(true);
+    const [showConsultantEngineer, setShowConsultantEngineer] = useState(true);
+    const [extraSigners, setExtraSigners] = useState<QCSigner[]>([]);
     const [status, setStatus] = useState<string>('Approved');
     const [generalNotes, setGeneralNotes] = useState('');
     const [qcItems, setQcItems] = useState<QCChecklistItemData[]>([]);
     const [photos, setPhotos] = useState<string[]>([]);
+    const [photosPerRow, setPhotosPerRow] = useState<1 | 2 | 3 | 4>(2);
+    const [hasManualPhotoCols, setHasManualPhotoCols] = useState(false);
     const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
     const [newItemCriterion, setNewItemCriterion] = useState('');
     const [newItemStandard, setNewItemStandard] = useState('');
@@ -194,14 +191,34 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
         setLocation('');
         setContractorEngineer('');
         setConsultantEngineer('');
+        setShowContractorEngineer(true);
+        setShowConsultantEngineer(true);
+        setExtraSigners([]);
         setStatus(selectedType === 'NCR' ? 'Rejected' : selectedType === 'SI' || selectedType === 'MOM' || selectedType === 'RFI' ? 'Open' : 'Approved');
         setGeneralNotes('');
         setPhotos([]);
+        setPhotosPerRow(2);
+        setHasManualPhotoCols(false);
         setTemplateSearch('');
 
         if (selectedType === 'IR') {
             setFilterCat('الكل');
             applyTemplate(QC_TEMPLATES[0]);
+        } else if (selectedType === 'MAR') {
+            setFilterCat('توريدات ومواد إنشائية ومعمارية');
+            const preset = DEFAULT_ITEMS_BY_DOC_TYPE.MAR;
+            setActivityName(preset.activityName);
+            setCategory(docDef.defaultCategory);
+            setEcpCode(docDef.defaultEcpCode);
+            setQcItems(
+                preset.items.map((item, idx) => ({
+                    id: `qci_${Date.now()}_${idx}`,
+                    criterion: item.criterion,
+                    ecpStandard: item.ecpStandard,
+                    result: 'pass',
+                    notes: ''
+                }))
+            );
         } else if (selectedType === 'MIR') {
             setFilterCat('توريدات ومواد إنشائية ومعمارية');
             const firstMir = QC_TEMPLATES.find(t => t.docType === 'MIR') || QC_TEMPLATES[0];
@@ -236,11 +253,22 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
         setEcpCode(chk.ecpCode || 'الكود المصري لتصميم وتنفيذ المنشآت (ECP)');
         setDate(chk.date || new Date().toISOString().split('T')[0]);
         setLocation(chk.location || '');
+        const restoredPhotos = chk.photos || [];
         setContractorEngineer(chk.contractorEngineer || '');
         setConsultantEngineer(chk.consultantEngineer || chk.inspectorName || '');
+        setShowContractorEngineer(chk.showContractorEngineer !== false);
+        setShowConsultantEngineer(chk.showConsultantEngineer !== false);
+        setExtraSigners(chk.extraSigners || []);
         setStatus(chk.status || 'Approved');
         setGeneralNotes(chk.generalNotes || '');
-        setPhotos(chk.photos || []);
+        setPhotos(restoredPhotos);
+        if (chk.photosPerRow === 1 || chk.photosPerRow === 2 || chk.photosPerRow === 3 || chk.photosPerRow === 4) {
+            setPhotosPerRow(chk.photosPerRow);
+            setHasManualPhotoCols(true);
+        } else {
+            setPhotosPerRow(restoredPhotos.length >= 4 ? 4 : restoredPhotos.length === 3 ? 3 : restoredPhotos.length === 1 ? 1 : 2);
+            setHasManualPhotoCols(false);
+        }
         setTemplateSearch('');
 
         if (chk.items && chk.items.length > 0) {
@@ -280,7 +308,16 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                     if (dataUrl) added.push(dataUrl);
                 }
             }
-            setPhotos(prev => [...prev, ...added]);
+            setPhotos(prev => {
+                const updated = [...prev, ...added];
+                if (!hasManualPhotoCols) {
+                    if (updated.length >= 4) setPhotosPerRow(4);
+                    else if (updated.length === 3) setPhotosPerRow(3);
+                    else if (updated.length === 2) setPhotosPerRow(2);
+                    else setPhotosPerRow(1);
+                }
+                return updated;
+            });
         } catch (err) {
             console.error(err);
         } finally {
@@ -288,6 +325,17 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
             if (photoInputRef.current) photoInputRef.current.value = '';
             if (cameraInputRef.current) cameraInputRef.current.value = '';
         }
+    };
+
+    const handleAddExtraSigner = () => {
+        setExtraSigners(prev => [
+            ...prev,
+            {
+                id: `sig_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                role: '',
+                name: ''
+            }
+        ]);
     };
 
     const handleAddCustomItem = () => {
@@ -310,6 +358,10 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
         e.preventDefault();
         if (!activityName.trim()) return;
 
+        const cleanExtraSigners = extraSigners
+            .map(s => ({ ...s, role: s.role.trim(), name: s.name.trim() }))
+            .filter(s => s.role || s.name);
+
         const id = editingId || `chk_${Date.now()}`;
         const htmlContent = buildOfficialInspectionReportHtml({
             docType,
@@ -322,12 +374,16 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
             ecpCode,
             date,
             location: location.trim() || 'الموقع العام',
-            contractorEngineer: contractorEngineer.trim(),
-            consultantEngineer: consultantEngineer.trim(),
+            contractorEngineer: showContractorEngineer ? contractorEngineer.trim() : '',
+            consultantEngineer: showConsultantEngineer ? consultantEngineer.trim() : '',
+            showContractorEngineer,
+            showConsultantEngineer,
+            extraSigners: cleanExtraSigners,
             status,
             generalNotes: generalNotes.trim(),
             items: qcItems,
-            photos
+            photos,
+            photosPerRow
         });
 
         const newChecklist: Checklist = {
@@ -340,12 +396,16 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
             ecpCode,
             date,
             location: location.trim() || 'الموقع العام',
-            contractorEngineer: contractorEngineer.trim(),
-            consultantEngineer: consultantEngineer.trim(),
-            inspectorName: consultantEngineer.trim(),
+            contractorEngineer: showContractorEngineer ? contractorEngineer.trim() : '',
+            consultantEngineer: showConsultantEngineer ? consultantEngineer.trim() : '',
+            showContractorEngineer,
+            showConsultantEngineer,
+            extraSigners: cleanExtraSigners,
+            inspectorName: showConsultantEngineer ? consultantEngineer.trim() : '',
             status,
             generalNotes: generalNotes.trim(),
             photos,
+            photosPerRow,
             items: qcItems.map(it => ({
                 id: it.id,
                 text: it.criterion,
@@ -383,6 +443,9 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
             location: chk.location || 'الموقع العام',
             contractorEngineer: chk.contractorEngineer || '',
             consultantEngineer: chk.consultantEngineer || chk.inspectorName || '',
+            showContractorEngineer: chk.showContractorEngineer !== false,
+            showConsultantEngineer: chk.showConsultantEngineer !== false,
+            extraSigners: chk.extraSigners || [],
             status: chk.status || 'Approved',
             generalNotes: chk.generalNotes || '',
             items: (chk.items || []).map((it, idx) => ({
@@ -392,7 +455,8 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                 result: it.result || (it.isChecked ? 'pass' : 'fail'),
                 notes: it.notes || ''
             })),
-            photos: chk.photos || []
+            photos: chk.photos || [],
+            photosPerRow: chk.photosPerRow
         });
     };
 
@@ -477,7 +541,7 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                             <div className="absolute left-0 top-10 w-68 sm:w-76 bg-white border border-slate-200 rounded-2xl shadow-2xl p-2 z-[1550] space-y-1 animate-scale-in origin-top-left max-h-[78vh] overflow-y-auto">
                                 <div className="px-2.5 py-1.5 border-b border-slate-100 flex items-center justify-between">
                                     <span className="text-[10.5px] font-black text-slate-800">اختر نموذج الاستلام وضبط الجودة</span>
-                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">9 نماذج</span>
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">{QC_DOC_TYPES.length} نماذج</span>
                                 </div>
 
                                 {QC_DOC_TYPES.map((model) => (
@@ -520,7 +584,7 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                         </div>
                         <p className="text-[11px] font-bold text-slate-700 mb-1">لا توجد نماذج أو محاضر مسجلة</p>
                         <p className="text-[10px] text-slate-500 max-w-xs mb-3">
-                            اضغط على زر «+» لاختيار نموذج فحص أعمال (IR)، فحص مواد (MIR)، تقرير عدم مطابقة (NCR)، أمر موقع، أو محضر اجتماع.
+                            اضغط على زر «+» لاختيار نموذج فحص أعمال (IR)، اعتماد مواد (MAR)، فحص توريد (MIR)، عدم مطابقة (NCR)، أمر موقع، أو محضر اجتماع.
                         </p>
                         <button
                             type="button"
@@ -578,9 +642,6 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                                         {statusMeta.label}
                                                     </span>
                                                 </div>
-                                                <h3 className="font-bold text-slate-800 text-[11px] mt-0.5 truncate">
-                                                    {chk.activityName}
-                                                </h3>
                                             </div>
                                         </div>
 
@@ -603,6 +664,10 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                             </button>
                                         </div>
                                     </div>
+
+                                    <h3 className="font-bold text-slate-800 text-[11px] leading-snug break-words w-full mb-1.5">
+                                        {chk.activityName}
+                                    </h3>
 
                                     <div className="flex flex-wrap items-center gap-1.5 text-[9.5px] text-slate-500 font-semibold">
                                         {chk.location && (
@@ -831,8 +896,8 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                         </div>
 
                         <form onSubmit={handleSaveInspection} className="flex-1 overflow-y-auto bg-slate-50 p-2 sm:p-3.5 space-y-2.5">
-                            {/* 1. Ready ECP Templates Selector (Shown for IR & MIR or when browsing checklists) */}
-                            {(docType === 'IR' || docType === 'MIR' || docType === 'CPP') && (
+                            {/* 1. Ready ECP Templates Selector (Shown for IR, MAR, MIR & CPP) */}
+                            {(docType === 'IR' || docType === 'MAR' || docType === 'MIR' || docType === 'CPP') && (
                                 <div className="bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs">
                                     <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
                                         <span className="text-[11px] font-black text-slate-800 flex items-center gap-1">
@@ -845,15 +910,15 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                                 type="text"
                                                 value={templateSearch}
                                                 onChange={(e) => setTemplateSearch(e.target.value)}
-                                                placeholder="بحث في 50+ بند أعمال..."
+                                                placeholder="بحث في 130+ بند أعمال..."
                                                 className="w-28 sm:w-44 px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-[10px] font-bold text-slate-800 outline-none focus:border-emerald-500"
                                             />
                                             <select
                                                 value={filterCat}
                                                 onChange={(e) => setFilterCat(e.target.value)}
-                                                className="max-w-[135px] sm:max-w-[190px] px-2 py-1 rounded-lg bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-800 outline-none truncate"
+                                                className="max-w-[135px] sm:max-w-[205px] px-2 py-1 rounded-lg bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-800 outline-none truncate"
                                             >
-                                                {QC_CATEGORIES.map(c => (
+                                                {QC_WORK_CATEGORIES.map(c => (
                                                     <option key={c} value={c}>{c}</option>
                                                 ))}
                                             </select>
@@ -943,26 +1008,150 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                             <option value="Closed">تم الإغلاق وتلافي الملاحظات ✓</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label className="block text-[10px] font-black text-slate-600 mb-0.5">مهندس التنفيذ (المقاول)</label>
-                                        <input
-                                            type="text"
-                                            value={contractorEngineer}
-                                            onChange={(e) => setContractorEngineer(e.target.value)}
-                                            placeholder="اسم مهندس التنفيذ"
-                                            className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10.5px] font-bold text-slate-900"
-                                        />
+                                    {showContractorEngineer && (
+                                        <div>
+                                            <div className="flex items-center justify-between mb-0.5">
+                                                <label className="text-[10px] font-black text-slate-600">مهندس المقاول</label>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShowContractorEngineer(false);
+                                                        setContractorEngineer('');
+                                                    }}
+                                                    className="!min-h-0 text-red-500 hover:text-red-700 text-xs font-black leading-none px-1 py-0.5 flex items-center justify-center transition"
+                                                    title="حذف خانة مهندس المقاول"
+                                                >
+                                                    <i className="fa-solid fa-minus text-[10px]"></i>
+                                                </button>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                value={contractorEngineer}
+                                                onChange={(e) => setContractorEngineer(e.target.value)}
+                                                placeholder="اسم مهندس المقاول"
+                                                className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10.5px] font-bold text-slate-900"
+                                            />
+                                        </div>
+                                    )}
+                                    {showConsultantEngineer && (
+                                        <div>
+                                            <div className="flex items-center justify-between mb-0.5">
+                                                <label className="text-[10px] font-black text-slate-600">المهندس الاستشاري</label>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShowConsultantEngineer(false);
+                                                        setConsultantEngineer('');
+                                                    }}
+                                                    className="!min-h-0 text-red-500 hover:text-red-700 text-xs font-black leading-none px-1 py-0.5 flex items-center justify-center transition"
+                                                    title="حذف خانة المهندس الاستشاري"
+                                                >
+                                                    <i className="fa-solid fa-minus text-[10px]"></i>
+                                                </button>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                value={consultantEngineer}
+                                                onChange={(e) => setConsultantEngineer(e.target.value)}
+                                                placeholder="اسم المهندس الاستشاري"
+                                                className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10.5px] font-bold text-slate-900"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+
+                                {(!showContractorEngineer || !showConsultantEngineer) && (
+                                    <div className="flex flex-wrap items-center gap-3 pt-1 text-[10px]">
+                                        {!showContractorEngineer && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowContractorEngineer(true)}
+                                                className="!min-h-0 py-0.5 text-slate-600 hover:text-emerald-700 font-bold flex items-center gap-1 transition"
+                                            >
+                                                <i className="fa-solid fa-plus text-[9.5px] text-emerald-600"></i>
+                                                <span>مهندس المقاول</span>
+                                            </button>
+                                        )}
+                                        {!showConsultantEngineer && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowConsultantEngineer(true)}
+                                                className="!min-h-0 py-0.5 text-slate-600 hover:text-emerald-700 font-bold flex items-center gap-1 transition"
+                                            >
+                                                <i className="fa-solid fa-plus text-[9.5px] text-emerald-600"></i>
+                                                <span>المهندس الاستشاري</span>
+                                            </button>
+                                        )}
                                     </div>
-                                    <div>
-                                        <label className="block text-[11px] font-black text-slate-600 mb-0.5">المهندس الاستشاري المشرف</label>
-                                        <input
-                                            type="text"
-                                            value={consultantEngineer}
-                                            onChange={(e) => setConsultantEngineer(e.target.value)}
-                                            placeholder="اسم المهندس الاستشاري"
-                                            className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10.5px] font-bold text-slate-900"
-                                        />
+                                )}
+
+                                {/* Extra Custom Signers / Engineers Row (Always Visible) */}
+                                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[10px] font-black text-emerald-800 flex items-center gap-1">
+                                            <i className="fa-solid fa-signature text-[9.5px]"></i>
+                                            <span>
+                                                توقيعات ومهندسون إضافيون{extraSigners.length > 0 ? ` (${extraSigners.length})` : ''}
+                                            </span>
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddExtraSigner}
+                                            className="!min-h-0 text-emerald-600 hover:text-emerald-800 text-xs font-black leading-none px-1 py-0.5 flex items-center justify-center transition"
+                                            title="إضافة توقيع / مهندس جديد"
+                                        >
+                                            <i className="fa-solid fa-plus text-[11px]"></i>
+                                        </button>
                                     </div>
+                                    {extraSigners.length > 0 && (
+                                        <>
+                                            <datalist id="qc-signer-roles-list">
+                                                <option value="مهندس المالك" />
+                                                <option value="مدير المشروع" />
+                                                <option value="مهندس الكهرباء" />
+                                                <option value="مهندس الميكانيكا" />
+                                                <option value="مهندس المساحة" />
+                                                <option value="مهندس معماري" />
+                                                <option value="مهندس السلامة (HSE)" />
+                                                <option value="مراقب جودة الموقع" />
+                                            </datalist>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                                {extraSigners.map((signer, sIdx) => (
+                                                    <div key={signer.id || sIdx} className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
+                                                        <input
+                                                            type="text"
+                                                            list="qc-signer-roles-list"
+                                                            value={signer.role}
+                                                            onChange={(e) => {
+                                                                const val = e.target.value;
+                                                                setExtraSigners(prev => prev.map((it, i) => i === sIdx ? { ...it, role: val } : it));
+                                                            }}
+                                                            placeholder="الصفة (مثال: مهندس المالك)"
+                                                            className="w-1/2 p-1 rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-800 outline-none focus:border-emerald-500"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            value={signer.name}
+                                                            onChange={(e) => {
+                                                                const val = e.target.value;
+                                                                setExtraSigners(prev => prev.map((it, i) => i === sIdx ? { ...it, name: val } : it));
+                                                            }}
+                                                            placeholder="الاسم..."
+                                                            className="flex-1 min-w-0 p-1 rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-900 outline-none focus:border-emerald-500"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setExtraSigners(prev => prev.filter((_, i) => i !== sIdx))}
+                                                            className="!min-h-0 w-6 h-6 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center shrink-0 transition text-[10px]"
+                                                            title="حذف التوقيع"
+                                                        >
+                                                            <i className="fa-solid fa-times"></i>
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
 
                                 {/* Specialized Extra Inputs depending on QC Model Type */}
@@ -1011,6 +1200,51 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                                     className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10px] font-bold text-slate-900"
                                                 />
                                             </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {docType === 'MAR' && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pt-2 border-t border-slate-100">
+                                        <div>
+                                            <label className="block text-[10px] font-black text-cyan-800 mb-0.5">الشركة المصنعة / الماركة المقترحة</label>
+                                            <input
+                                                type="text"
+                                                value={docFields.manufacturer || ''}
+                                                onChange={(e) => updateDocField('manufacturer', e.target.value)}
+                                                placeholder="مثال: جوتن / سيكا / السويدي / كليوباترا..."
+                                                className="w-full p-1.5 rounded-xl bg-cyan-50/40 border border-cyan-200 text-[10px] font-bold text-slate-900"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-600 mb-0.5">بلد المنشأ / الوكيل المورد</label>
+                                            <input
+                                                type="text"
+                                                value={docFields.originSupplier || ''}
+                                                onChange={(e) => updateDocField('originSupplier', e.target.value)}
+                                                placeholder="مثال: مصري / ألماني - الوكيل المعتمد"
+                                                className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10px] font-bold text-slate-900"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-600 mb-0.5">رقم البند بالمقايسة / التقديم</label>
+                                            <input
+                                                type="text"
+                                                value={docFields.boqRef || ''}
+                                                onChange={(e) => updateDocField('boqRef', e.target.value)}
+                                                placeholder="مثال: بند رقم 4.2 أعمال العزل"
+                                                className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10px] font-bold text-slate-900"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-600 mb-0.5">المرفقات الفنية والمراجعة</label>
+                                            <input
+                                                type="text"
+                                                value={docFields.submittalRev || ''}
+                                                onChange={(e) => updateDocField('submittalRev', e.target.value)}
+                                                placeholder="مثال: Rev.00 - كتالوجات + شهادات + عينة"
+                                                className="w-full p-1.5 rounded-xl bg-slate-50 border border-slate-300 text-[10px] font-bold text-slate-900"
+                                            />
                                         </div>
                                     </div>
                                 )}
@@ -1246,7 +1480,7 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                     <button
                                         type="button"
                                         onClick={() => setQcItems(prev => prev.map(i => ({ ...i, result: 'pass' })))}
-                                        className="px-2 py-0.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[9.5px] font-bold transition"
+                                        className="!min-h-0 !h-auto px-2 py-0.5 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[9px] leading-tight font-bold transition shrink-0"
                                     >
                                         تحديد الكل مطابق ✓
                                     </button>
@@ -1398,19 +1632,69 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
                                 />
 
                                 {photos.length > 0 && (
-                                    <div className="flex gap-2 overflow-x-auto py-1">
-                                        {photos.map((img, i) => (
-                                            <div key={i} className="relative w-14 h-14 rounded-xl overflow-hidden border border-slate-200 shrink-0">
-                                                <img src={img} alt="" className="w-full h-full object-cover" />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setPhotos(prev => prev.filter((_, idx) => idx !== i))}
-                                                    className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-600 text-white text-[8px] flex items-center justify-center"
-                                                >
-                                                    <i className="fa-solid fa-times"></i>
-                                                </button>
+                                    <div className="space-y-1.5 pt-1">
+                                        <div className="flex flex-wrap items-center justify-between gap-1.5 bg-slate-50 px-2 py-1 rounded-xl border border-slate-200">
+                                            <span className="text-[9.5px] font-bold text-slate-700 flex items-center gap-1">
+                                                <i className="fa-solid fa-table-cells text-emerald-600 text-[9px]"></i>
+                                                <span>{photos.length > 1 ? 'كتالوج الصور في التقرير والطباعة:' : 'مقاس الصورة في التقرير والطباعة:'}</span>
+                                            </span>
+                                            <div className="flex items-center gap-1">
+                                                {([1, 2, 3, 4] as const).map(cols => (
+                                                    <button
+                                                        key={cols}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setPhotosPerRow(cols);
+                                                            setHasManualPhotoCols(true);
+                                                        }}
+                                                        className={`px-2 py-0.5 rounded-lg text-[9.5px] font-bold border transition ${
+                                                            photosPerRow === cols
+                                                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                                                                : 'bg-white text-slate-700 border-slate-200 hover:bg-emerald-50'
+                                                        }`}
+                                                    >
+                                                        {cols === 1 ? '1 عمود' : `${cols} في الصف`}
+                                                    </button>
+                                                ))}
                                             </div>
-                                        ))}
+                                        </div>
+
+                                        <div
+                                            className={`grid gap-1.5 ${
+                                                photosPerRow === 4
+                                                    ? 'grid-cols-4'
+                                                    : photosPerRow === 3
+                                                        ? 'grid-cols-3'
+                                                        : photosPerRow === 2
+                                                            ? 'grid-cols-2'
+                                                            : 'grid-cols-1'
+                                            }`}
+                                        >
+                                            {photos.map((img, i) => (
+                                                <div
+                                                    key={i}
+                                                    className={`relative rounded-xl overflow-hidden border border-slate-200 bg-slate-100 ${
+                                                        photosPerRow === 4
+                                                            ? 'h-16 sm:h-20'
+                                                            : photosPerRow === 3
+                                                                ? 'h-20 sm:h-24'
+                                                                : photosPerRow === 2
+                                                                    ? 'h-24 sm:h-28'
+                                                                    : 'h-36 sm:h-44'
+                                                    }`}
+                                                >
+                                                    <img src={img} alt={`صورة ${i + 1}`} className="w-full h-full object-cover" />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPhotos(prev => prev.filter((_, idx) => idx !== i))}
+                                                        className="absolute top-1 right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[8px] flex items-center justify-center shadow"
+                                                        title="حذف الصورة"
+                                                    >
+                                                        <i className="fa-solid fa-times"></i>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
 

@@ -65,6 +65,8 @@ export interface PaymentItem {
   prevQuantity?: number;
   currQuantity?: number;
   totalQuantity?: number; // Cumulative
+  originalTotalQuantity?: number; // Preserved executed/original total qty before settlement capping
+  settlementMode?: 'none' | 'contract' | 'limit125' | 'splitOver125';
   
   // Financials
   unitPrice?: number;     // Matches BOQ
@@ -285,6 +287,12 @@ export interface ChecklistItem {
   result?: 'pass' | 'fail' | 'note' | 'na';
 }
 
+export interface QCSigner {
+  id?: string;
+  role: string;
+  name: string;
+}
+
 export interface Checklist {
   id: string;
   docType?: string; // 'IR' | 'MIR' | 'NCR' | 'SI' | 'MOM' | 'RFI' | 'SAM' | 'ITR' | 'CPP'
@@ -298,6 +306,10 @@ export interface Checklist {
   inspectorName?: string;
   contractorEngineer?: string;
   consultantEngineer?: string;
+  showContractorEngineer?: boolean;
+  showConsultantEngineer?: boolean;
+  extraSigners?: QCSigner[];
+  photosPerRow?: 1 | 2 | 3 | 4;
   generalNotes?: string;
   photos?: string[];
   date: string;

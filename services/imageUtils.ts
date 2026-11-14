@@ -57,6 +57,78 @@ export const imageUtils = {
     });
   },
 
+  generateImageThumbnail: async (file: File | Blob, maxDim: number = 260, quality: number = 0.7): Promise<string> => {
+    return new Promise((resolve) => {
+      try {
+        const img = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(objectUrl);
+          try {
+            const canvas = document.createElement('canvas');
+            let width = img.width || 240;
+            let height = img.height || 180;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            canvas.width = Math.max(width, 64);
+            canvas.height = Math.max(height, 64);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { resolve(''); return; }
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'medium';
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            let dataUrl = canvas.toDataURL('image/webp', quality);
+            if (!dataUrl || !dataUrl.startsWith('data:image/webp')) {
+              dataUrl = canvas.toDataURL('image/jpeg', quality);
+            }
+            resolve(dataUrl && dataUrl.length > 200 ? dataUrl : '');
+          } catch {
+            resolve('');
+          }
+        };
+        img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(''); };
+        img.src = objectUrl;
+      } catch {
+        resolve('');
+      }
+    });
+  },
+
+  generatePdfThumbnail: async (file: File | Blob, maxDim: number = 260, quality: number = 0.7): Promise<string> => {
+    try {
+      if (!getDocument) return '';
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await getDocument({ data: arrayBuffer }).promise;
+      if (!pdf || pdf.numPages < 1) return '';
+      const page = await pdf.getPage(1);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const targetScale = Math.min(0.9, maxDim / Math.max(baseViewport.width || 600, baseViewport.height || 800));
+      const viewport = page.getViewport({ scale: Math.max(targetScale, 0.25) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(Math.round(viewport.width), 80);
+      canvas.height = Math.max(Math.round(viewport.height), 100);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      let dataUrl = canvas.toDataURL('image/webp', quality);
+      if (!dataUrl || !dataUrl.startsWith('data:image/webp')) {
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+      }
+      return dataUrl && dataUrl.length > 200 ? dataUrl : '';
+    } catch {
+      return '';
+    }
+  },
+
   convertPdfToImages: async (file: File, onProgress?: (current: number, total: number) => void): Promise<File[]> => {
       return new Promise(async (resolve, reject) => {
           try {
@@ -501,10 +573,13 @@ export const imageUtils = {
                           }
                           const avgLum = totalLuminance / (sampleSize * sampleSize * 3);
 
-                          // If average luminance is > 8, or we tried 3 times, accept this frame
-                          if (avgLum > 8 || attempts >= 3 || video.currentTime >= 1.5) {
-                              const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
-                              if (dataUrl && dataUrl.length > 1000) {
+                          // If average luminance is > 6, or we tried 2 times, accept this frame immediately
+                          if (avgLum > 6 || attempts >= 2 || video.currentTime >= 1.0) {
+                              let dataUrl = canvas.toDataURL('image/webp', 0.72);
+                              if (!dataUrl || !dataUrl.startsWith('data:image/webp')) {
+                                  dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+                              }
+                              if (dataUrl && dataUrl.length > 600) {
                                   cleanup();
                                   resolve(dataUrl);
                                   return;
@@ -512,7 +587,7 @@ export const imageUtils = {
                           }
                           // Frame is solid black, seek forward or play briefly
                           attempts++;
-                          const nextTime = Math.min((video.duration || 3) * 0.25, 0.3 + attempts * 0.4);
+                          const nextTime = Math.min((video.duration || 3) * 0.2, 0.25 + attempts * 0.35);
                           try { video.currentTime = nextTime; } catch (e) {}
                       }
                   } catch (e) {}
@@ -520,8 +595,8 @@ export const imageUtils = {
 
               video.onloadedmetadata = () => {
                   const targetTime = (video.duration && Number.isFinite(video.duration) && video.duration > 1) 
-                      ? Math.min(0.8, video.duration / 3) 
-                      : 0.2;
+                      ? Math.min(0.6, video.duration / 4) 
+                      : 0.15;
                   try { video.currentTime = targetTime; } catch(e) {}
                   // On mobile browsers, briefly playing muted forces hardware frame decoding
                   video.play().then(() => {
@@ -530,7 +605,7 @@ export const imageUtils = {
                               try { video.pause(); } catch(e) {}
                               tryCaptureFrame();
                           }
-                      }, 120);
+                      }, 80);
                   }).catch(() => {});
               };
 
@@ -540,7 +615,7 @@ export const imageUtils = {
 
               video.onloadeddata = () => {
                   if (video.currentTime === 0) {
-                      try { video.currentTime = 0.3; } catch(e) { tryCaptureFrame(); }
+                      try { video.currentTime = 0.2; } catch(e) { tryCaptureFrame(); }
                   } else {
                       tryCaptureFrame();
                   }
@@ -551,14 +626,14 @@ export const imageUtils = {
                   resolve('');
               };
 
-              // Safety timeout: 3500ms
+              // Safety timeout: 2200ms
               setTimeout(() => {
                   if (!isCleanedUp) {
                       tryCaptureFrame();
                       cleanup();
                       resolve('');
                   }
-              }, 3500);
+              }, 2200);
           } catch(e) {
               resolve('');
           }

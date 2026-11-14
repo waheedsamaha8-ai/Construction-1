@@ -84,22 +84,22 @@ const ProjectMarker: React.FC<{
             eventHandlers={eventHandlers}
             autoPanOnFocus={false} // Stability fix
         >
-            <Popup>
-                <div className="flex flex-col gap-2 p-1 font-sans text-right" dir="rtl">
-                    <div className="flex items-center justify-between border-b pb-2 mb-1" style={{borderColor: '#e2e8f0'}}>
-                        <h3 className="font-bold text-sm text-slate-800 m-0">{project.name}</h3>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{background: config.color}}>
+            <Popup closeButton={false}>
+                <div className="flex flex-col gap-2 p-3 font-sans text-right" dir="rtl">
+                    <div className="flex items-center justify-between gap-2 border-b pb-2 mb-1" style={{borderColor: '#e2e8f0'}}>
+                        <h3 className="font-bold text-sm text-slate-800 m-0 leading-snug">{project.name}</h3>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white shrink-0" style={{background: config.color}}>
                             {project.status}
                         </span>
                     </div>
                     
                     <div className="flex items-center gap-2 text-xs text-slate-600">
-                        <i className="fa-solid fa-location-dot text-slate-400"></i>
+                        <i className="fa-solid fa-location-dot text-slate-400 shrink-0"></i>
                         <span>{project.location || 'غير محدد'}</span>
                     </div>
                     
                     <div className="flex items-center gap-2 text-xs text-slate-600">
-                        <i className="fa-solid fa-hard-hat text-slate-400"></i>
+                        <i className="fa-solid fa-hard-hat text-slate-400 shrink-0"></i>
                         <span>{project.contractor || '---'}</span>
                     </div>
 
@@ -117,7 +117,7 @@ const ProjectMarker: React.FC<{
 
                     <button 
                         onClick={() => onProjectClick(project.id)}
-                        className="mt-2 w-full py-2 rounded-lg text-white font-bold text-xs shadow-md transition hover:opacity-90 flex items-center justify-center gap-2"
+                        className="mt-1 w-full py-2.5 rounded-lg text-white font-bold text-xs shadow-md transition hover:opacity-90 flex items-center justify-center gap-2"
                         style={{background: '#0f172a'}}
                     >
                         <i className="fa-solid fa-folder-open"></i> فتح المشروع

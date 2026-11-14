@@ -34,15 +34,29 @@ const CategoryCard: React.FC<{ item: FileItem, onClick: () => void, onRename: ()
 const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
     const [showMenu, setShowMenu] = useState(false); const menuRef = useRef<HTMLDivElement>(null); const btnRef = useRef<HTMLButtonElement>(null); const isFolder = item.type === ItemType.FOLDER;
     useEffect(() => { const handleClickOutside = (event: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(event.target as Node) && btnRef.current && !btnRef.current.contains(event.target as Node)) { setShowMenu(false); } }; if (showMenu) document.addEventListener('mousedown', handleClickOutside); return () => document.removeEventListener('mousedown', handleClickOutside); }, [showMenu]);
-    const getIcon = () => { if (isFolder) return { icon: 'fa-folder', color: 'text-yellow-500', bg: 'bg-yellow-50 border-yellow-100' }; const mime = (item.mimeType || '').toLowerCase(); const name = item.name.toLowerCase(); if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; } if (mime.startsWith('image/')) return { icon: 'fa-image', color: 'text-purple-500', bg: 'bg-purple-50 border-purple-100' }; if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50 border-red-100' }; if (mime.includes('spreadsheet') || mime.includes('excel') || name.endsWith('.xlsx')) return { icon: 'fa-file-excel', color: 'text-green-500', bg: 'bg-green-50 border-green-100' }; if (mime.includes('word') || name.endsWith('.docx')) return { icon: 'fa-file-word', color: 'text-blue-500', bg: 'bg-blue-50 border-blue-100' }; if (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi')) return { icon: 'fa-video', color: 'text-rose-500', bg: 'bg-rose-50 border-rose-100' }; return { icon: 'fa-file', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-100' }; };
+    const getIcon = () => {
+        if (isFolder) return { icon: 'fa-folder', color: 'text-amber-600', bg: 'bg-gradient-to-br from-amber-100 via-yellow-200 to-amber-300 border-amber-400 shadow-sm' };
+        const mime = (item.mimeType || '').toLowerCase();
+        const name = item.name.toLowerCase();
+        if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; }
+        if (mime.startsWith('image/')) return { icon: 'fa-image', color: 'text-purple-500', bg: 'bg-purple-50 border-purple-100' };
+        if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50 border-red-100' };
+        if (mime.includes('spreadsheet') || mime.includes('excel') || name.endsWith('.xlsx')) return { icon: 'fa-file-excel', color: 'text-green-500', bg: 'bg-green-50 border-green-100' };
+        if (mime.includes('word') || name.endsWith('.docx')) return { icon: 'fa-file-word', color: 'text-blue-500', bg: 'bg-blue-50 border-blue-100' };
+        if (mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi')) return { icon: 'fa-video', color: 'text-rose-500', bg: 'bg-rose-50 border-rose-100' };
+        return { icon: 'fa-file', color: 'text-slate-400', bg: 'bg-slate-50 border-slate-100' };
+    };
     const style = getIcon();
     const mime = (item.mimeType || '').toLowerCase();
     const name = item.name.toLowerCase();
     const isVideoItem = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.mov') || name.endsWith('.avi');
 
     return ( 
-        <div onClick={onClick} className={`bg-white rounded-3xl p-4 shadow-sm border border-slate-100 flex flex-col items-center gap-3 hover:shadow-lg hover:-translate-y-1 transition-all cursor-pointer group relative overflow-visible h-full ${showMenu ? 'z-[100]' : 'z-0'}`}> 
-            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-inner border ${style.bg} relative overflow-hidden shrink-0`}>
+        <div
+            onClick={onClick}
+            className={`aspect-square bg-white rounded-2xl p-2 sm:p-3 shadow-sm border border-slate-100 flex flex-col items-center justify-between hover:shadow-lg hover:border-blue-200 hover:-translate-y-0.5 transition-all cursor-pointer group relative overflow-visible ${showMenu ? 'z-[100]' : 'z-0'}`}
+        > 
+            <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center text-xl sm:text-2xl border ${style.bg} relative overflow-hidden shrink-0`}>
                 {isVideoItem ? (
                     <VideoThumbnail item={item} className="w-full h-full" />
                 ) : (item.previewUrl || item.thumbnailLink || (mime.startsWith('image/') && !item.id.startsWith('temp_') && !item.id.startsWith('file_'))) ? (
@@ -51,18 +65,24 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
                     <i className={`fa-solid ${style.icon} ${style.color} drop-shadow-sm`}></i>
                 )}
             </div> 
-            <div className="w-full text-center flex-1 flex flex-col">
-                <h3 className="font-semibold text-slate-800 text-[10px] sm:text-xs truncate w-full mb-1" title={item.name}>{item.name}</h3>
-                <span className="text-[9px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full mx-auto border border-slate-100 mb-2">{new Date(item.createdTime).toLocaleDateString('ar-EG')}</span>
-                {isFolder && (
-                    <div className="mt-auto w-full grid grid-cols-2 gap-1.5 pt-2 border-t border-slate-50">
-                        <div className="flex flex-col items-center bg-blue-50/50 rounded-lg py-1 border border-blue-100"><span className="text-[10px] font-bold text-blue-700">{item.fileCount || 0}</span><span className="text-[8px] text-blue-400">ملف</span></div>
-                        <div className="flex flex-col items-center bg-yellow-50/50 rounded-lg py-1 border border-yellow-100"><span className="text-[10px] font-bold text-yellow-700">{item.folderCount || 0}</span><span className="text-[8px] text-yellow-500">مجلد</span></div>
-                    </div>
-                )}
-            </div> 
-            <div className="absolute top-2 right-2">
-                <button ref={btnRef} onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className={`w-7 h-7 rounded-full flex items-center justify-center transition border border-slate-100 ${showMenu ? 'bg-blue-50 text-blue-600 opacity-100' : 'bg-white text-slate-400 opacity-0 group-hover:opacity-100 hover:text-blue-600 shadow-sm'}`}><i className="fa-solid fa-ellipsis-vertical text-[10px]"></i></button>
+            <div className="w-full text-center flex flex-col items-center min-w-0">
+                <h3 className="font-bold text-slate-800 text-[10px] sm:text-xs truncate w-full leading-tight group-hover:text-blue-700 transition-colors" title={item.name}>{item.name}</h3>
+                <span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-1.5 py-0.5 rounded mt-1 leading-none">
+                    {new Date(item.createdTime).toLocaleDateString('ar-EG')}
+                </span>
+            </div>
+            {isFolder && (
+                <div className="flex items-center justify-center gap-1.5 shrink-0">
+                    <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد الملفات">
+                        <i className="fa-solid fa-file text-slate-400 text-[9px]"></i> {item.fileCount || 0}
+                    </span>
+                    <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد المجلدات الفرعية">
+                        <i className="fa-solid fa-folder text-slate-400 text-[9px]"></i> {item.folderCount || 0}
+                    </span>
+                </div>
+            )}
+            <div className="absolute top-1.5 right-1.5">
+                <button ref={btnRef} onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className={`w-6 h-6 sm:w-7 sm:h-7 !min-h-0 rounded-full flex items-center justify-center transition border border-slate-100 ${showMenu ? 'bg-blue-50 text-blue-600 opacity-100' : 'bg-white/90 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-blue-600 shadow-sm'}`}><i className="fa-solid fa-ellipsis-vertical text-[10px]"></i></button>
                 {showMenu && (
                     <div ref={menuRef} className="absolute right-0 top-full mt-1 w-36 bg-white rounded-xl shadow-xl border border-slate-100 z-50 overflow-hidden animate-scale-in origin-top-right">
                         <button onClick={(e)=>{e.stopPropagation();setShowMenu(false);onShare()}} className="w-full text-right px-3 py-2.5 text-[10px] font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 border-b"><i className="fa-solid fa-share-nodes text-indigo-500 w-4"></i> مشاركة</button>
@@ -409,7 +429,23 @@ export default function ProjectFolder() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [sortConfig, setSortConfig] = useState<{ key: 'name' | 'date'; direction: 'asc' | 'desc' }>({ key: 'date', direction: 'desc' });
-  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+      try {
+          const saved = localStorage.getItem('construction_pro_folder_view_mode');
+          return saved === 'grid' || saved === 'list' ? saved : 'list';
+      } catch {
+          return 'list';
+      }
+  });
+  const handleToggleViewMode = () => {
+      setViewMode(prev => {
+          const next = prev === 'list' ? 'grid' : 'list';
+          try {
+              localStorage.setItem('construction_pro_folder_view_mode', next);
+          } catch {}
+          return next;
+      });
+  };
   const [previewItem, setPreviewItem] = useState<FileItem | null>(null);
   const [showAI, setShowAI] = useState(false);
   const [selectedArchiveItem, setSelectedArchiveItem] = useState<FileItem | null>(null);
@@ -987,7 +1023,7 @@ export default function ProjectFolder() {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setViewMode(viewMode === 'list' ? 'grid' : 'list');
+                handleToggleViewMode();
               }}
               className="w-8 h-8 rounded-full bg-white text-slate-700 border border-slate-200 flex items-center justify-center shadow-sm"
             >
@@ -1027,8 +1063,8 @@ export default function ProjectFolder() {
             </div>
         </div> 
       )}
-      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'grid' && isMediaFolder ? 'grid grid-cols-3 gap-1 md:gap-2' : (viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-2 md:grid-cols-4 gap-3')}> {sortedItems.map(item => {
-          if (viewMode === 'grid' && isMediaFolder && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
+      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map(item => {
+          if (viewMode === 'grid' && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
               const mime = (item.mimeType || '').toLowerCase();
               const name = item.name.toLowerCase();
               const isVideoItem = mime.startsWith('video/') || name.endsWith('.webm') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');

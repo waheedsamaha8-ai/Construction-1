@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { FileItem, ItemType } from '../types';
 import VideoThumbnail from './VideoThumbnail';
+import MediaThumbnail from './MediaThumbnail';
 
 interface FileItemRowProps {
   item: FileItem;
@@ -62,7 +63,7 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
   };
 
   const getIconConfig = () => {
-    if (isFolder) return { icon: 'fa-folder', color: 'text-yellow-500', bg: 'bg-yellow-50' };
+    if (isFolder) return { icon: 'fa-folder', color: 'text-amber-600 drop-shadow-sm', bg: 'bg-gradient-to-br from-amber-100 via-yellow-200 to-amber-300 border border-amber-400 shadow-sm' };
 
     // AutoCAD Special Icon
     if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) {
@@ -74,13 +75,13 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
 
     // Images
     if (mime.startsWith('image/')) {
-        const imgUrl = item.previewUrl || item.thumbnailLink || (!item.id.startsWith('temp_') && !item.id.startsWith('file_') ? `https://drive.google.com/thumbnail?id=${item.id}&sz=w200` : '');
-        if (imgUrl) return { type: 'image', url: imgUrl };
-        return { icon: 'fa-file-image', color: 'text-purple-600', bg: 'bg-purple-50' };
+        return { type: 'image' };
     }
 
-    // Documents
-    if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50' };
+    // Documents (PDF with fast cached/synced thumbnail)
+    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+        return { type: 'pdf', icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50' };
+    }
     if (mime.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) return { icon: 'fa-file-word', color: 'text-blue-600', bg: 'bg-blue-50' };
     if (mime.includes('excel') || mime.includes('sheet') || mime.includes('csv') || name.endsWith('.xls')) return { icon: 'fa-file-excel', color: 'text-green-600', bg: 'bg-green-50' };
     if (mime.includes('powerpoint') || mime.includes('presentation') || name.endsWith('.ppt') || name.endsWith('.pptx')) return { icon: 'fa-file-powerpoint', color: 'text-orange-600', bg: 'bg-orange-50' };
@@ -107,9 +108,11 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
       onClick={onClick}
       className={`group bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer mb-2 relative overflow-visible ${showMenu ? 'z-50' : 'z-10'}`}
     >
-      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type !== 'image' && config.type !== 'video' ? config.bg : 'bg-slate-900'}`}>
+      <div className={`w-12 h-12 flex items-center justify-center rounded-xl shrink-0 overflow-hidden relative ${config.type === 'image' || config.type === 'video' ? 'bg-slate-900' : config.bg}`}>
         {config.type === 'image' ? (
-             <img src={config.url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+             <MediaThumbnail item={item} className="w-full h-full" fallbackIcon="fa-file-image text-2xl" fallbackColor="text-purple-600" fallbackBg="bg-purple-50" />
+        ) : config.type === 'pdf' ? (
+             <MediaThumbnail item={item} className="w-full h-full" fallbackIcon="fa-file-pdf text-2xl" fallbackColor="text-red-500" fallbackBg="bg-red-50" allowHeavyFallback={false} />
         ) : config.type === 'video' ? (
              <VideoThumbnail item={item} className="w-full h-full" />
         ) : (
@@ -135,11 +138,11 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
             {/* Folder Counters */}
             {isFolder && (
                 <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد الملفات">
-                        <i className="fa-solid fa-file text-slate-400 text-[9px]"></i> {item.fileCount || 0}
+                    <span className="text-[10px] text-slate-600 font-bold tabular-nums min-w-[2.4rem] justify-center bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد الملفات">
+                        <i className="fa-solid fa-file text-slate-400 text-[9px]"></i> {item.fileCount ?? 0}
                     </span>
-                    <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد المجلدات الفرعية">
-                        <i className="fa-solid fa-folder text-slate-400 text-[9px]"></i> {item.folderCount || 0}
+                    <span className="text-[10px] text-slate-600 font-bold tabular-nums min-w-[2.4rem] justify-center bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="عدد المجلدات الفرعية">
+                        <i className="fa-solid fa-folder text-slate-400 text-[9px]"></i> {item.folderCount ?? 0}
                     </span>
                 </div>
             )}

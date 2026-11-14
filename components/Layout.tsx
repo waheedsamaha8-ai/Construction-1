@@ -54,7 +54,12 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
 
   useEffect(() => {
       updateKeyStatus();
-      const handleStatus = () => setIsOnline(navigator.onLine);
+      const handleStatus = () => {
+          setIsOnline(navigator.onLine);
+          if (navigator.onLine) {
+              api.sync.processQueue().catch(() => {});
+          }
+      };
       window.addEventListener('online', handleStatus);
       window.addEventListener('offline', handleStatus);
       
@@ -66,8 +71,19 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
           const count = await api.sync.getPendingCount();
           setPendingSyncs(count);
       };
+
+      const handleAppSyncEvent = (e: Event) => {
+          const detail = (e as CustomEvent).detail;
+          if (detail?.type === 'SYNC_QUEUE_UPDATED') {
+              api.sync.getPendingCount().then(setPendingSyncs).catch(() => {});
+              if (navigator.onLine) {
+                  api.sync.processQueue().catch(() => {});
+              }
+          }
+      };
+      window.addEventListener('app_sync_event', handleAppSyncEvent);
       
-      const interval = setInterval(checkQueue, 2000); // Poll every 2s
+      const interval = setInterval(checkQueue, 6000); // Fallback safety check
       checkQueue();
 
       // Check Fullscreen state strictly
@@ -97,6 +113,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       return () => {
           window.removeEventListener('online', handleStatus);
           window.removeEventListener('offline', handleStatus);
+          window.removeEventListener('app_sync_event', handleAppSyncEvent);
           window.removeEventListener('open_gemini_key_modal', handleOpenKeyModal);
           window.removeEventListener('gemini_keys_updated', updateKeyStatus);
           document.removeEventListener('fullscreenchange', checkFullScreen);

@@ -13,7 +13,7 @@ import ProfessionalPricingModal from '../components/ProfessionalPricingModal';
 import InstantExpert from '../components/InstantExpert'; // IMPORT NEW COMPONENT
 import InteractiveReportViewer from '../components/InteractiveReportViewer';
 import { api } from '../services/api';
-import { aiHelper } from '../services/aiHelper';
+import { aiHelper, StoredAiTip } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { Project, ProjectStatus, FileItem, ProjectLog } from '../types';
 import { ENGINEERING_TIPS_DB, getCategoryLabel, getArchiveSectionForCategory } from '../services/tipsData';
@@ -44,21 +44,47 @@ const SkeletonCard = () => (
     </div>
 );
 
-const getRandomUniqueTip = (availableTips: Record<string, string[]>) => {
-    const keys = Object.keys(availableTips);
-    if (keys.length === 0) return { tip: "مرحباً بك في مدير المشروعات", category: "عام", key: "general" };
+const getRandomUniqueTip = (
+    availableTips: Record<string, string[]>,
+    aiTips: StoredAiTip[] = [],
+    excludeTipText?: string
+): { tip: string; category: string; key: string; isAiGenerated: boolean } => {
+    const staticPool: { tip: string; category: string; key: string; isAiGenerated: boolean }[] = [];
+    for (const k of Object.keys(availableTips)) {
+        const catLabel = getCategoryLabel(k);
+        for (const t of availableTips[k] || []) {
+            staticPool.push({ tip: t, category: catLabel, key: k, isAiGenerated: false });
+        }
+    }
 
-    const randomKey = keys[Math.floor(Math.random() * keys.length)];
-    const tipsList = availableTips[randomKey];
-    const randomTip = tipsList[Math.floor(Math.random() * tipsList.length)];
-    
-    return { tip: randomTip, category: getCategoryLabel(randomKey), key: randomKey };
+    const aiPool = (aiTips || []).map((item) => ({
+        tip: item.tip,
+        category: item.category || getCategoryLabel(item.key),
+        key: item.key,
+        isAiGenerated: true,
+    }));
+
+    const filteredAi = excludeTipText && aiPool.length > 1 ? aiPool.filter(x => x.tip !== excludeTipText) : aiPool;
+    const filteredStatic = excludeTipText && staticPool.length > 1 ? staticPool.filter(x => x.tip !== excludeTipText) : staticPool;
+
+    if (filteredAi.length > 0 && (filteredStatic.length === 0 || Math.random() < 0.4)) {
+        return filteredAi[Math.floor(Math.random() * filteredAi.length)];
+    }
+
+    if (filteredStatic.length > 0) {
+        return filteredStatic[Math.floor(Math.random() * filteredStatic.length)];
+    }
+
+    return { tip: "مرحباً بك في مدير المشروعات", category: "عام", key: "general", isAiGenerated: false };
 };
 
 const Dashboard: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => api.isAuthenticated());
   const [projects, setProjects] = useState<Project[]>(() => api.getSyncProjects());
-  const [currentTip, setCurrentTip] = useState(() => getRandomUniqueTip(ENGINEERING_TIPS_DB));
+  const [aiTipsPool, setAiTipsPool] = useState<StoredAiTip[]>(() => aiHelper.getStoredAiTips());
+  const [currentTip] = useState(() => getRandomUniqueTip(ENGINEERING_TIPS_DB, aiHelper.getStoredAiTips()));
+  const hasUserSwitchedTipRef = React.useRef(false);
+  const hasCloudDataRef = React.useRef(false);
   
   const [loading, setLoading] = useState(() => {
       const hasData = api.getSyncProjects().length > 0;
@@ -80,6 +106,7 @@ const Dashboard: React.FC = () => {
   const [tipOfTheDay, setTipOfTheDay] = useState(currentTip.tip);
   const [tipCategory, setTipCategory] = useState(currentTip.category);
   const [tipKey, setTipKey] = useState(currentTip.key);
+  const [isTipAiGenerated, setIsTipAiGenerated] = useState(Boolean(currentTip.isAiGenerated));
 
   const [isExplainModalOpen, setIsExplainModalOpen] = useState(false);
   const [explainContent, setExplainContent] = useState<string>('');
@@ -122,16 +149,21 @@ const Dashboard: React.FC = () => {
 
   const fetchData = async () => {
     try {
-        const localData = await api.getLocalProjects();
-        setProjects(localData);
-        setLoading(false); 
+        if (!hasCloudDataRef.current) {
+            const localData = await api.getLocalProjects();
+            if (!hasCloudDataRef.current && Array.isArray(localData) && (localData.length > 0 || !navigator.onLine)) {
+                setProjects(localData);
+                setLoading(false);
+            }
+        }
     } catch(e) { 
         setLoading(false); 
     }
 
     try {
       const projectsData = await api.getProjects();
-      if (projectsData && projectsData.length > 0) {
+      if (Array.isArray(projectsData)) {
+          hasCloudDataRef.current = true;
           setProjects(projectsData);
       }
     } catch (error) { 
@@ -160,7 +192,8 @@ const Dashboard: React.FC = () => {
           if (isAuth) { 
               // 1. Subscribe to instant real-time synchronization across all tabs and devices
               unsubProjects = api.subscribeToProjectsList((updatedProjects) => {
-                  if (updatedProjects && updatedProjects.length > 0) {
+                  if (Array.isArray(updatedProjects)) {
+                      hasCloudDataRef.current = true;
                       setProjects(updatedProjects);
                       setLoading(false);
                   }
@@ -174,12 +207,33 @@ const Dashboard: React.FC = () => {
 
       checkAuth();
 
+      // Periodic quota-safe AI engineering tip sync & generation (once every 3 days)
+      const periodicTipTimer = setTimeout(() => {
+          aiHelper.syncAndEnsurePeriodicAiTip()
+              .then(({ tips, newTip }) => {
+                  if (Array.isArray(tips)) {
+                      setAiTipsPool(tips);
+                  }
+                  if (newTip && !hasUserSwitchedTipRef.current) {
+                      setTipOfTheDay(newTip.tip);
+                      setTipCategory(newTip.category);
+                      setTipKey(newTip.key);
+                      setIsTipAiGenerated(true);
+                      const localMap = getSavedTipsMap();
+                      setIsTipSaved(Boolean(localMap[newTip.tip]));
+                      setSavedTipFile(null);
+                  }
+              })
+              .catch(() => {});
+      }, 1500);
+
       // Guaranteed safety timeout to remove skeleton cards after 600ms max
       const safetyTimer = setTimeout(() => {
           setLoading(false);
       }, 600);
 
       return () => {
+          clearTimeout(periodicTipTimer);
           clearTimeout(safetyTimer);
           if (unsubProjects) unsubProjects();
       };
@@ -351,6 +405,7 @@ const Dashboard: React.FC = () => {
   }, [checkTipStatus]);
 
   const handleExplainTip = async () => { 
+      hasUserSwitchedTipRef.current = true;
       setIsExplainModalOpen(true); 
       setIsDirectEditingTip(false);
       const localMap = getSavedTipsMap();
@@ -439,20 +494,23 @@ const Dashboard: React.FC = () => {
   };
   
   const handleGenerateFreshTip = async () => { 
+      hasUserSwitchedTipRef.current = true;
       setIsGeneratingFreshTip(true); 
       try { 
-          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
+          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB, aiTipsPool, tipOfTheDay); 
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 
           setTipKey(selected.key);
+          setIsTipAiGenerated(Boolean(selected.isAiGenerated));
           const localMap = getSavedTipsMap();
           setIsTipSaved(Boolean(localMap[selected.tip]));
           setSavedTipFile(null);
       } catch(e) { 
-          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB); 
+          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB, aiTipsPool, tipOfTheDay); 
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 
           setTipKey(selected.key);
+          setIsTipAiGenerated(Boolean(selected.isAiGenerated));
       } finally { 
           setIsGeneratingFreshTip(false); 
       } 
@@ -722,11 +780,17 @@ const Dashboard: React.FC = () => {
                              : 'bg-gradient-to-br from-indigo-600 to-purple-700'
                      }`}>
                          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
-                         <div className="flex justify-between items-start mb-3 relative z-10">
-                             <h3 className="font-bold text-sm flex items-center gap-2">
+                         <div className="flex justify-between items-start gap-2 mb-3 relative z-10">
+                             <h3 className="font-bold text-sm flex items-center gap-2 shrink-0">
                                  <i className="fa-solid fa-lightbulb text-yellow-300"></i> معلومة هندسية
+                                 {isTipAiGenerated && (
+                                     <span className="text-[10px] font-bold text-amber-200 flex items-center gap-1" title="معلومة مولدة تلقائياً بالذكاء الاصطناعي">
+                                         <i className="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
+                                         <span>AI</span>
+                                     </span>
+                                 )}
                              </h3>
-                             <span className="bg-white/20 text-[10px] px-2 py-0.5 rounded-full">{tipCategory}</span>
+                             <span className="bg-white/20 text-[10px] px-2 py-0.5 rounded-full truncate">{tipCategory}</span>
                          </div>
                          <p className="text-xs font-medium leading-relaxed mb-4 min-h-[50px] opacity-90 relative z-10">{tipOfTheDay}</p>
                          <div className="flex gap-2 relative z-10">

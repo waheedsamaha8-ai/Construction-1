@@ -703,6 +703,24 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                     font-weight: 700 !important;
                     line-height: 1.3 !important;
                 }
+                .interactive-report-body table.qc-signatures-table,
+                .interactive-report-body table.qc-photos-table {
+                    width: 100% !important;
+                    min-width: 100% !important;
+                    table-layout: fixed !important;
+                }
+                .interactive-report-body table.qc-signatures-table tr td,
+                .interactive-report-body table.qc-photos-table tr td {
+                    background-color: #ffffff !important;
+                    text-align: center !important;
+                }
+                .interactive-report-body table.qc-photos-table img {
+                    max-width: 100% !important;
+                    width: 100% !important;
+                    object-fit: cover !important;
+                    display: block !important;
+                    margin: 0 auto !important;
+                }
                 /* Unified, clean executive headings across all reports */
                 .interactive-report-body h1 {
                     color: #1e3a8a !important;

@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
 import { printService } from '../services/printService';
 import { REPORT_CSS, ReportGenerator } from '../services/reportGenerator';
+import { imageUtils } from '../services/imageUtils';
 
 // Default Content (Body Only) - General Official Letter Format
 const DEFAULT_BODY_CONTENT = `
@@ -61,6 +62,7 @@ const LetterEditor: React.FC = () => {
   const metaRefRef = useRef<HTMLSpanElement>(null);
   const footerElRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const catalogAddInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const boxImageInputRef = useRef<HTMLInputElement>(null); 
   const colorInputRef = useRef<HTMLInputElement>(null); 
@@ -263,6 +265,10 @@ const LetterEditor: React.FC = () => {
 
   const [showTableTools, setShowTableTools] = useState(false);
   const [showImageTools, setShowImageTools] = useState(false);
+  const [showCatalogTools, setShowCatalogTools] = useState(false);
+  const [catalogCols, setCatalogCols] = useState<1 | 2 | 3 | 4>(2);
+  const [catalogHeight, setCatalogHeight] = useState<number>(195);
+  const [catalogAspect, setCatalogAspect] = useState<'landscape' | 'square' | 'wide'>('landscape');
   const [showBoxTools, setShowBoxTools] = useState(false);
   const [showQuoteTools, setShowQuoteTools] = useState(false); 
   const [showSpacingTools, setShowSpacingTools] = useState(false); 
@@ -285,6 +291,8 @@ const LetterEditor: React.FC = () => {
       columns: { index: number; title: string; widthPercent: number }[];
   } | null>(null);
   const activeTableRef = useRef<HTMLTableElement | null>(null);
+  const activeCatalogTableRef = useRef<HTMLTableElement | null>(null);
+  const activeCatalogImgRef = useRef<HTMLImageElement | null>(null);
 
   const A4_WIDTH_PX = 794; 
 
@@ -493,21 +501,30 @@ const LetterEditor: React.FC = () => {
       if (box) { 
           setActiveElement(box); 
           box.classList.add('active-editing-element');
-          setShowBoxTools(true); setShowTableTools(false); setShowImageTools(false); setShowQuoteTools(false); e.stopPropagation(); return; 
+          setShowBoxTools(true); setShowTableTools(false); setShowImageTools(false); setShowCatalogTools(false); setShowQuoteTools(false); e.stopPropagation(); return; 
       }
       
       const quote = target.closest('.editable-quote') as HTMLElement || target.closest('blockquote') as HTMLElement;
       if (quote) { 
           setActiveElement(quote); 
           quote.classList.add('active-editing-element');
-          setShowQuoteTools(true); setShowBoxTools(false); setShowTableTools(false); setShowImageTools(false); e.stopPropagation(); return; 
+          setShowQuoteTools(true); setShowBoxTools(false); setShowTableTools(false); setShowImageTools(false); setShowCatalogTools(false); e.stopPropagation(); return; 
       }
       
       setShowBoxTools(false); setShowQuoteTools(false);
-      
+
+      const catalogTable = target.closest('table.qc-photos-table, table.photo-catalog-table') as HTMLTableElement | null;
+      if (catalogTable) {
+          const clickedImg = (target.tagName === 'IMG' ? target : target.closest('td')?.querySelector('img')) as HTMLImageElement | null;
+          catalogTable.classList.add('active-editing-element');
+          if (clickedImg) clickedImg.classList.add('active-editing-element');
+          syncCatalogToolbarFromTable(catalogTable, clickedImg);
+          return;
+      }
+
       if (target.tagName === 'IMG') { 
           setActiveElement(target);
-          setShowImageTools(true); setShowTableTools(false); 
+          setShowImageTools(true); setShowTableTools(false); setShowCatalogTools(false);
           target.classList.add('active-editing-element');
       } 
       else if (target.closest('table')) { 
@@ -515,7 +532,7 @@ const LetterEditor: React.FC = () => {
           setActiveElement(target);
           table.classList.add('active-editing-element');
           setShowTableTools(true); 
-          setShowImageTools(false); 
+          setShowImageTools(false); setShowCatalogTools(false);
           const row = target.closest('tr');
           if (row) {
               const h = row.style.height || '30px';
@@ -524,7 +541,7 @@ const LetterEditor: React.FC = () => {
       } 
       else {
           if (activeElement !== null) setActiveElement(null);
-          setShowTableTools(false); setShowImageTools(false);
+          setShowTableTools(false); setShowImageTools(false); setShowCatalogTools(false);
       }
   };
 
@@ -749,8 +766,319 @@ const LetterEditor: React.FC = () => {
   const deleteQuote = () => { if (activeElement) unwrapElement(activeElement); setShowQuoteTools(false); };
   const triggerBoxImageUpload = () => boxImageInputRef.current?.click();
   const handleBoxImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file && activeElement && activeElement.classList.contains('editable-box')) { const reader = new FileReader(); reader.onload = (event) => { if (event.target?.result) { const img = document.createElement('img'); img.src = event.target.result as string; img.style.maxWidth = '100%'; img.style.height = 'auto'; img.style.display = 'block'; img.style.margin = '5px auto'; activeElement.appendChild(img); } }; reader.readAsDataURL(file); } if (boxImageInputRef.current) boxImageInputRef.current.value = ''; };
+  // --- PHOTO CATALOG HELPERS (كتالوج الصور) ---
+  const CATALOG_BASE_HEIGHT: Record<'landscape' | 'square' | 'wide', Record<1 | 2 | 3 | 4, number>> = {
+      landscape: { 1: 290, 2: 195, 3: 145, 4: 115 },
+      square:    { 1: 340, 2: 260, 3: 195, 4: 150 },
+      wide:      { 1: 240, 2: 160, 3: 120, 4: 95 }
+  };
+
+  const fileToCompressedDataUrl = async (file: File): Promise<string> => {
+      try {
+          const compressed = await imageUtils.compressImage(file, 0.72, 1100);
+          return await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+              reader.onerror = () => resolve('');
+              reader.readAsDataURL(compressed || file);
+          });
+      } catch (_) {
+          return await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+              reader.onerror = () => resolve('');
+              reader.readAsDataURL(file);
+          });
+      }
+  };
+
+  const buildPhotoCatalogRowsHtml = (
+      entries: { src: string; caption?: string }[],
+      cols: 1 | 2 | 3 | 4,
+      heightPx: number
+  ): string => {
+      const colPercent = (100 / cols).toFixed(2);
+      const rows: string[] = [];
+      for (let i = 0; i < entries.length; i += cols) {
+          const chunk = entries.slice(i, i + cols);
+          const cells: string[] = [];
+          for (let c = 0; c < cols; c++) {
+              const entry = chunk[c];
+              if (entry) {
+                  const idx = i + c + 1;
+                  const cap = entry.caption || `صورة رقم (${idx})`;
+                  cells.push(`
+                      <td style="width: ${colPercent}%; padding: 5px !important; border: 1px solid #cbd5e1 !important; background-color: #ffffff !important; text-align: center !important; vertical-align: middle !important;">
+                          <img src="${entry.src}" alt="${cap}" style="width: 100% !important; height: ${heightPx}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;" />
+                          <div class="photo-catalog-caption" style="font-size: 9.5px !important; color: #475569 !important; font-weight: 800 !important; margin-top: 4px !important; text-align: center !important; line-height: 1.2 !important;">${cap}</div>
+                      </td>
+                  `);
+              } else {
+                  cells.push(`
+                      <td style="width: ${colPercent}%; padding: 5px !important; border: 1px solid #f1f5f9 !important; background-color: #ffffff !important;">&nbsp;</td>
+                  `);
+              }
+          }
+          rows.push(`<tr>${cells.join('')}</tr>`);
+      }
+      return rows.join('');
+  };
+
+  const extractCatalogEntriesFromTable = (table: HTMLTableElement): { src: string; caption?: string }[] => {
+      const entries: { src: string; caption?: string }[] = [];
+      const cells = Array.from(table.querySelectorAll('td'));
+      cells.forEach((cell) => {
+          const img = cell.querySelector('img') as HTMLImageElement | null;
+          if (!img || !img.src) return;
+          const capEl = cell.querySelector('.photo-catalog-caption, div') as HTMLElement | null;
+          const capText = capEl?.textContent?.trim();
+          entries.push({ src: img.src, caption: capText || undefined });
+      });
+      return entries;
+  };
+
+  const syncCatalogToolbarFromTable = (table: HTMLTableElement, clickedImg?: HTMLImageElement | null) => {
+      const firstRow = table.rows[0];
+      const detectedCols = Number(table.dataset.cols || (firstRow ? firstRow.cells.length : 2));
+      const safeCols: 1 | 2 | 3 | 4 = (detectedCols >= 1 && detectedCols <= 4 ? detectedCols : 2) as 1 | 2 | 3 | 4;
+      const rawAspect = table.dataset.aspect;
+      const safeAspect: 'landscape' | 'square' | 'wide' =
+          rawAspect === 'square' || rawAspect === 'wide' ? rawAspect : 'landscape';
+      const firstImg = table.querySelector('img') as HTMLImageElement | null;
+      const parsedH = Number(table.dataset.photoHeight || parseInt(firstImg?.style?.height || '', 10));
+      const safeHeight = !isNaN(parsedH) && parsedH >= 60 ? parsedH : CATALOG_BASE_HEIGHT[safeAspect][safeCols];
+
+      activeCatalogTableRef.current = table;
+      activeCatalogImgRef.current = clickedImg || null;
+      setActiveElement(table);
+      setCatalogCols(safeCols);
+      setCatalogHeight(safeHeight);
+      setCatalogAspect(safeAspect);
+      setShowCatalogTools(true);
+      setShowImageTools(false);
+      setShowTableTools(false);
+      setShowBoxTools(false);
+      setShowQuoteTools(false);
+      setShowSpacingTools(false);
+      setShowMarginTools(false);
+  };
+
+  const updateActiveCatalogTable = (
+      nextCols: 1 | 2 | 3 | 4,
+      nextHeight: number,
+      nextAspect: 'landscape' | 'square' | 'wide',
+      extraEntries?: { src: string; caption?: string }[],
+      removeImg?: HTMLImageElement | null
+  ) => {
+      const table = activeCatalogTableRef.current;
+      if (!table || !editorRef.current?.contains(table)) return;
+
+      let entries = extractCatalogEntriesFromTable(table);
+      if (removeImg) {
+          const allImgs = Array.from(table.querySelectorAll('img'));
+          const removeIdx = allImgs.indexOf(removeImg);
+          if (removeIdx !== -1) {
+              entries.splice(removeIdx, 1);
+          }
+          activeCatalogImgRef.current = null;
+      }
+      if (extraEntries && extraEntries.length > 0) {
+          entries = [...entries, ...extraEntries];
+      }
+
+      if (entries.length === 0) {
+          const wrapper = table.closest('.table-responsive-wrapper');
+          if (wrapper && wrapper.parentElement) wrapper.remove();
+          else table.remove();
+          activeCatalogTableRef.current = null;
+          setShowCatalogTools(false);
+          setActiveElement(null);
+          setTimeout(() => calculateSize(true), 60);
+          return;
+      }
+
+      table.classList.add('qc-photos-table', 'photo-catalog-table');
+      table.dataset.cols = String(nextCols);
+      table.dataset.photoHeight = String(nextHeight);
+      table.dataset.aspect = nextAspect;
+      table.style.setProperty('width', '100%', 'important');
+      table.style.setProperty('min-width', '100%', 'important');
+      table.style.setProperty('table-layout', 'fixed', 'important');
+      table.style.setProperty('border-collapse', 'collapse', 'important');
+
+      let tbody = table.querySelector('tbody');
+      if (!tbody) {
+          tbody = document.createElement('tbody');
+          table.innerHTML = '';
+          table.appendChild(tbody);
+      }
+      // Normalize auto captions like "صورة رقم (X)" cleanly in order
+      const normalized = entries.map((en, i) => ({
+          src: en.src,
+          caption: !en.caption || /^صورة رقم \(\d+\)$/.test(en.caption) ? `صورة رقم (${i + 1})` : en.caption
+      }));
+      tbody.innerHTML = buildPhotoCatalogRowsHtml(normalized, nextCols, nextHeight);
+
+      setCatalogCols(nextCols);
+      setCatalogHeight(nextHeight);
+      setCatalogAspect(nextAspect);
+      setTimeout(() => calculateSize(true), 60);
+  };
+
+  const convertStandaloneImagesToCatalog = (preferredCols?: 1 | 2 | 3 | 4) => {
+      if (!editorRef.current) return;
+      const standaloneImgs = Array.from(editorRef.current.querySelectorAll('img')).filter(
+          (img) => !img.closest('table.qc-photos-table, table.photo-catalog-table, table.qc-signatures-table')
+      ) as HTMLImageElement[];
+      if (standaloneImgs.length < 2) return;
+
+      const entries = standaloneImgs.map((img, idx) => ({
+          src: img.src,
+          caption: `صورة رقم (${idx + 1})`
+      }));
+      const cols: 1 | 2 | 3 | 4 = preferredCols || (entries.length >= 4 ? 4 : entries.length === 3 ? 3 : 2);
+      const heightPx = CATALOG_BASE_HEIGHT.landscape[cols];
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'table-responsive-wrapper';
+      wrapper.style.cssText = 'width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0; display: block;';
+      wrapper.innerHTML = `
+          <table class="qc-photos-table photo-catalog-table active-editing-element" data-cols="${cols}" data-photo-height="${heightPx}" data-aspect="landscape" style="width: 100% !important; min-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; margin: 8px 0 !important;">
+              <tbody>
+                  ${buildPhotoCatalogRowsHtml(entries, cols, heightPx)}
+              </tbody>
+          </table>
+      `;
+
+      const anchorImg = standaloneImgs[0];
+      anchorImg.parentNode?.insertBefore(wrapper, anchorImg);
+      standaloneImgs.forEach((img) => img.remove());
+
+      const newTable = wrapper.querySelector('table.photo-catalog-table') as HTMLTableElement | null;
+      if (newTable) {
+          syncCatalogToolbarFromTable(newTable, null);
+      }
+      setTimeout(() => calculateSize(true), 80);
+  };
+
   const triggerImageUpload = () => imageInputRef.current?.click();
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (event) => { if (event.target?.result) { execCmd('insertImage', event.target.result as string); } }; reader.readAsDataURL(file); } };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []) as File[];
+      if (files.length === 0) return;
+
+      const dataUrls: string[] = [];
+      for (const f of files) {
+          const url = await fileToCompressedDataUrl(f);
+          if (url) dataUrls.push(url);
+      }
+      if (e.target) e.target.value = '';
+      if (dataUrls.length === 0 || !editorRef.current) return;
+
+      // 1) If cursor or active selection is inside an existing photo catalog table -> append cleanly
+      let targetCatalog: HTMLTableElement | null =
+          activeCatalogTableRef.current && editorRef.current.contains(activeCatalogTableRef.current)
+              ? activeCatalogTableRef.current
+              : null;
+
+      if (!targetCatalog) {
+          const sel = window.getSelection();
+          const anchorNode = sel?.anchorNode || savedRange.current?.commonAncestorContainer;
+          const anchorEl = anchorNode ? ((anchorNode.nodeType === 3 ? anchorNode.parentElement : anchorNode) as HTMLElement) : null;
+          targetCatalog = anchorEl?.closest('table.qc-photos-table, table.photo-catalog-table') as HTMLTableElement | null;
+      }
+
+      if (targetCatalog) {
+          const existingCount = extractCatalogEntriesFromTable(targetCatalog).length;
+          const addedEntries = dataUrls.map((src, i) => ({ src, caption: `صورة رقم (${existingCount + i + 1})` }));
+          syncCatalogToolbarFromTable(targetCatalog, null);
+          const nextCols = catalogCols;
+          const nextHeight = catalogHeight;
+          const nextAspect = catalogAspect;
+          activeCatalogTableRef.current = targetCatalog;
+          updateActiveCatalogTable(nextCols, nextHeight, nextAspect, addedEntries);
+          return;
+      }
+
+      // 2) If multiple images uploaded at once -> insert directly as a unified Photo Catalog
+      if (dataUrls.length > 1) {
+          const cols: 1 | 2 | 3 | 4 = dataUrls.length >= 4 ? 4 : dataUrls.length === 3 ? 3 : 2;
+          const heightPx = CATALOG_BASE_HEIGHT.landscape[cols];
+          const entries = dataUrls.map((src, i) => ({ src, caption: `صورة رقم (${i + 1})` }));
+          const catalogId = `catalog-${Date.now()}`;
+          const html = `
+              <div class="table-responsive-wrapper" style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0; display: block;">
+                  <table id="${catalogId}" class="qc-photos-table photo-catalog-table active-editing-element" data-cols="${cols}" data-photo-height="${heightPx}" data-aspect="landscape" style="width: 100% !important; min-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; margin: 8px 0 !important;">
+                      <tbody>
+                          ${buildPhotoCatalogRowsHtml(entries, cols, heightPx)}
+                      </tbody>
+                  </table>
+              </div>
+              <p><br></p>
+          `;
+          execCmd('insertHTML', html);
+          setTimeout(() => {
+              const inserted = document.getElementById(catalogId) as HTMLTableElement | null;
+              if (inserted) {
+                  syncCatalogToolbarFromTable(inserted, null);
+              }
+              calculateSize(true);
+          }, 60);
+          return;
+      }
+
+      // 3) Single image uploaded: insert, and if total standalone uploaded photos in document > 1, auto-convert into a unified Photo Catalog!
+      const singleSrc = dataUrls[0];
+      const existingStandalone = Array.from(editorRef.current.querySelectorAll('img')).filter(
+          (img) => !img.closest('table.qc-photos-table, table.photo-catalog-table, table.qc-signatures-table')
+      );
+
+      if (existingStandalone.length >= 1) {
+          const prevCount = existingStandalone.length;
+          execCmd('insertHTML', `<img data-letter-photo="1" src="${singleSrc}" />`);
+          const afterStandalone = Array.from(editorRef.current.querySelectorAll('img')).filter(
+              (img) => !img.closest('table.qc-photos-table, table.photo-catalog-table, table.qc-signatures-table')
+          );
+          if (afterStandalone.length === prevCount) {
+              const tempImg = document.createElement('img');
+              tempImg.src = singleSrc;
+              tempImg.setAttribute('data-letter-photo', '1');
+              editorRef.current.appendChild(tempImg);
+          }
+          convertStandaloneImagesToCatalog();
+          return;
+      }
+
+      // First standalone photo -> insert nicely; if an existing catalog exists anywhere and user adds later, they can use catalog button
+      const imgId = `img-${Date.now()}`;
+      execCmd(
+          'insertHTML',
+          `<img id="${imgId}" data-letter-photo="1" src="${singleSrc}" style="max-width: 100%; height: auto; display: block; margin: 10px auto; border-radius: 6px;" />`
+      );
+      setTimeout(() => {
+          const imgEl = document.getElementById(imgId) as HTMLImageElement | null;
+          if (imgEl) {
+              setActiveElement(imgEl);
+              setShowImageTools(true);
+          }
+          calculateSize(true);
+      }, 60);
+  };
+
+  const handleCatalogAddImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []) as File[];
+      if (files.length === 0 || !activeCatalogTableRef.current) return;
+      const existingCount = extractCatalogEntriesFromTable(activeCatalogTableRef.current).length;
+      const added: { src: string; caption?: string }[] = [];
+      for (const f of files) {
+          const url = await fileToCompressedDataUrl(f);
+          if (url) added.push({ src: url, caption: `صورة رقم (${existingCount + added.length + 1})` });
+      }
+      if (e.target) e.target.value = '';
+      if (added.length > 0) {
+          updateActiveCatalogTable(catalogCols, catalogHeight, catalogAspect, added);
+      }
+  };
 
   // --- AI DRAFT TO FORMAL LETTER (CAMERA OR IMAGE UPLOAD) ---
   const handleDraftToLetterUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -851,7 +1179,7 @@ const LetterEditor: React.FC = () => {
   const handleImageResize = (widthPercent: string) => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.style.width = widthPercent; activeElement.style.height = 'auto'; } };
   const handleImageAlign = (align: string) => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.style.display = 'block'; if (align === 'center') { activeElement.style.marginLeft = 'auto'; activeElement.style.marginRight = 'auto'; } else if (align === 'right') { activeElement.style.marginLeft = 'auto'; activeElement.style.marginRight = '0'; } else { activeElement.style.marginLeft = '0'; activeElement.style.marginRight = 'auto'; } } };
   const deleteImage = () => { if (activeElement && activeElement.tagName === 'IMG') { activeElement.remove(); setActiveElement(null); setShowImageTools(false); } };
-  const deleteTable = () => { if (!activeElement) return; const table = activeElement.closest('table'); if (table) { table.remove(); setShowTableTools(false); setActiveElement(null); } };
+  const deleteTable = () => { if (!activeElement) return; const table = activeElement.closest('table'); if (table) { table.remove(); setShowTableTools(false); setShowCatalogTools(false); setActiveElement(null); } };
   const modifyTable = (action: string) => { if (!activeElement) return; const cell = activeElement.closest('td') || activeElement.closest('th'); if (!cell) return; const row = cell.closest('tr') as HTMLTableRowElement; const table = row.closest('table') as HTMLTableElement; if (!table || !row) return; if (action === 'addRow') { const newRow = table.insertRow(row.rowIndex + 1); for (let i = 0; i < row.cells.length; i++) { const newCell = newRow.insertCell(i); const refCell = row.cells[i]; newCell.style.cssText = refCell.style.cssText; newCell.innerHTML = '&nbsp;'; } } else if (action === 'delRow') { if (table.rows.length > 1) { table.deleteRow(row.rowIndex); } else { activeElement.closest('table')?.remove(); setShowTableTools(false); } } else if (action === 'addCol') { const cellIndex = (cell as HTMLTableCellElement).cellIndex; for (let i = 0; i < table.rows.length; i++) { const row = table.rows[i]; const newCell = row.insertCell(cellIndex + 1); const refCell = row.cells[cellIndex]; newCell.style.cssText = refCell.style.cssText; newCell.innerHTML = '&nbsp;'; } } else if (action === 'delCol') { const cellIndex = (cell as HTMLTableCellElement).cellIndex; for (let i = 0; i < table.rows.length; i++) { if (table.rows[i].cells.length > 1) { table.rows[i].deleteCell(cellIndex); } } } };
 
   // --- VOICE DICTATION (MICROPHONE) FOR PARAGRAPH OR FULL LETTER ---
@@ -1790,6 +2118,32 @@ const LetterEditor: React.FC = () => {
                 }
             }
 
+            /* Photo Catalog & QC Signatures Unified Grid Overrides */
+            #letter-content-area table.qc-photos-table,
+            #letter-content-area table.photo-catalog-table,
+            #letter-content-area table.qc-signatures-table {
+                width: 100% !important;
+                min-width: 100% !important;
+                max-width: 100% !important;
+                table-layout: fixed !important;
+                border-collapse: collapse !important;
+            }
+            #letter-content-area table.qc-photos-table td,
+            #letter-content-area table.photo-catalog-table td {
+                padding: 5px !important;
+                vertical-align: middle !important;
+                background-color: #ffffff !important;
+            }
+            #letter-content-area table.qc-photos-table img,
+            #letter-content-area table.photo-catalog-table img {
+                width: 100% !important;
+                max-width: 100% !important;
+                object-fit: cover !important;
+                object-position: center !important;
+                margin: 0 auto !important;
+                display: block !important;
+            }
+
             /* Header & Footer Direct Editing and Layout */
             #paper-container .report-header {
                 display: flex !important;
@@ -2367,9 +2721,9 @@ const LetterEditor: React.FC = () => {
                     <button onMouseDown={(e) => {e.preventDefault(); execCmd('justifyLeft')}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${formats.align === 'left' ? 'bg-blue-100 text-blue-600' : 'hover:bg-white'}`} title="محاذاة يسار"><i className="fa-solid fa-align-left text-[11px]"></i></button>
                     <div className="w-[1px] h-3 bg-slate-300 my-auto mx-0.5"></div>
                     
-                    <button onMouseDown={(e) => {e.preventDefault(); setShowSpacingTools(!showSpacingTools); setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowQuoteTools(false); setShowMarginTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showSpacingTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="تباعد الأسطر والفقرات"><i className="fa-solid fa-text-height text-[11px]"></i></button>
+                    <button onMouseDown={(e) => {e.preventDefault(); setShowSpacingTools(!showSpacingTools); setShowTableTools(false); setShowImageTools(false); setShowCatalogTools(false); setShowBoxTools(false); setShowQuoteTools(false); setShowMarginTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showSpacingTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="تباعد الأسطر والفقرات"><i className="fa-solid fa-text-height text-[11px]"></i></button>
                     
-                    <button onMouseDown={(e) => {e.preventDefault(); setShowMarginTools(!showMarginTools); setShowSpacingTools(false); setShowTableTools(false); setShowImageTools(false); setShowBoxTools(false); setShowQuoteTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showMarginTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="هوامش النص الداخلية"><i className="fa-solid fa-expand text-[11px]"></i></button>
+                    <button onMouseDown={(e) => {e.preventDefault(); setShowMarginTools(!showMarginTools); setShowSpacingTools(false); setShowTableTools(false); setShowImageTools(false); setShowCatalogTools(false); setShowBoxTools(false); setShowQuoteTools(false);}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${showMarginTools ? 'bg-blue-100 text-blue-600' : 'hover:bg-white text-slate-600'}`} title="هوامش النص الداخلية"><i className="fa-solid fa-expand text-[11px]"></i></button>
                     
                     <button onMouseDown={(e) => {e.preventDefault(); execCmd('insertUnorderedList')}} className={`w-8 h-8 rounded flex items-center justify-center transition hover:shadow-sm ${formats.list ? 'bg-blue-100 text-blue-600' : 'hover:bg-white'}`} title="قائمة نقطية"><i className="fa-solid fa-list-ul text-[11px]"></i></button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertQuote()}} className="w-8 h-8 hover:bg-white hover:text-teal-600 rounded flex items-center justify-center transition hover:shadow-sm" title="اقتباس"><i className="fa-solid fa-quote-right text-[11px]"></i></button>
@@ -2400,13 +2754,14 @@ const LetterEditor: React.FC = () => {
                     </button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertTable()}} className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md text-[10px] font-bold text-indigo-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-solid fa-table"></i> <span className="hidden sm:inline">جدول</span></button>
                     <button onMouseDown={(e) => {e.preventDefault(); insertTextBox()}} className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md text-[10px] font-bold text-emerald-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-regular fa-square-plus"></i> <span className="hidden sm:inline">مربع</span></button>
-                    <button onMouseDown={(e) => {e.preventDefault(); triggerImageUpload()}} className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md text-[10px] font-bold text-slate-700 transition shadow-sm h-7 whitespace-nowrap"><i className="fa-regular fa-image"></i> <span className="hidden sm:inline">صورة</span></button>
-                    <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+                    <button onMouseDown={(e) => {e.preventDefault(); triggerImageUpload()}} className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md text-[10px] font-bold text-slate-700 transition shadow-sm h-7 whitespace-nowrap" title="إضافة صورة أو مجموعة صور (كتالوج صور)"><i className="fa-regular fa-image"></i> <span className="hidden sm:inline">صور</span></button>
+                    <input type="file" ref={imageInputRef} onChange={handleImageUpload} accept="image/*" multiple className="hidden" />
+                    <input type="file" ref={catalogAddInputRef} onChange={handleCatalogAddImages} accept="image/*" multiple className="hidden" />
                 </div>
             </div>
 
             {/* Context Tools Sub-Toolbar */}
-            {(showTableTools || showImageTools || showBoxTools || showQuoteTools || showSpacingTools || showMarginTools) && (
+            {(showTableTools || showImageTools || showCatalogTools || showBoxTools || showQuoteTools || showSpacingTools || showMarginTools) && (
                 <div className="absolute top-full left-0 right-0 z-50 bg-yellow-50/95 backdrop-blur-md border-b border-yellow-300 p-1.5 flex gap-2 overflow-x-auto hide-scrollbar animate-fade-in text-[10px] text-slate-900 w-full whitespace-nowrap shadow-lg items-center">
 
                     {/* MARGIN TOOLS (Inner Content Padding) */}
@@ -2531,7 +2886,147 @@ const LetterEditor: React.FC = () => {
                             <button onClick={deleteTable} className="px-2 py-0.5 bg-red-600 text-white border border-red-700 rounded hover:bg-red-700 font-bold shadow-sm flex items-center gap-1"><i className="fa-solid fa-trash"></i> <span className="hidden sm:inline">حذف</span></button>
                         </>
                     )}
-                    {showImageTools && (<><span className="font-bold text-indigo-800 ml-1 hidden sm:inline">الصورة:</span><div className="flex gap-1 shrink-0"><button onClick={() => handleImageAlign('right')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="يمين"><i className="fa-solid fa-align-right"></i></button><button onClick={() => handleImageAlign('center')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="وسط"><i className="fa-solid fa-align-center"></i></button><button onClick={() => handleImageAlign('left')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="يسار"><i className="fa-solid fa-align-left"></i></button></div><div className="w-[1px] h-3 bg-indigo-300 mx-0.5"></div><div className="flex gap-1 font-mono font-bold shrink-0"><button onClick={() => handleImageResize('25%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">25%</button><button onClick={() => handleImageResize('50%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">50%</button><button onClick={() => handleImageResize('75%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">75%</button><button onClick={() => handleImageResize('100%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">100%</button></div><div className="w-[1px] h-3 bg-indigo-300 mx-0.5"></div><button onClick={deleteImage} className="px-2 py-0.5 bg-red-100 text-red-600 rounded hover:bg-red-200 border border-red-200 font-bold flex items-center gap-1" title="حذف الصورة"><i className="fa-solid fa-trash"></i> <span className="hidden sm:inline">حذف</span></button></>)}
+                    {showCatalogTools && (
+                        <>
+                            <span className="font-black text-emerald-900 ml-1 flex items-center gap-1 shrink-0">
+                                <i className="fa-solid fa-images text-emerald-600"></i>
+                                <span>كتالوج الصور:</span>
+                            </span>
+
+                            {/* Columns: 1, 2, 3, 4 */}
+                            <div className="flex gap-1 items-center border-l border-yellow-300 pl-2 ml-1 shrink-0">
+                                {([1, 2, 3, 4] as const).map((cols) => (
+                                    <button
+                                        key={cols}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            const unifiedHeight = CATALOG_BASE_HEIGHT[catalogAspect][cols];
+                                            updateActiveCatalogTable(cols, unifiedHeight, catalogAspect);
+                                        }}
+                                        className={`px-2 py-0.5 rounded font-bold border transition ${
+                                            catalogCols === cols
+                                                ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                                                : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50'
+                                        }`}
+                                    >
+                                        {cols === 1 ? '1 عمود' : cols === 2 ? 'عمودين' : `${cols} أعمدة`}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Unified Proportions (Aspect Ratio) */}
+                            <div className="flex gap-1 items-center border-l border-yellow-300 pl-2 ml-1 shrink-0">
+                                <span className="text-[9px] text-slate-500 font-bold hidden sm:inline">النسبة:</span>
+                                {([
+                                    { key: 'landscape', label: '4:3' },
+                                    { key: 'square', label: '1:1' },
+                                    { key: 'wide', label: '16:9' }
+                                ] as const).map((asp) => (
+                                    <button
+                                        key={asp.key}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            const nextHeight = CATALOG_BASE_HEIGHT[asp.key][catalogCols];
+                                            updateActiveCatalogTable(catalogCols, nextHeight, asp.key);
+                                        }}
+                                        className={`px-1.5 py-0.5 rounded font-mono font-bold border transition ${
+                                            catalogAspect === asp.key
+                                                ? 'bg-indigo-600 text-white border-indigo-700'
+                                                : 'bg-white text-slate-700 border-slate-300 hover:bg-indigo-50'
+                                        }`}
+                                        title="توحيد نسب جميع الصور"
+                                    >
+                                        {asp.label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Resize All Photos Together */}
+                            <div className="flex gap-1 items-center border-l border-yellow-300 pl-2 ml-1 shrink-0">
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        const nextH = Math.max(65, catalogHeight - 20);
+                                        updateActiveCatalogTable(catalogCols, nextH, catalogAspect);
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-white border border-slate-300 hover:bg-slate-100 font-bold text-slate-800 flex items-center gap-1"
+                                    title="تصغير كل صور الكتالوج مع الحفاظ على توحيد المقاس"
+                                >
+                                    <i className="fa-solid fa-magnifying-glass-minus text-amber-600"></i>
+                                    <span>تصغير الكل</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        const nextH = Math.min(460, catalogHeight + 20);
+                                        updateActiveCatalogTable(catalogCols, nextH, catalogAspect);
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-white border border-slate-300 hover:bg-slate-100 font-bold text-slate-800 flex items-center gap-1"
+                                    title="تكبير كل صور الكتالوج مع الحفاظ على توحيد المقاس"
+                                >
+                                    <i className="fa-solid fa-magnifying-glass-plus text-emerald-600"></i>
+                                    <span>تكبير الكل</span>
+                                </button>
+                            </div>
+
+                            {/* Add More Photos / Delete Single / Delete Catalog */}
+                            <div className="flex gap-1 items-center shrink-0">
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        catalogAddInputRef.current?.click();
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-800 hover:bg-emerald-100 font-bold flex items-center gap-1"
+                                    title="إضافة صور جديدة إلى هذا الكتالوج"
+                                >
+                                    <i className="fa-solid fa-plus"></i>
+                                    <span>إضافة صور</span>
+                                </button>
+                                {activeCatalogImgRef.current && (
+                                    <button
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            updateActiveCatalogTable(catalogCols, catalogHeight, catalogAspect, undefined, activeCatalogImgRef.current);
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-orange-50 border border-orange-300 text-orange-700 hover:bg-orange-100 font-bold flex items-center gap-1"
+                                        title="حذف الصورة المحددة فقط من الكتالوج"
+                                    >
+                                        <i className="fa-solid fa-xmark"></i>
+                                        <span>حذف صورة</span>
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        const table = activeCatalogTableRef.current;
+                                        if (table) {
+                                            const wrapper = table.closest('.table-responsive-wrapper');
+                                            if (wrapper && wrapper.parentElement) wrapper.remove();
+                                            else table.remove();
+                                            activeCatalogTableRef.current = null;
+                                            activeCatalogImgRef.current = null;
+                                            setShowCatalogTools(false);
+                                            setActiveElement(null);
+                                            setTimeout(() => calculateSize(true), 60);
+                                        }
+                                    }}
+                                    className="px-2 py-0.5 rounded bg-red-600 text-white border border-red-700 hover:bg-red-700 font-bold flex items-center gap-1"
+                                    title="حذف الكتالوج بالكامل"
+                                >
+                                    <i className="fa-solid fa-trash"></i>
+                                    <span>حذف الكتالوج</span>
+                                </button>
+                            </div>
+                        </>
+                    )}
+                    {showImageTools && (<><span className="font-bold text-indigo-800 ml-1 hidden sm:inline">الصورة:</span><div className="flex gap-1 shrink-0"><button onClick={() => handleImageAlign('right')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="يمين"><i className="fa-solid fa-align-right"></i></button><button onClick={() => handleImageAlign('center')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="وسط"><i className="fa-solid fa-align-center"></i></button><button onClick={() => handleImageAlign('left')} className="w-6 h-6 hover:bg-indigo-100 rounded flex items-center justify-center border border-indigo-200 bg-white" title="يسار"><i className="fa-solid fa-align-left"></i></button></div><div className="w-[1px] h-3 bg-indigo-300 mx-0.5"></div><div className="flex gap-1 font-mono font-bold shrink-0"><button onClick={() => handleImageResize('25%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">25%</button><button onClick={() => handleImageResize('50%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">50%</button><button onClick={() => handleImageResize('75%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">75%</button><button onClick={() => handleImageResize('100%')} className="px-1 py-0.5 bg-white border rounded hover:bg-indigo-50">100%</button></div><div className="w-[1px] h-3 bg-indigo-300 mx-0.5"></div><button onMouseDown={(e) => { e.preventDefault(); convertStandaloneImagesToCatalog(); }} className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200 border border-emerald-300 font-bold flex items-center gap-1" title="تحويل مجموعة الصور في المستند إلى كتالوج صور موحد النسب"><i className="fa-solid fa-images"></i> <span>كتالوج صور</span></button><button onClick={deleteImage} className="px-2 py-0.5 bg-red-100 text-red-600 rounded hover:bg-red-200 border border-red-200 font-bold flex items-center gap-1" title="حذف الصورة"><i className="fa-solid fa-trash"></i> <span className="hidden sm:inline">حذف</span></button></>)}
                     {showBoxTools && (
                         <>
                             <span className="font-bold text-slate-800 ml-1 hidden sm:inline">المربع:</span>

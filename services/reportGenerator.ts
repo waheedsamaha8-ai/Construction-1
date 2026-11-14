@@ -390,6 +390,25 @@ export const REPORT_CSS = `
         line-height: 1.3 !important;
     }
 
+    table.qc-signatures-table,
+    table.qc-photos-table {
+        width: 100% !important;
+        min-width: 100% !important;
+        table-layout: fixed !important;
+    }
+    table.qc-signatures-table tr td,
+    table.qc-photos-table tr td {
+        background-color: #ffffff !important;
+        text-align: center !important;
+    }
+    table.qc-photos-table img {
+        max-width: 100% !important;
+        width: 100% !important;
+        object-fit: cover !important;
+        display: block !important;
+        margin: 0 auto !important;
+    }
+
     /* PHOTO GRID */
     .photo-grid {
         display: grid;

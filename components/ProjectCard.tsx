@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import { Project, ProjectStatus } from '../types';
 
 interface ProjectCardProps {
@@ -142,7 +142,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                          <div>
                              <div className="flex justify-between items-center text-[10px] font-bold mb-0.5">
                                  <span className={`${style.subTextColor} opacity-90`}>الإنجاز المالي:</span>
-                                 <span className="font-mono text-[10px] font-extrabold text-slate-900 bg-white/80 px-1.5 py-0.2 rounded border border-black/10">
+                                 <span className="font-mono tabular-nums text-[10px] font-extrabold text-slate-900 bg-white/80 px-1.5 py-0.2 rounded border border-black/10">
                                      {progress}%
                                  </span>
                              </div>
@@ -162,7 +162,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
                                          </span>
                                      )}
                                  </div>
-                                 <span className="font-mono text-[9px] font-extrabold text-slate-800 bg-white/70 px-1.5 py-0.1 rounded border border-black/10">
+                                 <span className="font-mono tabular-nums text-[9px] font-extrabold text-slate-800 bg-white/70 px-1.5 py-0.1 rounded border border-black/10">
                                      {timeProgress}%
                                  </span>
                              </div>
@@ -310,4 +310,4 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onEdit, onD
   );
 };
 
-export default ProjectCard;
+export default memo(ProjectCard);
