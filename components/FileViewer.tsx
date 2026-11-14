@@ -353,7 +353,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
   const handlePrintAnalysis = () => {
       if (analysisResult) {
-          printService.printReport(analysisResult, `تقرير فني - ${currentItem.name}`);
+          printService.printReport(analysisResult, `تقرير فني - ${currentItem.name}`, undefined, { showHeader: false, showFooter: false });
       }
   };
 

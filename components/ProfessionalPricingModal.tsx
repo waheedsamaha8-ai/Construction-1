@@ -1066,7 +1066,7 @@ const ProfessionalPricingModal: React.FC<ProfessionalPricingModalProps> = ({
         if (!reportHtml) return;
         setIsReportMenuOpen(false);
         const title = `تحليل_سعر_${(reportData?.itemTitle || description || 'بند_إنشائي').substring(0, 35)}`;
-        printService.printReport(reportHtml, title);
+        printService.printReport(reportHtml, title, undefined, { showHeader: false, showFooter: false });
     };
 
     const handleOpenInLetterEditor = async () => {

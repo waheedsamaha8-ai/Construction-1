@@ -278,7 +278,7 @@ const InstantExpert: React.FC<InstantExpertProps> = ({ onClose }) => {
                                                             type="button"
                                                             onClick={() => {
                                                                 setActiveMenuMessageIdx(null);
-                                                                printService.printReport(msg.content, 'تقرير المستشار الهندسي', 'EXP-AI');
+                                                                printService.printReport(msg.content, 'تقرير المستشار الهندسي', 'EXP-AI', { showHeader: false, showFooter: false });
                                                             }}
                                                             className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-emerald-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
                                                         >

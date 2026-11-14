@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
@@ -382,6 +382,9 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
 
 // --- LIVE API WEBSOCKET BRIDGE ---
 const wss = new WebSocketServer({ server, path: '/api/gemini/live' });
+wss.on('error', (err) => {
+  console.error('Live WebSocketServer error:', err);
+});
 
 wss.on('connection', async (clientWs: WebSocket, req) => {
   console.log('Client connected to Gemini Live WebSocket');
@@ -463,16 +466,35 @@ wss.on('connection', async (clientWs: WebSocket, req) => {
   }
 });
 
+const getCliPort = (): number | undefined => {
+  const idx = process.argv.indexOf('--port');
+  if (idx !== -1 && process.argv[idx + 1]) {
+    const p = Number(process.argv[idx + 1]);
+    if (Number.isFinite(p) && p > 0) return p;
+  }
+  const eqArg = process.argv.find(a => a.startsWith('--port='));
+  if (eqArg) {
+    const p = Number(eqArg.split('=')[1]);
+    if (Number.isFinite(p) && p > 0) return p;
+  }
+  return undefined;
+};
+
 // --- VITE MIDDLEWARE IN DEV OR STATIC FILES IN PROD ---
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
+  let viteServer: { close: () => Promise<void> } | null = null;
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server },
+      },
       appType: 'spa',
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
@@ -486,10 +508,26 @@ async function startServer() {
     }
   }
 
-  const PORT = Number(process.env.PORT) || 3000;
+  const cliPort = getCliPort();
+  const envPort = Number(process.env.PORT);
+  const defaultPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
+  const nginxPort = Number(process.env.NGINX_PORT);
+  const PORT = cliPort || (envPort && envPort !== nginxPort ? envPort : defaultPort);
+
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Construction Pro Server running on http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = async () => {
+    try {
+      if (viteServer) await viteServer.close();
+    } catch {}
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 startServer().catch(err => {

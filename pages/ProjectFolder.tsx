@@ -137,10 +137,41 @@ const ArchiveFullViewer: React.FC<{
     }, [item.id, item.content]);
 
     const handlePrint = () => {
-        const bodyContent = content
-            .replace(/<!DOCTYPE html>[\s\S]*<body>/, '')
-            .replace(/<\/body>[\s\S]*<\/html>/, '');
-        printService.printReport(bodyContent, item.name.replace('.html', ''));
+        const docName = item.name.replace('.html', '');
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(content, 'text/html');
+            const settingsEl = doc.getElementById('saved-page-settings');
+            if (settingsEl && settingsEl.dataset?.config) {
+                const cfg = JSON.parse(decodeURIComponent(settingsEl.dataset.config));
+                printService.printReport(content, cfg.reportTitle || docName, cfg.metaRef, {
+                    date: cfg.metaDate,
+                    subtitle: cfg.headerSubtitle,
+                    footerText: cfg.footerText,
+                    headerColor: cfg.headerColor,
+                    footerColor: cfg.footerColor,
+                    margins: cfg.marginConfig,
+                    pageMargin: cfg.printPageMargin,
+                    labels: { date: cfg.dateLabel || 'التاريخ:', ref: cfg.refLabel || 'المرجع:' },
+                    fontSizes: {
+                        title: cfg.titleFontSize,
+                        subtitle: cfg.subtitleFontSize,
+                        meta: cfg.metaFontSize,
+                        footer: cfg.footerFontSize
+                    },
+                    showHeader: cfg.showHeader ?? false,
+                    showTitle: cfg.showTitle ?? true,
+                    showSubtitle: cfg.showSubtitle ?? true,
+                    showDate: cfg.showDate ?? true,
+                    showRef: cfg.showRef ?? true,
+                    showFooter: cfg.showFooter ?? false,
+                    preserveUserStyles: Boolean(cfg.showHeader)
+                });
+                return;
+            }
+        } catch {}
+
+        printService.printReport(content, docName, undefined, { showHeader: false, showFooter: false });
     };
 
     const handleContentChange = async (updatedHtml: string) => {

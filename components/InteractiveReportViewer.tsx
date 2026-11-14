@@ -574,9 +574,11 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
             )}
 
             <style>{`
-                .interactive-report-body { font-size: 13px !important; color: #1e293b !important; line-height: 1.65 !important; width: 100% !important; max-width: 100% !important; }
+                .interactive-report-body { font-family: 'Cairo', 'Tajawal', sans-serif; font-size: 13px; color: #0f172a; line-height: 1.65; width: 100% !important; max-width: 100% !important; direction: rtl; text-align: right; }
                 .interactive-report-body .report-container, .interactive-report-body .report-body { width: 100% !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; border: none !important; }
-                .interactive-report-body p, .interactive-report-body li, .interactive-report-body div { font-size: 13px !important; line-height: 1.65 !important; }
+                .interactive-report-body p, .interactive-report-body li { font-size: 13px; font-weight: 600; line-height: 1.65; margin-bottom: 6px; text-align: right; }
+                .interactive-report-body ul { list-style-type: disc; margin: 6px 0; padding-right: 1.5rem; }
+                .interactive-report-body ol { list-style-type: decimal; margin: 6px 0; padding-right: 1.5rem; }
                 .interactive-report-body .table-responsive-wrapper {
                     width: 100% !important;
                     max-width: 100% !important;
@@ -668,6 +670,27 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                     min-width: 50px !important;
                     line-height: 1.35 !important;
                     background-color: #ffffff !important;
+                }
+                .interactive-report-body table.pricing-compact-table {
+                    width: 100% !important;
+                    min-width: 460px !important;
+                    margin: 0 !important;
+                    table-layout: auto !important;
+                }
+                .interactive-report-body table.pricing-compact-table th,
+                .interactive-report-body table.pricing-compact-table th * {
+                    padding: 5px 6px !important;
+                    font-size: 10.5px !important;
+                    font-weight: 800 !important;
+                    line-height: 1.3 !important;
+                    text-align: center !important;
+                }
+                .interactive-report-body table.pricing-compact-table td,
+                .interactive-report-body table.pricing-compact-table td * {
+                    padding: 5px 6px !important;
+                    font-size: 10.5px !important;
+                    font-weight: 700 !important;
+                    line-height: 1.3 !important;
                 }
                 /* Unified, clean executive headings across all reports */
                 .interactive-report-body h1 {
@@ -776,7 +799,7 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                 suppressContentEditableWarning={true}
                 onInput={handleDirectInput}
                 onBlur={handleDirectBlur}
-                className={`interactive-report-body prose prose-sm max-w-none text-slate-800 leading-relaxed w-full transition-all ${
+                className={`interactive-report-body max-w-none text-slate-900 leading-relaxed w-full transition-all ${
                     isDirectEditing ? 'is-editable cursor-text p-2' : ''
                 }`}
                 dangerouslySetInnerHTML={{ __html: formattedHtml }}

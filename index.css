@@ -140,112 +140,93 @@ table.pricing-compact-table td *,
     padding-right: 0 !important;
 }
 
-/* --- ENHANCED REPORT TYPOGRAPHY (MATCHING PDF STYLE) --- */
+/* --- UNIFIED REPORT TYPOGRAPHY (MATCHING REPORT_CSS & INTERACTIVE VIEWER) --- */
 
-/* Report Header Styling */
-.report-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    border-bottom: 4px solid #000;
-    padding-bottom: 10px;
-    margin-bottom: 20px;
-    direction: rtl;
+/* Base Typography for .prose report containers */
+.prose p, .prose li, .prose div {
+    font-size: 13px;
+    font-weight: 600;
+    color: #0f172a;
+    line-height: 1.65;
 }
 
-.report-header .right-side {
-    text-align: right;
+.prose span, .prose a {
+    line-height: 1.65;
 }
 
-.report-header .left-side {
-    text-align: left;
-    font-family: 'Courier New', Courier, monospace; /* For Ref/Date numbers */
-    font-weight: 700;
-}
-
-.report-footer {
-    margin-top: 40px;
-    padding-top: 10px;
-    border-top: 1px solid #ccc;
-    text-align: center;
-    font-size: 14px !important;
-    color: #64748b;
-    font-weight: 700;
-}
-
-/* Base Typography */
-.prose p, .prose li, .prose div, .prose span, .prose a {
-    font-size: 20px !important; 
-    font-weight: 700 !important; 
-    color: #000000 !important; /* Pure Black for high contrast like PDF */
-    line-height: 1.6 !important;
-}
-
-/* Headings - Underlined Style */
-.prose h1, .prose h2 {
-    font-size: 26px !important;
-    font-weight: 900 !important;
-    color: #000000 !important;
-    text-align: center;
-    border-bottom: 3px solid #000;
-    padding-bottom: 8px;
-    margin-top: 30px !important;
-    margin-bottom: 20px !important;
-    display: block; /* Ensure it takes full width for the underline */
-}
-
-.prose h3 {
-    font-size: 22px !important;
+.prose h1 {
+    font-size: 15px !important;
     font-weight: 800 !important;
-    color: #000000 !important;
-    border-bottom: 2px solid #000;
-    padding-bottom: 5px;
-    margin-top: 25px !important;
-    margin-bottom: 15px !important;
+    color: #1e3a8a !important;
+    text-align: center !important;
+    border-bottom: 2px solid #1e3a8a !important;
+    padding: 0 0 8px 0 !important;
+    margin: 6px 0 12px 0 !important;
     display: block;
-    width: fit-content; /* Underline only the text */
-    padding-right: 0;
 }
 
-/* Boxes - Specific Colors from PDF with Horizontal Overflow Support */
+.prose h2 {
+    font-size: 14px !important;
+    font-weight: 800 !important;
+    color: #1e3a8a !important;
+    text-align: right !important;
+    border-bottom: 1.5px solid #cbd5e1 !important;
+    border-right: 4px solid #1e3a8a !important;
+    padding: 2px 8px 6px 0 !important;
+    margin: 14px 0 8px 0 !important;
+    display: block;
+}
+
+.prose h3, .prose h4 {
+    font-size: 13px !important;
+    font-weight: 800 !important;
+    color: #1e3a8a !important;
+    text-align: right !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    border-right: 3px solid #3b82f6 !important;
+    padding: 2px 8px 4px 0 !important;
+    margin: 10px 0 6px 0 !important;
+    display: block;
+}
+
+/* Boxes - Unified Soft Consultant Callouts */
 .info-box, .warning-box, .success-box, .cost-box, .editable-box {
-    margin: 12px 0 !important;
-    width: 100% !important;
-    border-radius: 8px !important;
-    padding: 10px 12px !important;
-    box-sizing: border-box !important;
-    font-weight: 700 !important;
-    box-shadow: 1px 1px 0px rgba(0,0,0,0.06);
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
+    margin: 10px 0;
+    width: 100%;
+    border-radius: 8px;
+    padding: 10px 12px;
+    box-sizing: border-box;
+    font-weight: 700;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
-/* Blue Box (Definition/Info) */
-.info-box { 
-    background-color: #e0f2fe !important; /* Light Blue */
-    color: #000000 !important; 
-    border: 2px solid #0284c7 !important; /* Dark Blue Border */
+.info-box {
+    background-color: #eff6ff;
+    color: #1e3a8a;
+    border: 1px solid #bfdbfe;
+    border-right: 4px solid #2563eb;
 }
 
-/* Green Box (Recommendations) */
-.success-box { 
-    background-color: #dcfce7 !important; /* Light Green */
-    color: #000000 !important; 
-    border: 2px solid #16a34a !important; /* Dark Green Border */
+.success-box {
+    background-color: #f0fdf4;
+    color: #14532d;
+    border: 1px solid #bbf7d0;
+    border-right: 4px solid #16a34a;
 }
 
-/* Red Box (Risks) */
-.warning-box { 
-    background-color: #fee2e2 !important; /* Light Red */
-    color: #000000 !important; 
-    border: 2px solid #dc2626 !important; /* Dark Red Border */
+.warning-box {
+    background-color: #fef2f2;
+    color: #7f1d1d;
+    border: 1px solid #fecaca;
+    border-right: 4px solid #dc2626;
 }
 
-/* Orange Box (Analysis/Cost) */
-.cost-box { 
-    background-color: #ffedd5 !important; /* Light Orange */
-    color: #000000 !important; 
-    border: 2px solid #ea580c !important; /* Dark Orange Border */
+.cost-box {
+    background-color: #fffbeb;
+    color: #78350f;
+    border: 1px solid #fde68a;
+    border-right: 4px solid #d97706;
 }
 
 /* Responsive Table Wrapper for Reports - Guaranteed Visible Interactive Horizontal Scrollbar */
@@ -256,18 +237,18 @@ table.pricing-compact-table td *,
     overflow-y: hidden !important;
     -webkit-overflow-scrolling: touch !important;
     touch-action: pan-x pan-y !important;
-    margin: 14px 0 !important;
+    margin: 12px 0 !important;
     display: block !important;
     box-sizing: border-box !important;
     scrollbar-width: thin !important;
     scrollbar-color: #2563eb #e2e8f0 !important;
-    padding-bottom: 8px !important;
+    padding-bottom: 6px !important;
 }
 
 /* Visible Scrollbar Track and Blue Bar for WebKit Browsers (Chrome, Edge, Safari) */
 .table-responsive-wrapper::-webkit-scrollbar {
-    height: 10px !important;
-    width: 10px !important;
+    height: 8px !important;
+    width: 8px !important;
     display: block !important;
     background-color: #e2e8f0 !important;
     border-radius: 6px !important;
@@ -276,40 +257,36 @@ table.pricing-compact-table td *,
 .table-responsive-wrapper::-webkit-scrollbar-track {
     background: #e2e8f0 !important;
     border-radius: 6px !important;
-    border: 1px solid #cbd5e1 !important;
-    margin: 0 4px !important;
 }
 
 .table-responsive-wrapper::-webkit-scrollbar-thumb {
     background: #2563eb !important;
     border-radius: 6px !important;
-    border: 2px solid #e2e8f0 !important;
 }
 
 .table-responsive-wrapper::-webkit-scrollbar-thumb:hover {
     background: #1d4ed8 !important;
 }
 
-/* Tables - High Quality Technical Layout with Zero Broken Words */
+/* Tables - Clean Technical Layout Scoped to Report Containers */
 .table-responsive-wrapper table, .prose table, .report-body table {
-    border: 2px solid #000 !important;
-    border-radius: 6px;
-    margin: 10px 0 !important;
-    width: 100% !important;
-    min-width: 540px !important;
-    table-layout: auto !important;
-    border-collapse: collapse !important;
-    word-break: keep-all !important;
-    overflow-wrap: normal !important;
+    border: 1px solid #cbd5e1;
+    margin: 0;
+    width: 100%;
+    min-width: 540px;
+    table-layout: auto;
+    border-collapse: collapse;
+    word-break: normal;
+    overflow-wrap: normal;
 }
 
 @media (max-width: 640px) {
     .info-box, .warning-box, .success-box, .cost-box, .editable-box {
-        padding: 8px 10px !important;
-        margin: 8px 0 !important;
+        padding: 8px 10px;
+        margin: 8px 0;
     }
     .table-responsive-wrapper table, .prose table, .report-body table {
-        min-width: 520px !important;
+        min-width: 520px;
     }
 }
 
@@ -323,32 +300,29 @@ table.pricing-compact-table td *,
     table-layout: fixed !important;
 }
 
-thead tr {
-    background-color: #e2e8f0 !important; /* Grey Header */
-    border-bottom: 3px solid #000 !important;
+.prose table th, .report-body table th {
+    background-color: #f1f5f9;
+    color: #1e3a8a;
+    font-weight: 800;
+    text-align: center;
+    border: 1px solid #cbd5e1;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: normal;
+    word-break: normal;
 }
 
-th, .prose table th {
-    color: #000 !important;
-    font-weight: 900 !important;
-    text-align: center !important;
-    border: 2px solid #000 !important;
-    padding: 10px 8px !important;
-    font-size: 15px !important;
-    white-space: nowrap !important;
-    word-break: keep-all !important;
-}
-
-td, .prose table td {
-    border: 2px solid #000 !important;
-    color: #000 !important;
-    font-weight: 700 !important;
-    text-align: center !important;
-    padding: 8px 10px !important;
-    font-size: 14px !important;
-    line-height: 1.5 !important;
-    white-space: normal !important;
-    word-break: keep-all !important;
+.prose table td, .report-body table td {
+    border: 1px solid #cbd5e1;
+    color: #0f172a;
+    font-weight: 600;
+    text-align: right;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: normal;
+    word-break: normal;
 }
 
 .prose img {
@@ -356,13 +330,11 @@ td, .prose table td {
     height: auto !important;
     margin: 10px auto !important;
     display: block;
-    border: 2px solid #000 !important;
-    box-shadow: none !important;
 }
 
-.archive-card-content { direction: rtl; color: #1e293b; font-size: 1.25rem; line-height: 1.8; font-weight: 700; width: 100%; max-width: 100%; }
-.archive-card-content table { width: 100% !important; min-width: 520px !important; border-collapse: collapse !important; margin: 1rem 0 !important; background-color: #fff !important; border: 2px solid #000 !important; }
-.archive-card-content th, .archive-card-content td { padding: 0.75rem !important; border: 1.5px solid #000 !important; white-space: normal !important; word-break: keep-all !important; }
+.archive-card-content { direction: rtl; color: #0f172a; font-size: 13px; line-height: 1.65; font-weight: 600; width: 100%; max-width: 100%; }
+.archive-card-content table { width: 100%; min-width: 520px; border-collapse: collapse; margin: 10px 0; background-color: #fff; border: 1px solid #cbd5e1; }
+.archive-card-content th, .archive-card-content td { padding: 8px 10px; border: 1px solid #cbd5e1; white-space: normal; word-break: normal; }
 
 .prose-invert { color: #e2e8f0; }
 .prose-invert h1, .prose-invert h2, .prose-invert h3 { color: #ffffff; }

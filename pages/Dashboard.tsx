@@ -512,7 +512,7 @@ const Dashboard: React.FC = () => {
   };
 
   const filteredProjects = useMemo(() => { if (!searchQuery) return projects; return projects.filter(p => (p.name || '').includes(searchQuery) || (p.contractor || '').includes(searchQuery) || (p.location || '').includes(searchQuery)); }, [projects, searchQuery]);
-  const handlePrint = (content: string) => { printService.printReport(content, "تقرير مرجع هندسي", "TIP-REF"); };
+  const handlePrint = (content: string) => { printService.printReport(content, "تقرير مرجع هندسي", "TIP-REF", { showHeader: false, showFooter: false }); };
 
   if (!isAuthenticated && !loading) { 
       return ( 

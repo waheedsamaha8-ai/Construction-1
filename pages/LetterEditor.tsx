@@ -371,11 +371,14 @@ const LetterEditor: React.FC = () => {
             letter-spacing: normal;
         }
         @media (max-width: 768px) {
-            .report-body, .report-body p, .report-body div, .report-body li {
-                text-align: right !important;
+            #paper-container.is-mobile-zoom .report-body,
+            #paper-container.is-mobile-zoom .report-body p,
+            #paper-container.is-mobile-zoom .report-body div,
+            #paper-container.is-mobile-zoom .report-body li {
+                text-align: right;
                 word-spacing: normal !important;
                 letter-spacing: normal !important;
-                line-height: 1.7 !important;
+                line-height: 1.65 !important;
             }
         }
         #paper-container.is-print-preview .report-container {
@@ -1629,8 +1632,9 @@ const LetterEditor: React.FC = () => {
               meta: metaFontSize,
               footer: footerFontSize
           },
-          // Pass flags to print service (which uses ReportGenerator internally in many cases)
-          showHeader, showTitle, showSubtitle, showDate, showRef, showFooter
+          // Pass flags to print service (which uses unified REPORT_CSS)
+          showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
+          preserveUserStyles: true
       }); 
   };
   const handleBack = () => { 
@@ -2836,7 +2840,7 @@ const LetterEditor: React.FC = () => {
                      <div 
                         ref={editorRef} 
                         id="letter-content-area" 
-                        className={`report-body w-full outline-none text-slate-900 leading-relaxed text-base text-right ${!isMobileZoom ? 'visual-page-break' : ''}`} 
+                        className={`report-body w-full outline-none text-slate-900 leading-relaxed text-[13px] text-right ${!isMobileZoom ? 'visual-page-break' : ''}`} 
                         contentEditable={!isLoadingContent} 
                         // Fix: Apply user margins even in Mobile Zoom mode so they can adjust them freely
                         style={{ padding: `${marginConfig.y} ${marginConfig.x}`, textAlign: 'right', wordSpacing: 'normal', letterSpacing: 'normal', transition: 'padding 0.3s ease', flex: '1 1 auto' }}
