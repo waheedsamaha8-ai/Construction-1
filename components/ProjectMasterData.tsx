@@ -3900,9 +3900,9 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 bg-slate-900/50 z-[1500] flex items-center justify-center backdrop-blur-sm animate-fade-in">
+        <div className="fixed inset-0 bg-white z-[1500] flex flex-col animate-fade-in">
             {/* ... (Main Modal Structure) ... */}
-            <div className="bg-white w-full h-full md:w-[98vw] md:h-[95vh] md:rounded-3xl shadow-2xl flex flex-col animate-scale-in overflow-hidden relative">
+            <div className="bg-white w-full h-full flex flex-col overflow-hidden relative">
                 
                 {/* 
                     LOADING SPINNER OVERLAY

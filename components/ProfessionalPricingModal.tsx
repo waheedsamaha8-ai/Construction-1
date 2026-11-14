@@ -1500,8 +1500,8 @@ const ProfessionalPricingModal: React.FC<ProfessionalPricingModalProps> = ({
     const fmt = (n: number) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     return (
-        <div className="fixed inset-0 z-[250] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-0 sm:p-3 animate-fade-in">
-            <div className="bg-white w-full h-full sm:h-[96vh] sm:max-w-5xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 animate-scale-in">
+        <div className="fixed inset-0 z-[2000] bg-white flex flex-col animate-fade-in no-print">
+            <div className="bg-white w-full h-full overflow-hidden flex flex-col">
                 {/* Compact Sticky Header Bar */}
                 <div className="bg-slate-900 px-3.5 py-2.5 text-white flex justify-between items-center shrink-0 relative shadow-md border-b border-slate-800">
                     <div className="flex items-center gap-2.5 min-w-0 flex-1 ml-2">
@@ -1658,7 +1658,7 @@ const ProfessionalPricingModal: React.FC<ProfessionalPricingModalProps> = ({
                             </p>
                         </div>
                     ) : reportHtml && reportData ? (
-                        <div className="max-w-5xl mx-auto space-y-2.5 animate-fade-in">
+                        <div className="w-full space-y-2.5 animate-fade-in">
                             {/* Compact Financial Highlights Strip */}
                             <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                                 <div className="bg-white px-2.5 py-2 rounded-xl border border-slate-200 shadow-xs text-center">
@@ -1705,7 +1705,7 @@ const ProfessionalPricingModal: React.FC<ProfessionalPricingModalProps> = ({
                             </div>
                         </div>
                     ) : (
-                        <form onSubmit={handleGenerateReport} className="max-w-4xl mx-auto space-y-3">
+                        <form onSubmit={handleGenerateReport} className="w-full space-y-3">
                             {/* Expanded Quick Presets Section (16 Categories & 60+ Standard Items) */}
                             <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
                                 <div className="flex flex-wrap items-center justify-between gap-2 mb-2">

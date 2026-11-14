@@ -38,7 +38,7 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
         if (isFolder) return { icon: 'fa-folder', color: 'text-amber-600', bg: 'bg-gradient-to-br from-amber-100 via-yellow-200 to-amber-300 border-amber-400 shadow-sm' };
         const mime = (item.mimeType || '').toLowerCase();
         const name = item.name.toLowerCase();
-        if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; }
+        if (name.endsWith('.dwg') || name.endsWith('.dxf') || mime.includes('acad') || mime.includes('dwg') || mime.includes('dxf')) { return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border-red-100' }; }
         if (mime.startsWith('image/')) return { icon: 'fa-image', color: 'text-purple-500', bg: 'bg-purple-50 border-purple-100' };
         if (mime.includes('pdf')) return { icon: 'fa-file-pdf', color: 'text-red-500', bg: 'bg-red-50 border-red-100' };
         if (mime.includes('spreadsheet') || mime.includes('excel') || name.endsWith('.xlsx')) return { icon: 'fa-file-excel', color: 'text-green-500', bg: 'bg-green-50 border-green-100' };
@@ -209,7 +209,7 @@ const ArchiveFullViewer: React.FC<{
     };
 
     return (
-        <div className="fixed inset-0 z-[100] bg-white flex flex-col animate-scale-in">
+        <div className="fixed inset-0 z-[2000] bg-white flex flex-col animate-fade-in">
             <div className="bg-slate-900 text-white px-3.5 py-2.5 flex justify-between items-center shadow-md z-20 shrink-0 border-b border-slate-800">
                 <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1 ml-2">
                     <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
@@ -362,7 +362,7 @@ const ArchiveFullViewer: React.FC<{
                         </div>
                     </div>
                 ) : (
-                    <div className="archive-card-content w-full min-h-full p-4 md:p-8 max-w-5xl mx-auto">
+                    <div className="archive-card-content w-full min-h-full p-4 md:p-8">
                         <InteractiveReportViewer
                             htmlContent={content}
                             isDirectEditing={isDirectEditing}
@@ -874,7 +874,7 @@ export default function ProjectFolder() {
       try {
           const blob = await api.downloadFileBlob(item.id, (p) => setShareState(prev => ({...prev, progress: p})));
           let mimeType = blob.type;
-          if (item.name.toLowerCase().endsWith('.dwg')) {
+          if (item.name.toLowerCase().endsWith('.dwg') || item.name.toLowerCase().endsWith('.dxf')) {
               mimeType = 'application/octet-stream';
           }
           const file = new File([blob], item.name, { type: mimeType });
@@ -1063,7 +1063,7 @@ export default function ProjectFolder() {
             </div>
         </div> 
       )}
-      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="animate-slide-up min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map(item => {
+      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map(item => {
           if (viewMode === 'grid' && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
               const mime = (item.mimeType || '').toLowerCase();
               const name = item.name.toLowerCase();
@@ -1089,7 +1089,28 @@ export default function ProjectFolder() {
               );
           }
           return viewMode === 'list' ? ( <FileItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> ) : ( <FileGridCard key={item.id} item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> );
-      })} </div> )} </div> )}
+      })}
+      {viewMode === 'grid' && sortedItems.length > 0 && (
+          <>
+              {sortedItems.length % 3 !== 0 &&
+                  Array.from({ length: 3 - (sortedItems.length % 3) }).map((_, idx) => (
+                      <div
+                          key={`empty-grid-sm-${idx}`}
+                          aria-hidden="true"
+                          className="md:hidden aspect-square rounded-2xl border-2 border-dashed border-slate-300/80 bg-slate-50/30 pointer-events-none select-none"
+                      />
+                  ))}
+              {sortedItems.length % 4 !== 0 &&
+                  Array.from({ length: 4 - (sortedItems.length % 4) }).map((_, idx) => (
+                      <div
+                          key={`empty-grid-md-${idx}`}
+                          aria-hidden="true"
+                          className="hidden md:block aspect-square rounded-2xl border-2 border-dashed border-slate-300/80 bg-slate-50/30 pointer-events-none select-none"
+                      />
+                  ))}
+          </>
+      )}
+      </div> )} </div> )}
       
       {isDrawingsFolder && ( <DwgController currentFolderId={currentFolderId} onUploadStart={() => { setIsUploading(true); setUploadProgress(0); }} onUploadProgress={(p, msg) => { setUploadProgress(p); setUploadStatusMsg(msg); }} onUploadComplete={() => { setIsUploading(false); fetchContents(); }} /> )}
       

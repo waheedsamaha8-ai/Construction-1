@@ -175,21 +175,21 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
     // This prevents the "Body" from scrolling, stopping all layout jumps.
     <div className="h-[100dvh] w-full bg-slate-100 flex flex-col overflow-hidden relative">
       
-      {/* Navbar - Fixed Height Flex Item */}
-      <nav className="h-[60px] bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-md z-50 shrink-0 safe-top no-print">
-        <div className="container mx-auto px-2 h-full flex justify-between items-center">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
-            <div className="bg-yellow-500 p-1.5 rounded-lg text-slate-900 shadow-lg hover:scale-105 transition-transform">
-              <i className="fa-solid fa-helmet-safety text-lg"></i>
+      {/* Navbar - Shown only on Home Page so Folders open in a full window */}
+      {isHomePage && (
+        <nav className="h-[60px] bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-md z-50 shrink-0 safe-top no-print">
+          <div className="w-full px-3 h-full flex justify-between items-center">
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
+              <div className="bg-yellow-500 p-1.5 rounded-lg text-slate-900 shadow-lg hover:scale-105 transition-transform">
+                <i className="fa-solid fa-helmet-safety text-lg"></i>
+              </div>
+              <div>
+                <h1 className="text-sm font-bold leading-tight">مدير المشروعات</h1>
+                <p className="text-[9px] text-slate-400 font-normal">Construction Manager Pro</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-sm font-bold leading-tight">مدير المشروعات</h1>
-              <p className="text-[9px] text-slate-400 font-normal">Construction Manager Pro</p>
-            </div>
-          </div>
-          
-          {/* Settings Icon-Only Button - ONLY visible on the Home Page */}
-          {isHomePage && (
+            
+            {/* Settings Icon-Only Button */}
             <div className="relative flex items-center">
               <button
                 onClick={() => setShowSettingsMenu(prev => !prev)}
@@ -320,14 +320,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                 </>
               )}
             </div>
-          )}
-        </div>
-      </nav>
+          </div>
+        </nav>
+      )}
 
       {/* Secondary Header/Breadcrumb - Flex Item */}
       {hasSecondaryHeader && (
-        <header className="bg-white shadow-sm border-b border-slate-200 z-40 shrink-0 no-print">
-          <div className="container mx-auto px-2 py-2">
+        <header className="bg-white shadow-sm border-b border-slate-200 z-40 shrink-0 safe-top no-print">
+          <div className="w-full px-3 py-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 overflow-hidden flex-1">
                  {/* Only show default back button if specifically requested and NO title component handling it */}
@@ -357,7 +357,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       )}
 
       {/* Main Content - SCROLLABLE AREA */}
-      <main className="flex-1 overflow-y-auto overflow-x-hidden container mx-auto px-2 py-4 animate-fade-in custom-scrollbar">
+      <main className="flex-1 overflow-y-auto overflow-x-hidden w-full px-2 sm:px-4 py-4 custom-scrollbar">
         {children}
         {/* Safe bottom spacing for mobile gestures */}
         <div className="h-10 w-full shrink-0"></div> 

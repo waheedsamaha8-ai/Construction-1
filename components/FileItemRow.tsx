@@ -66,7 +66,7 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
     if (isFolder) return { icon: 'fa-folder', color: 'text-amber-600 drop-shadow-sm', bg: 'bg-gradient-to-br from-amber-100 via-yellow-200 to-amber-300 border border-amber-400 shadow-sm' };
 
     // AutoCAD Special Icon
-    if (name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg')) {
+    if (name.endsWith('.dwg') || name.endsWith('.dxf') || mime.includes('acad') || mime.includes('dwg') || mime.includes('dxf')) {
         return { icon: 'fa-compass-drafting', color: 'text-[#c41e3a]', bg: 'bg-red-50 border border-red-100' };
     }
 

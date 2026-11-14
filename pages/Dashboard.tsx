@@ -850,8 +850,8 @@ const Dashboard: React.FC = () => {
       />
 
       {isExplainModalOpen && (
-          <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center backdrop-blur-sm p-0 animate-fade-in">
-              <div className="bg-white w-full h-full flex flex-col animate-scale-in">
+          <div className="fixed inset-0 bg-white z-[2000] flex flex-col p-0 animate-fade-in">
+              <div className="bg-white w-full h-full flex flex-col">
                   <div className="bg-slate-900 px-3.5 py-2.5 text-white flex justify-between items-center shrink-0 relative shadow-md border-b border-slate-800">
                       <div className="flex items-center gap-2.5 min-w-0 flex-1 ml-2">
                           <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center shrink-0">
@@ -1011,7 +1011,7 @@ const Dashboard: React.FC = () => {
                               </div>
                           </div>
                       ) : (
-                          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-6 max-w-5xl mx-auto">
+                          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-6 w-full">
                               <InteractiveReportViewer
                                   htmlContent={explainContent}
                                   onContentChange={handleUpdateTipContent}

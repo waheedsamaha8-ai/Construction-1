@@ -612,7 +612,7 @@ export default function MarketPricesModal({ onClose }: MarketPricesModalProps) {
 
                 {/* Items List (Mobile Optimized Vertical Cards) */}
                 {showItems && (
-                    <div className="flex flex-col gap-3 pb-20 max-w-4xl mx-auto animate-slide-up">
+                    <div className="flex flex-col gap-3 pb-20 w-full animate-slide-up">
                         
                         {/* SPECIAL VIEW: BULLETINS ACCORDION */}
                         {selectedCategory === 'ministry_bulletin' && !isSearching && bulletinGroups ? (

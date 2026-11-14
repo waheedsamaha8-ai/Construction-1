@@ -158,7 +158,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi') || name.endsWith('.webm') || name.endsWith('.mkv') || name.endsWith('.3gp');
   const isAudio = mime.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav') || name.endsWith('.m4a') || name.endsWith('.ogg');
   const isPdf = mime.includes('pdf');
-  const isDwg = name.endsWith('.dwg') || mime.includes('acad') || mime.includes('dwg'); 
+  const isDwg = name.endsWith('.dwg') || name.endsWith('.dxf') || mime.includes('acad') || mime.includes('dwg') || mime.includes('dxf'); 
   
   const isText = !isOffice && !isPdf && !isImage && !isVideo && !isAudio && !isDwg && (
                  mime.startsWith('text/') || 
@@ -978,7 +978,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   }
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col animate-fade-in safe-bottom safe-top">
+    <div className="fixed inset-0 z-[2000] bg-black/95 backdrop-blur-md flex flex-col animate-fade-in safe-bottom safe-top">
       {!isDwg && (
           <div className={`flex justify-between items-center px-3 py-2 text-white shadow-md z-30 ${isWord ? 'bg-blue-800 border-b border-blue-600' : isExcel ? 'bg-emerald-800 border-b border-emerald-600' : isPowerPoint ? 'bg-orange-800 border-b border-orange-600' : isDwg ? 'bg-[#0f172a] border-b border-slate-700' : 'bg-slate-900'}`}>
             <div className="flex items-center gap-2 overflow-hidden min-w-0 flex-1 ml-2">
@@ -1264,7 +1264,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                         </div> 
                     ) : ( 
                         <div className="w-full min-h-full bg-slate-50 p-2 sm:p-6">
-                            <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow border border-slate-200 p-4 sm:p-8">
+                            <div className="w-full bg-white rounded-2xl shadow border border-slate-200 p-4 sm:p-8">
                                 <InteractiveReportViewer
                                     htmlContent={analysisResult || ''}
                                     showFloatingEditBar={false}

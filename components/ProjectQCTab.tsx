@@ -846,7 +846,7 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
 
                     {/* Interactive Report Content */}
                     <div className="flex-1 overflow-y-auto bg-slate-50 p-2 sm:p-6">
-                        <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow border border-slate-200 p-3 sm:p-6">
+                        <div className="w-full bg-white rounded-2xl shadow border border-slate-200 p-3 sm:p-6">
                             <InteractiveReportViewer
                                 htmlContent={getChecklistHtml(selectedChecklist)}
                                 showFloatingEditBar={false}
@@ -871,8 +871,8 @@ const ProjectQCTab: React.FC<ProjectQCTabProps> = ({
 
             {/* Create / Edit Interactive QC Model Modal */}
             {isFormOpen && (
-                <div className="fixed inset-0 z-[1750] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-0 sm:p-3 animate-fade-in">
-                    <div className="bg-white w-full h-full sm:h-[95vh] sm:max-w-5xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 animate-scale-in">
+                <div className="fixed inset-0 z-[1750] bg-white flex flex-col animate-fade-in">
+                    <div className="bg-white w-full h-full overflow-hidden flex flex-col">
                         {/* Modal Sticky Header */}
                         <div className="bg-slate-900 px-3 py-2 text-white flex justify-between items-center shrink-0 border-b border-slate-800">
                             <div className="flex items-center gap-2 min-w-0">
