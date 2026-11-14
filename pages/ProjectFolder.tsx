@@ -592,6 +592,18 @@ export default function ProjectFolder() {
   useEffect(() => { if (currentFolderId) fetchContents(); }, [currentFolderId]);
 
   useEffect(() => {
+    const onProjectChanged = (e: Event) => {
+      const updated = (e as CustomEvent).detail as Project | undefined;
+      if (updated && updated.id === projectId) {
+        setCurrentProject(updated);
+        if (currentFolderId === projectId && updated.name) setCurrentFolderName(updated.name);
+      }
+    };
+    window.addEventListener('project_data_changed', onProjectChanged);
+    return () => window.removeEventListener('project_data_changed', onProjectChanged);
+  }, [projectId, currentFolderId]);
+
+  useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
       e.preventDefault();
       handleBack();
@@ -1064,13 +1076,27 @@ export default function ProjectFolder() {
         </div> 
       )}
       {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map(item => {
+          const handlePrefetchItem = () => {
+              if (item.type === ItemType.FOLDER) {
+                  if (!api.getCachedContents(item.id)) {
+                      api.getLocalContents(item.id).catch(() => {});
+                  }
+              } else {
+                  const m = (item.mimeType || '').toLowerCase();
+                  const n = (item.name || '').toLowerCase();
+                  const isVid = m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp)$/i.test(n);
+                  if (!isVid && (!item.size || item.size <= 15 * 1024 * 1024)) {
+                      api.prefetchFileBlob(item.id);
+                  }
+              }
+          };
           if (viewMode === 'grid' && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
               const mime = (item.mimeType || '').toLowerCase();
               const name = item.name.toLowerCase();
               const isVideoItem = mime.startsWith('video/') || name.endsWith('.webm') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');
 
               return (
-                  <div key={item.id} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
+                  <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
                       {isVideoItem ? (
                           <VideoThumbnail item={item} className="w-full h-full" />
                       ) : (
@@ -1088,7 +1114,15 @@ export default function ProjectFolder() {
                   </div>
               );
           }
-          return viewMode === 'list' ? ( <FileItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> ) : ( <FileGridCard key={item.id} item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> );
+          return viewMode === 'list' ? (
+              <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
+                  <FileItemRow item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} />
+              </div>
+          ) : (
+              <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
+                  <FileGridCard item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} />
+              </div>
+          );
       })}
       {viewMode === 'grid' && sortedItems.length > 0 && (
           <>

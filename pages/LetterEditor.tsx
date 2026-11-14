@@ -147,6 +147,7 @@ const LetterEditor: React.FC = () => {
   const footerTextColor = isFooterLight ? '#334155' : '#ffffff';
 
   const [isSaving, setIsSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [isAnalyzingDraft, setIsAnalyzingDraft] = useState(false);
   const [isRefiningText, setIsRefiningText] = useState(false);
@@ -154,6 +155,10 @@ const LetterEditor: React.FC = () => {
   const [refineTargetText, setRefineTargetText] = useState('');
   const [refineCustomPrompt, setRefineCustomPrompt] = useState('');
   const refineRangeRef = useRef<Range | null>(null);
+  const draftSaveTimerRef = useRef<any>(null);
+  const cloudAutoSaveTimerRef = useRef<any>(null);
+  const hasInitializedContentRef = useRef(false);
+  const draftStorageKey = useMemo(() => `letter_draft_${folderId || 'root'}_${fileId || 'new'}`, [folderId, fileId]);
   
   // Scaling State
   const [scale, setScale] = useState(1);
@@ -546,7 +551,12 @@ const LetterEditor: React.FC = () => {
   };
 
   const handleKeyUp = () => { checkFormats(); };
-  const handleInput = () => { checkFormats(); };
+  const handleInput = () => {
+      checkFormats();
+      if (hasInitializedContentRef.current) {
+          scheduleAutoSave();
+      }
+  };
   
   const execCmd = (command: string, value: string = '') => { 
       const rootContainer = paperRef.current || editorRef.current;
@@ -1810,52 +1820,9 @@ const LetterEditor: React.FC = () => {
 
   
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-        if (fileId && folderId) {
-            setIsLoadingContent(true);
-            try {
-                const meta = await api.getFileMetadata(fileId);
-                if (active && meta) setFilename(meta.name.replace('.html', ''));
-            } catch(e) {}
-            let content = '';
-            try { content = await api.getFileContent(fileId); } catch(e) {}
-            if (active) {
-                if (content) parseAndLoadContent(content);
-                else if (editorRef.current && !editorRef.current.innerHTML) editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
-                setIsLoadingContent(false);
-            }
-        } else if (location.state && location.state.initialContent) {
-            parseAndLoadContent(location.state.initialContent);
-            setFilename(location.state.filename || "تقرير_استشاري_مسودة");
-        } else {
-            setShowHeader(true);
-            setShowTitle(true);
-            setShowSubtitle(true);
-            setShowDate(true);
-            setShowRef(true);
-            setReportTitle('تقرير هندسي استشاري');
-            setHeaderSubtitle('تقرير استشاري');
-            setDateLabel('التاريخ:');
-            setMetaDate(new Date().toLocaleDateString('en-CA'));
-            setRefLabel('المرجع:');
-            setMetaRef(`REF-${Date.now().toString().slice(-6)}`);
-            setHeaderColor('#1e3a8a');
-            if (editorRef.current) editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
-        }
-    };
-    load();
-    return () => { active = false; };
-  }, [fileId, folderId, location.state]);
-
-  const handleSave = async () => {
-    if (!folderId || !editorRef.current) return;
-    setIsSaving(true);
-    
+  const buildFullReportHtml = useCallback(() => {
+    if (!editorRef.current) return null;
     const bodyContent = editorRef.current.innerHTML;
-    
-    // Pass flags to build report
     const fullReport = ReportGenerator.buildReport(reportTitle, bodyContent, { 
         ref: metaRef, 
         date: metaDate,
@@ -1871,11 +1838,9 @@ const LetterEditor: React.FC = () => {
             meta: metaFontSize,
             footer: footerFontSize
         },
-        // Flags
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter
     });
 
-    // Create Settings Block (Hidden DIV) to persist visibility/config state
     const currentSettings = {
         showHeader, showTitle, showSubtitle, showDate, showRef, showFooter,
         reportTitle, headerSubtitle, footerText,
@@ -1885,12 +1850,156 @@ const LetterEditor: React.FC = () => {
         printPageMargin, marginConfig
     };
     const settingsHTML = `<div id="saved-page-settings" data-config="${encodeURIComponent(JSON.stringify(currentSettings))}" style="display:none;"></div>`;
-    
-    // Inject settings into the body of the generated HTML (before closing body)
-    const finalContent = fullReport.replace('</body>', `${settingsHTML}</body>`);
+    return {
+        bodyContent,
+        finalContent: fullReport.replace('</body>', `${settingsHTML}</body>`)
+    };
+  }, [reportTitle, metaRef, metaDate, headerSubtitle, footerText, headerColor, footerColor, marginConfig, dateLabel, refLabel, titleFontSize, subtitleFontSize, metaFontSize, footerFontSize, showHeader, showTitle, showSubtitle, showDate, showRef, showFooter, printPageMargin]);
+
+  const persistLocalDraftNow = useCallback(() => {
+    if (!editorRef.current || !hasInitializedContentRef.current) return;
+    const built = buildFullReportHtml();
+    if (!built) return;
+    try {
+      localStorage.setItem(draftStorageKey, JSON.stringify({
+        filename,
+        finalContent: built.finalContent,
+        updatedAt: Date.now()
+      }));
+    } catch {}
+  }, [buildFullReportHtml, draftStorageKey, filename]);
+
+  const performSilentCloudAutoSave = useCallback(async () => {
+    if (!folderId || !fileId || !editorRef.current || !hasInitializedContentRef.current) return;
+    const built = buildFullReportHtml();
+    if (!built) return;
+    setAutoSaveStatus('saving');
+    try {
+      await api.saveLetter(folderId, filename, built.finalContent, fileId, projectId, true);
+      try { localStorage.removeItem(draftStorageKey); } catch {}
+      setAutoSaveStatus('saved');
+      setTimeout(() => setAutoSaveStatus(prev => (prev === 'saved' ? 'idle' : prev)), 1500);
+    } catch {
+      setAutoSaveStatus('idle');
+    }
+  }, [folderId, fileId, buildFullReportHtml, filename, projectId, draftStorageKey]);
+
+  const scheduleAutoSave = useCallback(() => {
+    setAutoSaveStatus('saving');
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = setTimeout(() => {
+      persistLocalDraftNow();
+      if (!fileId) {
+        setAutoSaveStatus('saved');
+        setTimeout(() => setAutoSaveStatus(prev => (prev === 'saved' ? 'idle' : prev)), 1200);
+      }
+    }, 250);
+
+    if (fileId) {
+      if (cloudAutoSaveTimerRef.current) clearTimeout(cloudAutoSaveTimerRef.current);
+      cloudAutoSaveTimerRef.current = setTimeout(() => {
+        performSilentCloudAutoSave();
+      }, 900);
+    }
+  }, [persistLocalDraftNow, fileId, performSilentCloudAutoSave]);
+
+  useEffect(() => {
+    const flushNow = () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      if (hasInitializedContentRef.current) {
+        persistLocalDraftNow();
+        if (fileId && cloudAutoSaveTimerRef.current) {
+          clearTimeout(cloudAutoSaveTimerRef.current);
+          cloudAutoSaveTimerRef.current = null;
+          performSilentCloudAutoSave();
+        }
+      }
+    };
+    const onVisChange = () => {
+      if (document.visibilityState === 'hidden') flushNow();
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+    window.addEventListener('pagehide', flushNow);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisChange);
+      window.removeEventListener('pagehide', flushNow);
+      flushNow();
+    };
+  }, [persistLocalDraftNow, performSilentCloudAutoSave, fileId]);
+
+  useEffect(() => {
+    let active = true;
+    hasInitializedContentRef.current = false;
+    const load = async () => {
+        let localDraft: { filename?: string; finalContent?: string; updatedAt?: number } | null = null;
+        try {
+            const rawDraft = localStorage.getItem(draftStorageKey);
+            if (rawDraft) localDraft = JSON.parse(rawDraft);
+        } catch {}
+
+        if (fileId && folderId) {
+            setIsLoadingContent(true);
+            try {
+                const meta = await api.getFileMetadata(fileId);
+                if (active && meta) setFilename(meta.name.replace('.html', ''));
+            } catch(e) {}
+            let content = '';
+            try { content = await api.getFileContent(fileId); } catch(e) {}
+            if (active) {
+                if (localDraft?.finalContent && localDraft.updatedAt && (Date.now() - localDraft.updatedAt < 1000 * 60 * 60 * 24)) {
+                    parseAndLoadContent(localDraft.finalContent);
+                    if (localDraft.filename) setFilename(localDraft.filename);
+                } else if (content) {
+                    parseAndLoadContent(content);
+                } else if (editorRef.current && !editorRef.current.innerHTML) {
+                    editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
+                }
+                setIsLoadingContent(false);
+                hasInitializedContentRef.current = true;
+            }
+        } else if (location.state && location.state.initialContent) {
+            parseAndLoadContent(location.state.initialContent);
+            setFilename(location.state.filename || "تقرير_استشاري_مسودة");
+            hasInitializedContentRef.current = true;
+        } else {
+            if (localDraft?.finalContent && localDraft.updatedAt && (Date.now() - localDraft.updatedAt < 1000 * 60 * 60 * 24)) {
+                parseAndLoadContent(localDraft.finalContent);
+                if (localDraft.filename) setFilename(localDraft.filename);
+            } else {
+                setShowHeader(true);
+                setShowTitle(true);
+                setShowSubtitle(true);
+                setShowDate(true);
+                setShowRef(true);
+                setReportTitle('تقرير هندسي استشاري');
+                setHeaderSubtitle('تقرير استشاري');
+                setDateLabel('التاريخ:');
+                setMetaDate(new Date().toLocaleDateString('en-CA'));
+                setRefLabel('المرجع:');
+                setMetaRef(`REF-${Date.now().toString().slice(-6)}`);
+                setHeaderColor('#1e3a8a');
+                if (editorRef.current) editorRef.current.innerHTML = DEFAULT_BODY_CONTENT;
+            }
+            hasInitializedContentRef.current = true;
+        }
+    };
+    load();
+    return () => { active = false; };
+  }, [fileId, folderId, location.state, draftStorageKey]);
+
+  const handleSave = async () => {
+    if (!folderId || !editorRef.current) return;
+    const built = buildFullReportHtml();
+    if (!built) return;
+    setIsSaving(true);
+    setAutoSaveStatus('saving');
 
     try {
-        const result = await api.saveLetter(folderId, filename, finalContent, fileId || undefined, projectId);
+        const result = await api.saveLetter(folderId, filename, built.finalContent, fileId || undefined, projectId);
+        try { localStorage.removeItem(draftStorageKey); } catch {}
         
         // NEW: Update Project Card or BOQ Item Saved Report if this was generated from one
         const cardId = location.state?.cardId;
@@ -1913,7 +2022,7 @@ const LetterEditor: React.FC = () => {
                         const key = cardMap[cardType];
                         if (key && project[key]) {
                             project[key] = project[key].map((item: any) => 
-                                item.id === cardId ? { ...item, htmlContent: finalContent } : item
+                                item.id === cardId ? { ...item, htmlContent: built.finalContent } : item
                             );
                             updated = true;
                         }
@@ -1929,7 +2038,7 @@ const LetterEditor: React.FC = () => {
                                         [boqReportType]: {
                                             type: boqReportType,
                                             title: reportTitle || existingSaved[boqReportType]?.title || 'تقرير البند',
-                                            content: bodyContent,
+                                            content: built.bodyContent,
                                             updatedAt: new Date().toISOString()
                                         }
                                     }
@@ -1948,9 +2057,10 @@ const LetterEditor: React.FC = () => {
             }
         }
 
-        alert("تم حفظ المستند بنجاح في مجلد الخطابات.");
+        setAutoSaveStatus('saved');
+        setTimeout(() => setAutoSaveStatus(prev => (prev === 'saved' ? 'idle' : prev)), 2500);
         if (!fileId && result.id) { navigate(`/editor/${projectId}/${result.parentId}?fileId=${result.id}`, { replace: true }); }
-    } catch (e) { alert("حدث خطأ أثناء الحفظ."); } finally { setIsSaving(false); }
+    } catch (e) { setAutoSaveStatus('idle'); alert("حدث خطأ أثناء الحفظ."); } finally { setIsSaving(false); }
   };
 
   const handlePrint = () => { 
@@ -2210,8 +2320,22 @@ const LetterEditor: React.FC = () => {
             <div className="flex items-center gap-3 shrink-0">
                  <button onClick={handleBack} className="text-slate-400 hover:text-white transition"><i className="fa-solid fa-arrow-right rtl:rotate-180"></i></button>
                  <div className="flex flex-col">
-                    <span className="text-[10px] text-slate-400">اسم الملف</span>
-                    <input type="text" value={filename} onChange={(e) => setFilename(e.target.value)} className="font-bold text-white text-sm bg-transparent outline-none border-b border-transparent hover:border-slate-500 focus:border-blue-500 w-36 sm:w-56" />
+                    <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-400">اسم الملف</span>
+                        {autoSaveStatus === 'saving' && (
+                            <span className="text-[10px] text-amber-400 flex items-center gap-1 font-bold">
+                                <i className="fa-solid fa-arrows-rotate fa-spin text-[9px]"></i>
+                                <span>جاري الحفظ...</span>
+                            </span>
+                        )}
+                        {autoSaveStatus === 'saved' && (
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-bold">
+                                <i className="fa-solid fa-check text-[9px]"></i>
+                                <span>تم الحفظ</span>
+                            </span>
+                        )}
+                    </div>
+                    <input type="text" value={filename} onChange={(e) => { setFilename(e.target.value); if (hasInitializedContentRef.current) scheduleAutoSave(); }} className="font-bold text-white text-sm bg-transparent outline-none border-b border-transparent hover:border-slate-500 focus:border-blue-500 w-36 sm:w-56" />
                  </div>
             </div>
             <div className="relative shrink-0 flex items-center gap-2" ref={headerMenuRef}>

@@ -114,6 +114,119 @@ const isFileDeleted = (id: string | null | undefined): boolean => {
 let memoryMarketPrices: MarketItem[] | null = null;
 const marketPricesSubscribers = new Set<(prices: MarketItem[]) => void>();
 const marketPricesChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('construction_pro_market_prices_live') : null;
+const projectSyncChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('construction_app_sync_channel') : null;
+
+// --- HIGH-SPEED IN-MEMORY BLOB & OBJECT URL CACHE (0ms File Viewer Switching) ---
+interface CachedBlobEntry {
+    blob: Blob;
+    url?: string;
+    bytes: number;
+    ts: number;
+}
+const MAX_BLOB_CACHE_ITEMS = 36;
+const MAX_BLOB_CACHE_BYTES = 75 * 1024 * 1024; // 75MB RAM ceiling
+const blobMemoryCache = new Map<string, CachedBlobEntry>();
+const inFlightDownloads = new Map<string, Promise<Blob>>();
+let totalBlobCacheBytes = 0;
+
+const setMemoryBlob = (id: string, blob: Blob) => {
+    if (!id || !blob || blob.size === 0 || blob.size > 30 * 1024 * 1024) return;
+    const existing = blobMemoryCache.get(id);
+    if (existing) {
+        totalBlobCacheBytes -= existing.bytes;
+        if (existing.url && existing.blob !== blob) {
+            try { URL.revokeObjectURL(existing.url); } catch {}
+        }
+        blobMemoryCache.delete(id);
+    }
+    while ((blobMemoryCache.size >= MAX_BLOB_CACHE_ITEMS || totalBlobCacheBytes + blob.size > MAX_BLOB_CACHE_BYTES) && blobMemoryCache.size > 0) {
+        const oldestKey = blobMemoryCache.keys().next().value;
+        if (!oldestKey) break;
+        const oldest = blobMemoryCache.get(oldestKey);
+        if (oldest) {
+            totalBlobCacheBytes -= oldest.bytes;
+            if (oldest.url) {
+                try { URL.revokeObjectURL(oldest.url); } catch {}
+            }
+        }
+        blobMemoryCache.delete(oldestKey);
+    }
+    blobMemoryCache.set(id, { blob, bytes: blob.size, ts: Date.now() });
+    totalBlobCacheBytes += blob.size;
+};
+
+const getMemoryBlob = (id: string): Blob | undefined => {
+    const entry = blobMemoryCache.get(id);
+    if (!entry) return undefined;
+    // Touch LRU order
+    blobMemoryCache.delete(id);
+    entry.ts = Date.now();
+    blobMemoryCache.set(id, entry);
+    return entry.blob;
+};
+
+const getOrCreateMemoryBlobUrl = (id: string, blob?: Blob): string | null => {
+    let entry = blobMemoryCache.get(id);
+    if (!entry && blob) {
+        setMemoryBlob(id, blob);
+        entry = blobMemoryCache.get(id);
+    }
+    if (entry) {
+        if (!entry.url) {
+            entry.url = URL.createObjectURL(entry.blob);
+        }
+        return entry.url;
+    }
+    return blob ? URL.createObjectURL(blob) : null;
+};
+
+const invalidateMemoryBlob = (id: string) => {
+    const existing = blobMemoryCache.get(id);
+    if (existing) {
+        totalBlobCacheBytes -= existing.bytes;
+        if (existing.url) {
+            try { URL.revokeObjectURL(existing.url); } catch {}
+        }
+        blobMemoryCache.delete(id);
+    }
+};
+
+// --- COALESCED NON-BLOCKING CLOUD PROJECT WRITE QUEUE ---
+const pendingProjectCloudWrites = new Map<string, { project: Project; timer: any }>();
+let lastProjectsSignature = '';
+
+const computeProjectsSignature = (list: Project[]): string => {
+    return list.map(p => `${p.id}:${p.updatedAt || 0}:${p.status}:${p.executionLogs?.length || 0}:${p.boqItems?.length || 0}:${p.payments?.length || 0}`).join('|');
+};
+
+const flushProjectCloudWrite = async (id: string): Promise<void> => {
+    const entry = pendingProjectCloudWrites.get(id);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    pendingProjectCloudWrites.delete(id);
+    const updatedProject = entry.project;
+
+    if (typeof navigator !== 'undefined' && navigator.onLine && !authService.isGuest()) {
+        try {
+            const projectRef = doc(db, "projects", id);
+            const safeUpdates = prepareProjectForFirestore(updatedProject);
+            await setDoc(projectRef, safeUpdates, { merge: true });
+        } catch (e: any) {
+            if (e?.code !== 'permission-denied') {
+                await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject });
+            }
+        }
+    } else {
+        await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject });
+    }
+};
+
+const flushAllPendingCloudWrites = () => {
+    const ids = Array.from(pendingProjectCloudWrites.keys());
+    ids.forEach(id => {
+        flushProjectCloudWrite(id).catch(() => {});
+    });
+};
 
 if (marketPricesChannel) {
     marketPricesChannel.onmessage = (event) => {
@@ -128,6 +241,7 @@ if (marketPricesChannel) {
 
 if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
+        flushAllPendingCloudWrites();
         if (memoryMarketPrices && memoryMarketPrices.length > 0) {
             setDoc(doc(db, "market_data", "current_prices"), {
                 items: memoryMarketPrices,
@@ -135,6 +249,14 @@ if (typeof window !== 'undefined') {
                 updatedBy: "user_action"
             }).catch(() => {});
         }
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            flushAllPendingCloudWrites();
+        }
+    });
+    window.addEventListener('pagehide', () => {
+        flushAllPendingCloudWrites();
     });
 }
 
@@ -1264,11 +1386,34 @@ export const api = {
   getSyncRecentFiles(): FileItem[] { try { const stored = localStorage.getItem(LOCAL_STORAGE_RECENT_FILES_KEY); if (stored) return JSON.parse(stored).filter((f: any) => f && !isFileDeleted(f.id)); } catch(e) {} return []; },
   getSyncTasks(): Task[] { return [...localTasks]; },
   
-  // --- OFFLINE-READY DOWNLOAD FUNCTION ---
+  getCachedBlobSync(fileId: string): Blob | undefined {
+      return getMemoryBlob(fileId);
+  },
+  getBlobUrlSync(fileId: string): string | null {
+      const cached = getMemoryBlob(fileId);
+      if (!cached) return null;
+      return getOrCreateMemoryBlobUrl(fileId, cached);
+  },
+  getOrCreateBlobUrl(fileId: string, blob: Blob): string {
+      return getOrCreateMemoryBlobUrl(fileId, blob) || URL.createObjectURL(blob);
+  },
+  prefetchFileBlob(fileId: string): void {
+      if (!fileId || getMemoryBlob(fileId) || inFlightDownloads.has(fileId)) return;
+      this.downloadFileBlob(fileId, undefined, true).catch(() => {});
+  },
+
+  // --- OFFLINE-READY DOWNLOAD FUNCTION WITH IN-MEMORY LRU + IN-FLIGHT DEDUP ---
   async downloadFileBlob(fileId: string, onProgress?: (percent: number) => void, silent: boolean = false): Promise<Blob> { 
+      const memBlob = getMemoryBlob(fileId);
+      if (memBlob) {
+          if (onProgress) onProgress(100);
+          return memBlob;
+      }
+
       try {
           const cachedBlob = await dbService.getBlob(fileId);
           if (cachedBlob) {
+              setMemoryBlob(fileId, cachedBlob);
               if (onProgress) onProgress(100);
               return cachedBlob;
           }
@@ -1279,9 +1424,17 @@ export const api = {
       }
 
       if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED");
+
+      // Deduplicate concurrent downloads for the exact same fileId
+      const existingPromise = inFlightDownloads.get(fileId);
+      if (existingPromise) {
+          const blob = await existingPromise;
+          if (onProgress) onProgress(100);
+          return blob;
+      }
       
       if (!silent) triggerLoadingStart(); 
-      return new Promise((resolve, reject) => { 
+      const downloadPromise = new Promise<Blob>((resolve, reject) => { 
           const xhr = new XMLHttpRequest(); 
           xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`); 
           xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`); 
@@ -1297,7 +1450,8 @@ export const api = {
               if (!silent) triggerLoadingStop(); 
               if (xhr.status >= 200 && xhr.status < 300) { 
                   const blob = xhr.response; 
-                  try { await dbService.putBlob(fileId, blob); } catch (e) {}
+                  setMemoryBlob(fileId, blob);
+                  dbService.putBlob(fileId, blob).catch(() => {});
                   resolve(blob); 
               } else { 
                   if (xhr.status === 403 || xhr.status === 400 || xhr.status === 500) { 
@@ -1305,7 +1459,8 @@ export const api = {
                           const exportRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`, { headers: { 'Authorization': `Bearer ${accessToken}` } }); 
                           if (exportRes.ok) { 
                               const blob = await exportRes.blob(); 
-                              try { await dbService.putBlob(fileId, blob); } catch(e){}
+                              setMemoryBlob(fileId, blob);
+                              dbService.putBlob(fileId, blob).catch(() => {});
                               if (onProgress) onProgress(100); 
                               resolve(blob); 
                               return; 
@@ -1320,7 +1475,12 @@ export const api = {
               reject(new Error('Network error during download')); 
           }; 
           xhr.send(); 
-      }); 
+      }).finally(() => {
+          inFlightDownloads.delete(fileId);
+      });
+
+      inFlightDownloads.set(fileId, downloadPromise);
+      return downloadPromise;
   },
 
   async ensureRootFolder(): Promise<string> { 
@@ -1421,28 +1581,37 @@ export const api = {
   async getLocalContents(folderId: string, includeSystemFolders: boolean = false): Promise<FileItem[]> {
       if (!folderId || isFileDeleted(folderId)) return [];
       try {
-          const allFiles = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id));
           const isCountable = (f: FileItem) => {
               const n = (f.name || '').toLowerCase();
               return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
           };
-          let localChildren = allFiles.filter(f => f.parentId === folderId);
+          let localChildren = (await dbService.getByParentId<FileItem>(folderId)).filter(f => f && !isFileDeleted(f.id));
           if (!includeSystemFolders) {
               localChildren = localChildren.filter(f => f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER);
           }
-          localChildren = localChildren.map(item => {
-              if (item.type === ItemType.FOLDER) {
-                  const subItems = allFiles.filter(f => f.parentId === item.id && isCountable(f));
-                  const localFileCount = subItems.filter(f => f.type !== ItemType.FOLDER).length;
-                  const localFolderCount = subItems.filter(f => f.type === ItemType.FOLDER).length;
-                  return {
-                      ...item,
-                      fileCount: Math.max(localFileCount, item.fileCount || 0),
-                      folderCount: Math.max(localFolderCount, item.folderCount || 0)
-                  };
-              }
-              return item;
-          });
+          const folders = localChildren.filter(i => i.type === ItemType.FOLDER);
+          if (folders.length > 0) {
+              const subResults = await Promise.all(
+                  folders.map(async (folder) => ({
+                      id: folder.id,
+                      subItems: (await dbService.getByParentId<FileItem>(folder.id)).filter(f => f && !isFileDeleted(f.id) && isCountable(f))
+                  }))
+              );
+              const subMap = new Map(subResults.map(r => [r.id, r.subItems]));
+              localChildren = localChildren.map(item => {
+                  if (item.type === ItemType.FOLDER) {
+                      const subItems = subMap.get(item.id) || [];
+                      const localFileCount = subItems.filter(f => f.type !== ItemType.FOLDER).length;
+                      const localFolderCount = subItems.filter(f => f.type === ItemType.FOLDER).length;
+                      return {
+                          ...item,
+                          fileCount: Math.max(localFileCount, item.fileCount || 0),
+                          folderCount: Math.max(localFolderCount, item.folderCount || 0)
+                      };
+                  }
+                  return item;
+              });
+          }
           localChildren = localChildren.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime());
           if (localChildren.length > 0 && !contentCache.has(folderId)) {
               updateCache(folderId, localChildren);
@@ -1841,18 +2010,19 @@ export const api = {
 
               // Prune IndexedDB of any project no longer in Firestore (and not pending creation)
               const validIds = new Set(list.map(p => p.id));
-              for (const lp of allLocalProjects) {
-                  if (lp && lp.id && !validIds.has(lp.id)) {
-                      dbService.deleteItem('projects', lp.id).catch(() => {});
-                  }
+              const staleIds = allLocalProjects.filter(lp => lp && lp.id && !validIds.has(lp.id)).map(lp => lp.id);
+              if (staleIds.length > 0) {
+                  dbService.deleteItems('projects', staleIds).catch(() => {});
               }
 
-              updateCache('projects_list', list);
-              saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
-              for (const p of list) {
-                  dbService.putItem('projects', p).catch(() => {});
+              const sig = computeProjectsSignature(list);
+              if (sig !== lastProjectsSignature) {
+                  lastProjectsSignature = sig;
+                  updateCache('projects_list', list);
+                  saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, list);
+                  dbService.putItems('projects', list).catch(() => {});
+                  onUpdate(list);
               }
-              onUpdate(list);
           }, (err) => {
               if (err.code !== 'permission-denied') {
                   console.warn("Real-time projects listener warning:", err);
@@ -2065,43 +2235,40 @@ export const api = {
 
       const updatedProject = enrichProjectWithAI(rawMerged);
 
-      // 1. Instant local persistence (0ms) + instant cross-tab broadcast
+      // 1. Instant local persistence (0ms) + persistent singleton cross-tab broadcast
       try {
-          await dbService.putItem('projects', updatedProject);
+          dbService.putItem('projects', updatedProject).catch(() => {});
           const cached = this.getSyncProjects();
           const merged = cached.some(p => p.id === id) ? cached.map(p => p.id === id ? updatedProject : p) : [updatedProject, ...cached];
+          lastProjectsSignature = computeProjectsSignature(merged);
           saveToSyncCache(LOCAL_STORAGE_PROJECTS_KEY, merged);
           updateCache('projects_list', merged);
           if (typeof window !== 'undefined') {
-              if ('BroadcastChannel' in window) {
-                  const bc = new BroadcastChannel('construction_app_sync_channel');
-                  bc.postMessage({ type: 'PROJECTS_UPDATED', projects: [updatedProject] });
-                  bc.close();
+              if (projectSyncChannel) {
+                  try { projectSyncChannel.postMessage({ type: 'PROJECTS_UPDATED', projects: [updatedProject] }); } catch {}
               }
               window.dispatchEvent(new CustomEvent('project_data_changed', { detail: updatedProject }));
           }
       } catch (e) {}
 
-      // 2. Cloud Firestore persistence (SetDoc with merge & 1MB size guard)
-      if (navigator.onLine && !authService.isGuest()) {
-          try {
+      // 2. Cloud Firestore persistence
+      if (isSyncProcess) {
+          if (navigator.onLine && !authService.isGuest()) {
               const projectRef = doc(db, "projects", id);
-              const safeUpdates = prepareProjectForFirestore(updatedProject);
-              await setDoc(projectRef, safeUpdates, { merge: true });
-              return updatedProject;
-          } catch (e: any) {
-              if (e.code === 'permission-denied') {
-                  return updatedProject;
-              }
-              if (!isSyncProcess) { 
-                  await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
-              } else throw e;
+              const safePayload = prepareProjectForFirestore(updatedProject);
+              await setDoc(projectRef, safePayload, { merge: true });
           }
-      } else {
-          if (!isSyncProcess) { 
-              await syncService.addToQueue(SyncActionType.UPDATE_PROJECT, { id, updates: updatedProject }); 
-          }
+          return updatedProject;
       }
+
+      // Coalesce rapid edits (60ms) in background so UI & auto-save return in 0ms while guaranteeing cloud durability
+      const existingPending = pendingProjectCloudWrites.get(id);
+      if (existingPending?.timer) clearTimeout(existingPending.timer);
+      const timer = setTimeout(() => {
+          flushProjectCloudWrite(id).catch(() => {});
+      }, 60);
+      pendingProjectCloudWrites.set(id, { project: updatedProject, timer });
+
       return updatedProject;
   },
   async addProjectLog(projectId: string, log: ProjectLog): Promise<void> {
@@ -2287,10 +2454,10 @@ export const api = {
           return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
       };
 
-      // 1. Check memory cache and IndexedDB (always filtering tombstoned deleted files)
+      // 1. Check memory cache and indexed IndexedDB query (O(log N + K), no full table scan)
       const memCachedRaw = this.getCachedContents(targetId);
       const memCached = memCachedRaw ? memCachedRaw.filter(f => f && !isFileDeleted(f.id)) : null;
-      const allFiles = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id)); 
+      const rawChildren = (await dbService.getByParentId<FileItem>(targetId)).filter(f => f && !isFileDeleted(f.id));
 
       // Build map of previous known counts so we never overwrite a known count with 0
       const knownCountsMap = new Map<string, { fileCount: number; folderCount: number }>();
@@ -2299,20 +2466,22 @@ export const api = {
               knownCountsMap.set(item.id, { fileCount: item.fileCount || 0, folderCount: item.folderCount || 0 });
           }
       });
-      allFiles.forEach(item => {
-          if (item.type === ItemType.FOLDER) {
+
+      const localSubfolders = rawChildren.filter(item => item.type === ItemType.FOLDER);
+      if (localSubfolders.length > 0) {
+          await Promise.all(localSubfolders.map(async (item) => {
               const prev = knownCountsMap.get(item.id);
-              const subItems = allFiles.filter(f => f.parentId === item.id && isCountable(f));
+              const subItems = (await dbService.getByParentId<FileItem>(item.id)).filter(f => f && !isFileDeleted(f.id) && isCountable(f));
               const calcFiles = subItems.filter(f => f.type !== ItemType.FOLDER).length;
               const calcFolders = subItems.filter(f => f.type === ItemType.FOLDER).length;
               knownCountsMap.set(item.id, {
                   fileCount: Math.max(calcFiles, item.fileCount || 0, prev?.fileCount || 0),
                   folderCount: Math.max(calcFolders, item.folderCount || 0, prev?.folderCount || 0)
               });
-          }
-      });
+          }));
+      }
 
-      let localChildren = allFiles.filter(f => f.parentId === targetId).map(item => {
+      let localChildren = rawChildren.map(item => {
           if (item.type === ItemType.FOLDER) {
               const counts = knownCountsMap.get(item.id);
               return {
@@ -2332,10 +2501,10 @@ export const api = {
               const countableItems = itemsList.filter(isCountable);
               const fCount = countableItems.filter(i => i.type !== ItemType.FOLDER).length;
               const dCount = countableItems.filter(i => i.type === ItemType.FOLDER).length;
-              const folderRecord = allFiles.find(f => f.id === targetId) || await dbService.getItem<FileItem>('files', targetId);
+              const folderRecord = await dbService.getItem<FileItem>('files', targetId);
               if (folderRecord) {
                   const updatedFolderRecord = { ...folderRecord, fileCount: fCount, folderCount: dCount };
-                  await dbService.putItem('files', updatedFolderRecord);
+                  dbService.putItem('files', updatedFolderRecord).catch(() => {});
                   if (folderRecord.parentId) {
                       const parentCached = this.getCachedContents(folderRecord.parentId);
                       if (parentCached) {
@@ -2349,7 +2518,7 @@ export const api = {
       
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(targetId)) {
           const resultList = localChildren.length > 0 ? localChildren : (memCached || []);
-          await syncParentFolderCounts(resultList);
+          syncParentFolderCounts(resultList);
           updateCache(targetId, resultList);
           return resultList; 
       }
@@ -2398,7 +2567,7 @@ export const api = {
                   };
               }); 
           
-          // Prune stale IndexedDB files under targetId that are no longer on Google Drive (prevents deleted files flashing on re-entry!)
+          // Prune stale IndexedDB files under targetId that are no longer on Google Drive
           const driveIds = new Set(data.map(d => d.id));
           const queueItems = await dbService.getAll<SyncQueueItem>('sync_queue').catch(() => []);
           const pendingUploadTempIds = new Set(
@@ -2415,19 +2584,21 @@ export const api = {
                   const isPendingSynthetic = isSyntheticDriveId(lc.id) && (pendingUploadTempIds.has(lc.id) || ageMs < 30000);
                   if (!isPendingSynthetic) {
                       staleIds.push(lc.id);
-                      dbService.deleteItem('files', lc.id).catch(() => {});
-                      dbService.deleteItem('file_blobs', lc.id).catch(() => {});
+                      invalidateMemoryBlob(lc.id);
                       try { localStorage.removeItem(`vthumb_${lc.id}`); } catch {}
                   }
               }
           }
           if (staleIds.length > 0) {
+              dbService.deleteItems('files', staleIds).catch(() => {});
+              dbService.deleteItems('file_blobs', staleIds).catch(() => {});
               removeItemsFromFolderCaches(staleIds);
           }
 
-          for (const item of data) { dbService.putItem('files', item).catch(() => {}); } 
+          // Single-transaction IndexedDB bulk write (fast ~2ms)
+          dbService.putItems('files', data).catch(() => {});
           updateCache(targetId, data); 
-          await syncParentFolderCounts(data);
+          syncParentFolderCounts(data);
           autoSync.prioritizeFolder(data);
 
           if (!memCached && localChildren.length === 0) triggerLoadingStop(); 
@@ -2437,7 +2608,6 @@ export const api = {
           return localChildren; 
       } 
   },
-  // ... rest of the file
   async enrichItemCounts(items: FileItem[], parentFolderId?: string): Promise<FileItem[]> { 
       const folders = items.filter(i => i.type === ItemType.FOLDER); 
       if (folders.length === 0) return items; 
@@ -2448,30 +2618,27 @@ export const api = {
           return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
       };
 
-      let allLocalFiles: FileItem[] = [];
-      try {
-          allLocalFiles = await dbService.getAllItems<FileItem>('files');
-      } catch (e) {}
-
-      // 1. Enrich from local IndexedDB first (works in Guest, Offline, and Online modes)
-      for (const folder of folders) {
-          const localChildren = allLocalFiles.filter(f => f.parentId === folder.id && isCountable(f));
-          const localFilesCount = localChildren.filter(f => f.type !== ItemType.FOLDER).length;
-          const localFoldersCount = localChildren.filter(f => f.type === ItemType.FOLDER).length;
-          const idx = updatedItems.findIndex(i => i.id === folder.id);
-          if (idx !== -1) {
-              updatedItems[idx] = {
-                  ...updatedItems[idx],
-                  fileCount: Math.max(localFilesCount, updatedItems[idx].fileCount || 0),
-                  folderCount: Math.max(localFoldersCount, updatedItems[idx].folderCount || 0)
-              };
-          }
-      }
+      // 1. Enrich from local IndexedDB using indexed by_parent lookup (parallel)
+      await Promise.all(folders.map(async (folder) => {
+          try {
+              const localChildren = (await dbService.getByParentId<FileItem>(folder.id)).filter(f => f && !isFileDeleted(f.id) && isCountable(f));
+              const localFilesCount = localChildren.filter(f => f.type !== ItemType.FOLDER).length;
+              const localFoldersCount = localChildren.filter(f => f.type === ItemType.FOLDER).length;
+              const idx = updatedItems.findIndex(i => i.id === folder.id);
+              if (idx !== -1) {
+                  updatedItems[idx] = {
+                      ...updatedItems[idx],
+                      fileCount: Math.max(localFilesCount, updatedItems[idx].fileCount || 0),
+                      folderCount: Math.max(localFoldersCount, updatedItems[idx].folderCount || 0)
+                  };
+              }
+          } catch {}
+      }));
 
       // 2. If online and authenticated with Drive, fetch authoritative counts from Google Drive
       if (navigator.onLine && !authService.isGuest()) {
           const driveFolders = folders.filter(f => !isSyntheticDriveId(f.id));
-          const promises = driveFolders.map(async (folder) => {
+          await Promise.all(driveFolders.map(async (folder) => {
               try {
                   const query = `'${folder.id}' in parents and trashed = false and name != 'metadata.json'`;
                   const res = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=files(mimeType,id,name)`);
@@ -2485,15 +2652,13 @@ export const api = {
                       }
                   }
               } catch (e) {}
-          });
-          await Promise.all(promises);
+          }));
       }
 
-      // 3. Persist enriched folder counts to IndexedDB and memory/localStorage cache
-      for (const item of updatedItems) {
-          if (item.type === ItemType.FOLDER) {
-              dbService.putItem('files', item).catch(() => {});
-          }
+      // 3. Single-transaction batch persist enriched folder counts
+      const foldersToPersist = updatedItems.filter(item => item.type === ItemType.FOLDER);
+      if (foldersToPersist.length > 0) {
+          dbService.putItems('files', foldersToPersist).catch(() => {});
       }
       const targetParentId = parentFolderId || folders[0]?.parentId;
       if (targetParentId) {
@@ -2602,11 +2767,10 @@ export const api = {
           }
       } catch {}
 
-      // Recompute parent folder counts accurately from remaining items
+      // Recompute parent folder counts accurately using indexed parentId lookup
       try { 
           if (effectiveParentId) {
-              const allRemaining = (await dbService.getAllItems<FileItem>('files')).filter(f => f && !isFileDeleted(f.id));
-              const siblings = allRemaining.filter(f => f.parentId === effectiveParentId);
+              const siblings = (await dbService.getByParentId<FileItem>(effectiveParentId)).filter(f => f && !isFileDeleted(f.id));
               const isCountable = (f: { name?: string }) => {
                   const n = (f.name || '').toLowerCase();
                   return !n.endsWith('.json') && !n.startsWith('project_data') && !n.startsWith('.') && f.name !== ARCHIVE_FOLDER_NAME && f.name !== HIDDEN_LOGS_FOLDER;
@@ -2627,6 +2791,7 @@ export const api = {
               }
           }
       } catch(e) {} 
+      idsToDelete.forEach(invalidateMemoryBlob);
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(id)) return;
       triggerLoadingStart(); 
       try { await fetchDrive(`files/${id}`, { method: 'DELETE' }); } catch(e: any) { if (e.message && (e.message.includes('403') || e.message.includes('Forbidden'))) throw new Error("ليس لديك صلاحية لحذف هذا الملف."); if (!e.message || !e.message.includes('404')) throw e; } finally { triggerLoadingStop(); } 
@@ -2643,6 +2808,7 @@ export const api = {
       }
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(parentId)) {
           const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          setMemoryBlob(tempId, file);
           try { await dbService.putBlob(tempId, file); } catch(e) { triggerLoadingStop(); throw new Error("Failed to save file offline"); }
           if (generatedThumb) {
               try { localStorage.setItem(`vthumb_${tempId}`, generatedThumb); } catch (e) {}
@@ -2654,6 +2820,10 @@ export const api = {
           }
           const fakeItem: FileItem = { id: tempId, parentId, name: file.name, mimeType: file.type, type: ItemType.FILE, createdTime: new Date().toISOString(), size: file.size, previewUrl: generatedThumb || undefined };
           await dbService.putItem('files', fakeItem);
+          const existingParentCache = this.getCachedContents(parentId);
+          if (existingParentCache) {
+              updateCache(parentId, [fakeItem, ...existingParentCache]);
+          }
           triggerLoadingStop();
           if (onProgress) onProgress(100);
           return fakeItem;
@@ -2661,40 +2831,52 @@ export const api = {
       let result;
       if (file.size > 4 * 1024 * 1024) result = await uploadFileResumable(parentId, file, onProgress);
       else result = await uploadFileDirect(parentId, file, onProgress);
-      try { await dbService.putBlob(result.id, file); } catch(e){}
+      setMemoryBlob(result.id, file);
+      dbService.putBlob(result.id, file).catch(() => {});
       if (generatedThumb && result?.id) {
           result.previewUrl = generatedThumb;
           try { localStorage.setItem(`vthumb_${result.id}`, generatedThumb); } catch (e) {}
-          try { await dbService.putBlob(`vthumb_${result.id}`, new Blob([generatedThumb], { type: 'text/plain' })); } catch (e) {}
-          try {
-              const existingItem = await dbService.getItem<FileItem>('files', result.id);
+          dbService.putBlob(`vthumb_${result.id}`, new Blob([generatedThumb], { type: 'text/plain' })).catch(() => {});
+          dbService.getItem<FileItem>('files', result.id).then((existingItem) => {
               if (existingItem) {
-                  await dbService.putItem('files', { ...existingItem, previewUrl: generatedThumb });
+                  dbService.putItem('files', { ...existingItem, previewUrl: generatedThumb }).catch(() => {});
               }
-          } catch (e) {}
+          }).catch(() => {});
       }
       triggerLoadingStop();
       return result;
   },
-  async saveLetter(parentId: string, name: string, content: string, fileId?: string): Promise<FileItem> { 
+  async saveLetter(parentId: string, name: string, content: string, fileId?: string, _projectId?: string, silent: boolean = false): Promise<FileItem> { 
       if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED"); 
-      contentCache.delete(parentId); 
       const fileName = name.endsWith('.html') ? name : `${name}.html`; 
       const blob = new Blob([content], { type: 'text/html' }); 
       let targetFileId = fileId;
       if (!targetFileId) { targetFileId = `doc_${Date.now()}_${Math.random()}`; }
-      if (fileId) try{ await dbService.deleteItem('file_blobs', fileId); } catch(e){}
+      if (fileId) {
+          invalidateMemoryBlob(fileId);
+          dbService.deleteItem('file_blobs', fileId).catch(() => {});
+      }
+      setMemoryBlob(targetFileId, blob);
       await dbService.putBlob(targetFileId, blob);
       const fileItem: FileItem = { id: targetFileId, parentId, name: fileName, type: ItemType.FILE, createdTime: new Date().toISOString(), mimeType: 'text/html', content, fileCount: 0 };
       await dbService.putItem('files', fileItem);
 
-      // Update parent folder's fileCount in IndexedDB & grandparent cache
+      // Update parent folder cache immediately without wiping it
+      const existingFolderCache = this.getCachedContents(parentId);
+      if (existingFolderCache) {
+          const exists = existingFolderCache.some(f => f.id === targetFileId);
+          updateCache(parentId, exists ? existingFolderCache.map(f => f.id === targetFileId ? fileItem : f) : [fileItem, ...existingFolderCache]);
+      } else {
+          contentCache.delete(parentId);
+      }
+
+      // Update parent folder's fileCount in IndexedDB & grandparent cache using indexed lookup
       try {
-          const allLocal = await dbService.getAllItems<FileItem>('files');
-          const parentFolder = allLocal.find(f => f.id === parentId);
+          const parentFolder = await dbService.getItem<FileItem>('files', parentId);
           if (parentFolder) {
-              const childrenCount = allLocal.filter(f => f.parentId === parentId && f.type !== ItemType.FOLDER).length;
-              await dbService.putItem('files', { ...parentFolder, fileCount: childrenCount });
+              const siblings = await dbService.getByParentId<FileItem>(parentId);
+              const childrenCount = siblings.filter(f => f && !isFileDeleted(f.id) && f.type !== ItemType.FOLDER).length;
+              dbService.putItem('files', { ...parentFolder, fileCount: childrenCount }).catch(() => {});
               if (parentFolder.parentId) {
                   const grandParentCached = this.getCachedContents(parentFolder.parentId);
                   if (grandParentCached) {
@@ -2705,32 +2887,39 @@ export const api = {
       } catch (e) {}
 
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(parentId)) { return fileItem; }
-      triggerLoadingStart(); 
+      if (!silent) triggerLoadingStart(); 
       try { 
           if (fileId && !isSyntheticDriveId(fileId)) { 
               await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, { method: 'PATCH', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/html' }, body: blob }); 
-              try { await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'PATCH', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: fileName }) }); } catch(e) {} 
+              fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'PATCH', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: fileName }) }).catch(() => {}); 
               return fileItem; 
           } else { 
               const res = await uploadFileDirect(parentId, new File([blob], fileName, { type: 'text/html' })); 
+              setMemoryBlob(res.id, blob);
+              invalidateMemoryBlob(targetFileId);
               await dbService.putBlob(res.id, blob); 
-              await dbService.deleteItem('files', targetFileId);
-              await dbService.deleteItem('file_blobs', targetFileId);
+              dbService.deleteItem('files', targetFileId).catch(() => {});
+              dbService.deleteItem('file_blobs', targetFileId).catch(() => {});
               const realItem: FileItem = { id: res.id, parentId, name: fileName, type: ItemType.FILE, createdTime: new Date().toISOString(), mimeType: 'text/html', content, fileCount: 0 };
               await dbService.putItem('files', realItem);
+              const refreshedCache = this.getCachedContents(parentId);
+              if (refreshedCache) {
+                  updateCache(parentId, refreshedCache.map(f => f.id === targetFileId ? realItem : f));
+              }
               return realItem; 
           } 
-      } finally { triggerLoadingStop(); } 
+      } finally { if (!silent) triggerLoadingStop(); } 
   },
   async updateFileContent(fileId: string, content: string): Promise<void> {
       if (!fileId) return;
       const blob = new Blob([content], { type: 'text/html' });
+      setMemoryBlob(fileId, blob);
       try {
-          await dbService.putBlob(fileId, blob);
+          dbService.putBlob(fileId, blob).catch(() => {});
           const existing = await dbService.getItem<FileItem>('files', fileId);
           if (existing) {
               const updatedItem = { ...existing, content };
-              await dbService.putItem('files', updatedItem);
+              dbService.putItem('files', updatedItem).catch(() => {});
               if (existing.parentId) {
                   const cachedParent = this.getCachedContents(existing.parentId);
                   if (cachedParent) {
@@ -2756,12 +2945,16 @@ export const api = {
       }
   },
   async getFileContent(fileId: string): Promise<string> { 
-      try { const cachedBlob = await dbService.getBlob(fileId); if (cachedBlob) return await cachedBlob.text(); } catch(e) {}
+      const memBlob = getMemoryBlob(fileId);
+      if (memBlob) {
+          try { return await memBlob.text(); } catch {}
+      }
+      try { const cachedBlob = await dbService.getBlob(fileId); if (cachedBlob) { setMemoryBlob(fileId, cachedBlob); return await cachedBlob.text(); } } catch(e) {}
       try { const localItem = await dbService.getItem<FileItem>('files', fileId); if (localItem?.content) return localItem.content; } catch(e) {}
       if (!authService.isAuthenticated()) return ''; 
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(fileId)) return ''; 
       triggerLoadingStart(); 
-      try { const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { 'Authorization': `Bearer ${accessToken}` } }); const text = await response.text(); const blob = new Blob([text], {type: 'text/html'}); await dbService.putBlob(fileId, blob); return text; } finally { triggerLoadingStop(); } 
+      try { const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { 'Authorization': `Bearer ${accessToken}` } }); const text = await response.text(); const blob = new Blob([text], {type: 'text/html'}); setMemoryBlob(fileId, blob); dbService.putBlob(fileId, blob).catch(() => {}); return text; } finally { triggerLoadingStop(); } 
   },
   async searchFiles(queryText: string): Promise<FileItem[]> { if (!authService.isAuthenticated()) return []; triggerLoadingStart(); try { const result = await fetchDrive(`files?q=name contains '${queryText}' and trashed = false&fields=files(id, name, mimeType, createdTime, webViewLink, thumbnailLink, parents, size)`); return (result.files || []).filter((f: any) => f && !isFileDeleted(f.id)).map((f: any) => ({ id: f.id, parentId: f.parents?.[0] || '', name: f.name, type: f.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, mimeType: f.mimeType, createdTime: f.createdTime, webViewLink: f.webViewLink, previewUrl: f.thumbnailLink, size: f.size ? parseInt(f.size) : 0 })); } finally { triggerLoadingStop(); } },
   async getTasks(): Promise<Task[]> { return [...localTasks]; },

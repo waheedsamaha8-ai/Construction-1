@@ -715,11 +715,29 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     }
                 });
 
+                const flushPendingSubReport = () => {
+                    if (reportAutoSaveTimeoutRef.current) {
+                        clearTimeout(reportAutoSaveTimeoutRef.current);
+                        reportAutoSaveTimeoutRef.current = null;
+                        handleReportDirectBlur();
+                    }
+                };
+                const onVisibilityHide = () => {
+                    if (document.visibilityState === 'hidden') flushPendingSubReport();
+                };
+                if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityHide);
+                if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPendingSubReport);
+
                 return () => {
                     isCancelled = true;
+                    flushPendingSubReport();
                     unsubscribe();
                     if (bc) bc.close();
-                    if (typeof window !== 'undefined') window.removeEventListener('online', handleOnline);
+                    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityHide);
+                    if (typeof window !== 'undefined') {
+                        window.removeEventListener('online', handleOnline);
+                        window.removeEventListener('pagehide', flushPendingSubReport);
+                    }
                 };
             }
             return () => {
@@ -756,23 +774,21 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 updatedAt: now,
                 ...(flags || {})
             });
-            // Immediately flush sync queue for instant cloud synchronization
-            api.sync.processQueue().catch(() => {});
             if (savedProject) {
                 lastLocalEditRef.current = Number(savedProject.updatedAt) || Date.now();
                 if (onProjectUpdated) onProjectUpdated(savedProject);
             }
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1200);
+            setTimeout(() => setAutoSaveStatus('idle'), 1000);
         } catch (e) {
             console.error("Auto save failed", e);
             api.sync.processQueue().catch(() => {});
             setAutoSaveStatus('saved');
-            setTimeout(() => setAutoSaveStatus('idle'), 1200);
+            setTimeout(() => setAutoSaveStatus('idle'), 1000);
         } finally {
             setTimeout(() => {
                 isSavingRef.current = false;
-            }, 150);
+            }, 120);
         }
     };
 

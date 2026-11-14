@@ -192,9 +192,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       setAnalysisResult(null);
       setIsAnalysisOpen(false);
       setLoadError(false);
-      setIsHighResLoaded(false);
       setDownloadProgress(0);
-      setDisplayUrl(null);
       setPdfDoc(null);
       setTextContent(null);
       setPdfRenderError(false);
@@ -203,7 +201,50 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       setShowActionsMenu(false);
       setUseCloudVideoPlayer(false);
       setIsFallbackDownloading(false);
-  }, [currentItem.id]);
+
+      // Instant 0ms memory hit for cached images/media
+      const hotUrl = isImage ? api.getBlobUrlSync(currentItem.id) : null;
+      if (hotUrl) {
+          setDisplayUrl(hotUrl);
+          setIsHighResLoaded(true);
+      } else {
+          setDisplayUrl(null);
+          setIsHighResLoaded(false);
+      }
+  }, [currentItem.id, isImage]);
+
+  // Background pre-warming for adjacent sibling files (next / prev) for 0ms switching
+  useEffect(() => {
+      if (!siblings || siblings.length <= 1 || !navigator.onLine) return;
+      const candidateIndices = [currentIndex + 1, currentIndex - 1, currentIndex + 2];
+      const timer = setTimeout(() => {
+          candidateIndices.forEach((idx) => {
+              if (idx < 0 || idx >= siblings.length) return;
+              const sib = siblings[idx];
+              if (!sib || sib.type === 'folder') return;
+              const sMime = (sib.mimeType || '').toLowerCase();
+              const sName = (sib.name || '').toLowerCase();
+              const isVid = sMime.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(sName);
+              if (isVid) return;
+              if (sib.size && sib.size > 15 * 1024 * 1024) return;
+              api.prefetchFileBlob(sib.id);
+              if (sMime.startsWith('image/')) {
+                  let imgUrl = sib.previewUrl || sib.thumbnailLink;
+                  if (imgUrl && imgUrl.includes('googleusercontent.com')) {
+                      imgUrl = imgUrl.replace(/=s\d+/, '=s1600');
+                  } else if (!imgUrl && sib.id && !sib.id.startsWith('temp_')) {
+                      imgUrl = `https://drive.google.com/thumbnail?id=${sib.id}&sz=w1600`;
+                  }
+                  if (imgUrl && !api.getCachedBlobSync(sib.id)) {
+                      const preImg = new Image();
+                      preImg.referrerPolicy = 'no-referrer';
+                      preImg.src = imgUrl;
+                  }
+              }
+          });
+      }, 60);
+      return () => clearTimeout(timer);
+  }, [currentIndex, siblings]);
 
   useEffect(() => {
     let active = true;
@@ -213,11 +254,21 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
     const load = async () => {
         if (isImage) {
-            // 1. Check local IndexedDB cache first (0ms)
+            // 0. Synchronous RAM cache check (0ms)
+            const memUrl = api.getBlobUrlSync(currentItem.id);
+            if (memUrl) {
+                if (active) {
+                    setDisplayUrl(memUrl);
+                    setIsHighResLoaded(true);
+                }
+                return;
+            }
+
+            // 1. Check local IndexedDB cache first (~1ms)
             try {
                 const cachedBlob = await dbService.getBlob(currentItem.id);
                 if (cachedBlob && active) {
-                    setDisplayUrl(URL.createObjectURL(cachedBlob));
+                    setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, cachedBlob));
                     setIsHighResLoaded(true);
                     return;
                 }
@@ -239,7 +290,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             try {
                 const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active && !instantUrl) setDownloadProgress(p); }, !!instantUrl);
                 if (active && blob) {
-                    const blobUrl = URL.createObjectURL(blob);
+                    const blobUrl = api.getOrCreateBlobUrl(currentItem.id, blob);
                     setDisplayUrl(blobUrl);
                     setIsHighResLoaded(true);
                 }
@@ -248,9 +299,10 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             }
         } 
         else if (isPdf) {
-            setIsPdfLoading(true);
+            const hasHotPdf = !!api.getCachedBlobSync(currentItem.id);
+            if (!hasHotPdf) setIsPdfLoading(true);
             try {
-                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
+                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) }, hasHotPdf);
                 const arrayBuffer = await blob.arrayBuffer();
                 
                 if (!getDocument) {
@@ -288,12 +340,20 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                  return new Blob([rawBlob], { type: inferredType });
              };
 
-             // 1. Check local IndexedDB blob first (0ms for locally recorded or cached media)
+             // 0. Check RAM cache first (0ms)
+             const memMediaBlob = api.getCachedBlobSync(currentItem.id);
+             if (memMediaBlob && memMediaBlob.size > 0 && active) {
+                 const typedBlob = ensureTypedMediaBlob(memMediaBlob);
+                 setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, typedBlob));
+                 return;
+             }
+
+             // 1. Check local IndexedDB blob first (~1ms for locally recorded or cached media)
              try {
                  const localBlob = await dbService.getBlob(currentItem.id);
                  if (localBlob && localBlob.size > 0 && active) {
                      const typedBlob = ensureTypedMediaBlob(localBlob);
-                     setDisplayUrl(URL.createObjectURL(typedBlob));
+                     setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, typedBlob));
                      return;
                  }
              } catch (e) {}
@@ -311,8 +371,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                     .then((blob) => {
                         if (active && blob && blob.size > 0) {
                             const typed = ensureTypedMediaBlob(blob);
-                            // Keep cached in IndexedDB; if stream errored out, switch immediately
-                            setDisplayUrl((prev) => (!prev ? URL.createObjectURL(typed) : prev));
+                            setDisplayUrl((prev) => (!prev ? api.getOrCreateBlobUrl(currentItem.id, typed) : prev));
                         }
                     })
                     .catch(() => {});
@@ -320,7 +379,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                  try {
                      const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
                      if (active && blob) {
-                         setDisplayUrl(URL.createObjectURL(ensureTypedMediaBlob(blob)));
+                         setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, ensureTypedMediaBlob(blob)));
                      }
                  } catch(e) {
                      if (active) {
