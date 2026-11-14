@@ -85,8 +85,7 @@ export const DwgController: React.FC<DwgControllerProps> = ({
 export const openDwgInExternalApp = async (
     fileId: string,
     fileName: string,
-    cachedBlob?: Blob | null,
-    useMobileChooser = false
+    onProgress?: (progress: number) => void
 ) => {
     const safeName =
         fileName.toLowerCase().endsWith('.dwg') || fileName.toLowerCase().endsWith('.dxf')
@@ -94,13 +93,10 @@ export const openDwgInExternalApp = async (
             : `${fileName}.dwg`;
     const isDxf = safeName.toLowerCase().endsWith('.dxf');
 
-    let blob = cachedBlob || null;
-    if (!blob || blob.size === 0) {
-        blob = await api.downloadFileBlob(fileId);
-    }
+    const blob = await api.downloadFileBlob(fileId, onProgress);
 
-    // On mobile (Android / iOS), Web Share Level 2 with a File opens the system app chooser (including DWG FastView / AutoCAD Mobile)
-    if (useMobileChooser && typeof navigator !== 'undefined' && navigator.share) {
+    // On mobile (Android / iOS), Web Share Level 2 with a File opens the system app chooser (DWG FastView / AutoCAD Mobile)
+    if (typeof navigator !== 'undefined' && navigator.share) {
         try {
             const shareFile = new File([blob], safeName, {
                 type: 'application/octet-stream',
@@ -138,3 +134,4 @@ export const openDwgInExternalApp = async (
         URL.revokeObjectURL(url);
     }, 2500);
 };
+

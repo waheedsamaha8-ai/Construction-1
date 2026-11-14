@@ -979,9 +979,8 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
 
   return (
     <div className="fixed inset-0 z-[2000] bg-black/95 backdrop-blur-md flex flex-col animate-fade-in safe-bottom safe-top">
-      {!isDwg && (
-          <div className={`flex justify-between items-center px-3 py-2 text-white shadow-md z-30 ${isWord ? 'bg-blue-800 border-b border-blue-600' : isExcel ? 'bg-emerald-800 border-b border-emerald-600' : isPowerPoint ? 'bg-orange-800 border-b border-orange-600' : isDwg ? 'bg-[#0f172a] border-b border-slate-700' : 'bg-slate-900'}`}>
-            <div className="flex items-center gap-2 overflow-hidden min-w-0 flex-1 ml-2">
+      <div className={`flex justify-between items-center px-3 py-2 text-white shadow-md z-30 ${isWord ? 'bg-blue-800 border-b border-blue-600' : isExcel ? 'bg-emerald-800 border-b border-emerald-600' : isPowerPoint ? 'bg-orange-800 border-b border-orange-600' : isDwg ? 'bg-[#0f172a] border-b border-slate-700' : 'bg-slate-900'}`}>
+        <div className="flex items-center gap-2 overflow-hidden min-w-0 flex-1 ml-2">
                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${isWord ? 'bg-blue-600' : isExcel ? 'bg-emerald-600' : isPowerPoint ? 'bg-orange-600' : isImage ? 'bg-purple-600' : isVideo ? 'bg-rose-600' : isPdf ? 'bg-red-600' : isAudio ? 'bg-teal-600' : isDwg ? 'bg-[#c41e3a]' : isText ? 'bg-slate-600' : 'bg-blue-600'}`}>
                     <i className={`fa-solid ${isWord ? 'fa-file-word' : isExcel ? 'fa-file-excel' : isPowerPoint ? 'fa-file-powerpoint' : isImage ? 'fa-image' : isVideo ? 'fa-clapperboard' : isPdf ? 'fa-file-pdf' : isAudio ? 'fa-headphones' : isDwg ? 'fa-layer-group' : isText ? 'fa-file-code' : 'fa-file-lines'} text-xs`}></i>
                 </div>
@@ -1123,9 +1122,8 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                         </div>
                     </>
                 )}
-            </div>
-          </div>
-      )}
+        </div>
+      </div>
       <div className="flex-1 w-full h-full bg-slate-900 relative flex flex-col items-center justify-center overflow-hidden">{renderContent()}</div>
       
       {/* Analysis Modal - UPDATED FOR FULL WIDTH */}
