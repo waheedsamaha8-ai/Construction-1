@@ -19,6 +19,8 @@ interface DwgViewerProps {
 }
 
 type CadBgTheme = 'dark' | 'blueprint' | 'white';
+type MeasureMode = 'ortho_both' | 'ortho_lock' | 'inclined';
+type CropAction = 'export_png' | 'print_pdf' | null;
 
 interface MeasurementSegment {
     p1: CadPoint;
@@ -27,6 +29,14 @@ interface MeasurementSegment {
     dx: number;
     dy: number;
     angleDeg: number;
+    mode: MeasureMode;
+}
+
+interface CropRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
 }
 
 const THEME_CONFIG: Record<
@@ -84,15 +94,29 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
 
     // Measurement Tool State
     const [measureActive, setMeasureActive] = useState(false);
+    const [measureMode, setMeasureMode] = useState<MeasureMode>('ortho_both');
     const [measureStart, setMeasureStart] = useState<CadPoint | null>(null);
     const [cursorCadPos, setCursorCadPos] = useState<CadPoint | null>(null);
     const [snapPoint, setSnapPoint] = useState<CadPoint | null>(null);
     const [measurements, setMeasurements] = useState<MeasurementSegment[]>([]);
 
-    // Menus & Sharing
+    // Menus, Sharing & Cached Blob
     const [showActionsMenu, setShowActionsMenu] = useState(false);
+    const [showShareModal, setShowShareModal] = useState(false);
     const [isSharing, setIsSharing] = useState(false);
+    const loadedBlobRef = useRef<Blob | null>(null);
     const localFileInputRef = useRef<HTMLInputElement>(null);
+
+    // Window Selection (Crop) State for Print / Export PNG
+    const [cropAction, setCropAction] = useState<CropAction>(null);
+    const [cropRect, setCropRect] = useState<CropRect>({ x: 60, y: 60, w: 320, h: 240 });
+    const [cropWhiteBg, setCropWhiteBg] = useState<boolean>(false);
+    const cropDragRef = useRef<{
+        type: 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'draw';
+        startX: number;
+        startY: number;
+        initialRect: CropRect;
+    } | null>(null);
 
     // Canvas & Viewport Transform State (world CAD units -> screen pixels)
     const viewportRef = useRef<HTMLDivElement>(null);
@@ -142,19 +166,6 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
             return {
                 x: minX + (sx - panX) / zoom,
                 y: maxY - (sy - panY) / zoom,
-            };
-        },
-        [cadDoc]
-    );
-
-    const cadToScreen = useCallback(
-        (cx: number, cy: number): CadPoint => {
-            if (!cadDoc) return { x: 0, y: 0 };
-            const { zoom, panX, panY } = viewRef.current;
-            const { minX, maxY } = cadDoc.bounds;
-            return {
-                x: panX + (cx - minX) * zoom,
-                y: panY + (maxY - cy) * zoom,
             };
         },
         [cadDoc]
@@ -227,6 +238,8 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                     throw new Error('ملف المخطط فارغ أو غير متوفر محلياً.');
                 }
 
+                loadedBlobRef.current = blob;
+
                 setStatus('جاري تحليل الطبقات والعناصر الهندسية (Vector)...');
                 const buffer = await blob.arrayBuffer();
                 if (!active) return;
@@ -250,7 +263,6 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                 if (!active) return;
                 const msg = err?.message || 'تعذر قراءة البيانات الهندسية للملف.';
                 setParseError(msg);
-                // If we have a preview image, show preview tab automatically; otherwise offer sample or local file
                 if (item.previewUrl || item.thumbnailLink) {
                     setViewMode('preview');
                 }
@@ -277,6 +289,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         setParseError(null);
         setStatus(`جاري قراءة المخطط: ${file.name}...`);
         try {
+            loadedBlobRef.current = file;
             const buffer = await file.arrayBuffer();
             const parsed = await parseCadBuffer(buffer, file.name);
             if (parsed.primitives.length === 0) {
@@ -339,55 +352,69 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         ctx.fillStyle = theme.bgHex;
         ctx.fillRect(0, 0, width, height);
 
-        // 2. Engineering Grid
-        if (showGrid) {
-            const minorStep = 24;
-            const majorStep = 120;
-            const { panX, panY } = viewRef.current;
-
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = theme.gridMinor;
-            ctx.beginPath();
-            const startMinorX = ((panX % minorStep) + minorStep) % minorStep;
-            const startMinorY = ((panY % minorStep) + minorStep) % minorStep;
-            for (let x = startMinorX; x < width; x += minorStep) {
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, height);
-            }
-            for (let y = startMinorY; y < height; y += minorStep) {
-                ctx.moveTo(0, y);
-                ctx.lineTo(width, y);
-            }
-            ctx.stroke();
-
-            ctx.strokeStyle = theme.gridMajor;
-            ctx.beginPath();
-            const startMajorX = ((panX % majorStep) + majorStep) % majorStep;
-            const startMajorY = ((panY % majorStep) + majorStep) % majorStep;
-            for (let x = startMajorX; x < width; x += majorStep) {
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, height);
-            }
-            for (let y = startMajorY; y < height; y += majorStep) {
-                ctx.moveTo(0, y);
-                ctx.lineTo(width, y);
-            }
-            ctx.stroke();
-        }
-
-        // 3. Render CAD Vector Primitives
         const { zoom, panX, panY } = viewRef.current;
         const { minX, maxY } = cadDoc.bounds;
         const toSX = (cx: number) => panX + (cx - minX) * zoom;
         const toSY = (cy: number) => panY + (maxY - cy) * zoom;
 
+        // 2. World-Coordinate Engineering Grid (scales & aligns with CAD drawing on zoom/pan)
+        if (showGrid && zoom > 0) {
+            const targetMinorPx = 28;
+            const rawWorldStep = targetMinorPx / zoom;
+            const mag = Math.pow(10, Math.floor(Math.log10(Math.max(1e-9, rawWorldStep))));
+            const res = rawWorldStep / mag;
+            const minorWorldStep = res >= 5 ? 5 * mag : res >= 2 ? 2 * mag : mag;
+            const majorWorldStep = minorWorldStep * 5;
+
+            const worldLeft = minX + (0 - panX) / zoom;
+            const worldRight = minX + (width - panX) / zoom;
+            const worldTop = maxY - (0 - panY) / zoom;
+            const worldBottom = maxY - (height - panY) / zoom;
+
+            const startMinorWX = Math.floor(worldLeft / minorWorldStep) * minorWorldStep;
+            const startMinorWY = Math.floor(worldBottom / minorWorldStep) * minorWorldStep;
+
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = theme.gridMinor;
+            ctx.beginPath();
+            for (let wx = startMinorWX; wx <= worldRight; wx += minorWorldStep) {
+                const sx = toSX(wx);
+                ctx.moveTo(sx, 0);
+                ctx.lineTo(sx, height);
+            }
+            for (let wy = startMinorWY; wy <= worldTop; wy += minorWorldStep) {
+                const sy = toSY(wy);
+                ctx.moveTo(0, sy);
+                ctx.lineTo(width, sy);
+            }
+            ctx.stroke();
+
+            const startMajorWX = Math.floor(worldLeft / majorWorldStep) * majorWorldStep;
+            const startMajorWY = Math.floor(worldBottom / majorWorldStep) * majorWorldStep;
+
+            ctx.strokeStyle = theme.gridMajor;
+            ctx.beginPath();
+            for (let wx = startMajorWX; wx <= worldRight; wx += majorWorldStep) {
+                const sx = toSX(wx);
+                ctx.moveTo(sx, 0);
+                ctx.lineTo(sx, height);
+            }
+            for (let wy = startMajorWY; wy <= worldTop; wy += majorWorldStep) {
+                const sy = toSY(wy);
+                ctx.moveTo(0, sy);
+                ctx.lineTo(width, sy);
+            }
+            ctx.stroke();
+        }
+
+        // 3. Render CAD Vector Primitives
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.lineWidth = 1.15;
+        ctx.lineWidth = 1.1;
 
         for (const prim of cadDoc.primitives) {
             if (visibleLayerMap.get(prim.layer) === false) continue;
-            if (prim.kind === 'text' && !showTexts) continue;
+            if (!showTexts && (prim.kind === 'text' || prim.isDimension)) continue;
 
             const strokeColor = prim.isAdaptiveWhite ? theme.adaptiveStroke : prim.colorHex;
             ctx.strokeStyle = strokeColor;
@@ -446,7 +473,6 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                 if (sr < 0.3) continue;
                 if (sx + sr < 0 || sx - sr > width || sy + sr < 0 || sy - sr > height) continue;
 
-                // Because screen Y is inverted relative to CAD Y, CAD angle +theta is screen angle -theta, and CCW in CAD is anticlockwise=true in canvas
                 ctx.beginPath();
                 ctx.arc(sx, sy, sr, -prim.startAngle, -prim.endAngle, prim.ccw !== false);
                 ctx.stroke();
@@ -464,19 +490,25 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                 ctx.stroke();
             } else if (prim.kind === 'text') {
                 const fontPx = prim.height * zoom;
-                if (fontPx < 3.5 || fontPx > 400) continue;
+                if (fontPx < 1.2 || fontPx > 900) continue;
                 const sx = toSX(prim.x);
                 const sy = toSY(prim.y);
-                if (sx < -300 || sx > width + 300 || sy < -150 || sy > height + 150) continue;
+                if (sx < -600 || sx > width + 600 || sy < -200 || sy > height + 200) continue;
 
+                const isArabicText = /[\u0600-\u06FF]/.test(prim.text);
                 ctx.save();
                 ctx.translate(sx, sy);
                 if (prim.rotation) {
                     ctx.rotate(-prim.rotation);
                 }
-                ctx.font = `bold ${Math.max(8, Math.min(72, fontPx))}px "Cairo", "Segoe UI", Tahoma, sans-serif`;
+                const wf = prim.widthFactor && prim.widthFactor > 0.1 ? prim.widthFactor : isArabicText ? 0.88 : 0.92;
+                if (Math.abs(wf - 1) > 0.01) {
+                    ctx.scale(wf, 1);
+                }
+                ctx.direction = isArabicText ? 'rtl' : 'ltr';
+                ctx.font = `500 ${fontPx.toFixed(2)}px "Cairo", "Segoe UI", Tahoma, sans-serif`;
                 ctx.textAlign = prim.align;
-                ctx.textBaseline = 'alphabetic';
+                ctx.textBaseline = prim.valign || 'alphabetic';
                 ctx.fillText(prim.text, 0, 0);
                 ctx.restore();
             } else if (prim.kind === 'point') {
@@ -487,71 +519,251 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
             }
         }
 
-        // 4. Render Saved Measurements & Live Rubber-band Measurement
-        const drawMeasurement = (p1: CadPoint, p2: CadPoint, isPreview = false) => {
-            const s1 = { x: toSX(p1.x), y: toSY(p1.y) };
-            const s2 = { x: toSX(p2.x), y: toSY(p2.y) };
-            const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-
+        // Helper to draw a crisp floating badge on canvas
+        const drawDimBadge = (
+            x: number,
+            y: number,
+            text: string,
+            borderColor: string,
+            textColor = '#ffffff'
+        ) => {
             ctx.save();
-            ctx.strokeStyle = isPreview ? '#38bdf8' : '#10b981';
-            ctx.fillStyle = isPreview ? '#38bdf8' : '#10b981';
-            ctx.lineWidth = 2;
-            if (isPreview) ctx.setLineDash([6, 4]);
-
-            ctx.beginPath();
-            ctx.moveTo(s1.x, s1.y);
-            ctx.lineTo(s2.x, s2.y);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Endpoints
-            [s1, s2].forEach(pt => {
-                ctx.beginPath();
-                ctx.arc(pt.x, pt.y, 4.5, 0, Math.PI * 2);
-                ctx.fill();
-            });
-
-            // Distance Badge at Midpoint
-            const midX = (s1.x + s2.x) / 2;
-            const midY = (s1.y + s2.y) / 2;
-            const label = `${dist.toFixed(3)} m`;
-            ctx.font = 'bold 12px "Cairo", monospace';
-            const textW = ctx.measureText(label).width;
+            ctx.direction = 'rtl';
+            ctx.font = 'bold 11px "Cairo", monospace';
+            const textW = ctx.measureText(text).width;
             const boxW = textW + 14;
-            const boxH = 22;
+            const boxH = 21;
 
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-            ctx.strokeStyle = isPreview ? '#38bdf8' : '#10b981';
-            ctx.lineWidth = 1.2;
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+            ctx.strokeStyle = borderColor;
+            ctx.lineWidth = 1.4;
             ctx.beginPath();
-            ctx.roundRect(midX - boxW / 2, midY - boxH - 6, boxW, boxH, 6);
+            ctx.roundRect(x - boxW / 2, y - boxH / 2, boxW, boxH, 6);
             ctx.fill();
             ctx.stroke();
 
-            ctx.fillStyle = '#ffffff';
+            ctx.fillStyle = textColor;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(label, midX, midY - boxH / 2 - 6);
+            ctx.fillText(text, x, y);
             ctx.restore();
         };
 
-        for (const m of measurements) {
-            drawMeasurement(m.p1, m.p2, false);
-        }
-
-        if (measureActive && measureStart && (snapPoint || cursorCadPos)) {
-            drawMeasurement(measureStart, snapPoint || cursorCadPos!, true);
-        }
-
-        // 5. Render AutoCAD OSNAP Green Square Indicator when Measure Tool is active
-        if (measureActive && snapPoint) {
-            const sp = { x: toSX(snapPoint.x), y: toSY(snapPoint.y) };
+        // Helper to draw AutoCAD-style Snap Point (نقطة السناب) with square + crosshair + label
+        const drawSnapMarker = (pt: CadPoint, label: string, colorHex: string) => {
+            const sp = { x: toSX(pt.x), y: toSY(pt.y) };
             ctx.save();
-            ctx.strokeStyle = '#22c55e';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(sp.x - 6, sp.y - 6, 12, 12);
+            ctx.strokeStyle = colorHex;
+            ctx.fillStyle = colorHex;
+            ctx.lineWidth = 2.2;
+            ctx.strokeRect(sp.x - 7, sp.y - 7, 14, 14);
+
+            ctx.beginPath();
+            ctx.moveTo(sp.x - 12, sp.y);
+            ctx.lineTo(sp.x + 12, sp.y);
+            ctx.moveTo(sp.x, sp.y - 12);
+            ctx.lineTo(sp.x, sp.y + 12);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(sp.x, sp.y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
             ctx.restore();
+
+            drawDimBadge(sp.x, sp.y - 22, label, colorHex, '#ffffff');
+        };
+
+        // 4. Render Saved Measurements & Live Rubber-band Dimensions (Orthogonal or Inclined)
+        const drawMeasurement = (
+            p1: CadPoint,
+            rawP2: CadPoint,
+            segMode: MeasureMode,
+            isPreview = false
+        ) => {
+            const p2: CadPoint =
+                segMode === 'ortho_lock'
+                    ? Math.abs(rawP2.x - p1.x) >= Math.abs(rawP2.y - p1.y)
+                        ? { x: rawP2.x, y: p1.y }
+                        : { x: p1.x, y: rawP2.y }
+                    : rawP2;
+
+            const s1 = { x: toSX(p1.x), y: toSY(p1.y) };
+            const s2 = { x: toSX(p2.x), y: toSY(p2.y) };
+            const corner = { x: s2.x, y: s1.y };
+
+            const absDx = Math.abs(p2.x - p1.x);
+            const absDy = Math.abs(p2.y - p1.y);
+            const directDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            const angleDeg = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+            const screenDx = Math.abs(s2.x - s1.x);
+            const screenDy = Math.abs(s2.y - s1.y);
+
+            ctx.save();
+
+            if (segMode === 'inclined') {
+                // Direct Inclined / Diagonal Measurement Line (وضع مائل)
+                if (directDist > 1e-4) {
+                    const incColor = isPreview ? '#c084fc' : '#a855f7';
+                    ctx.strokeStyle = incColor;
+                    ctx.fillStyle = incColor;
+                    ctx.lineWidth = 2.4;
+                    if (isPreview) ctx.setLineDash([7, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(s1.x, s1.y);
+                    ctx.lineTo(s2.x, s2.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Perpendicular end ticks at s1 and s2
+                    const sLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
+                    if (sLen > 4) {
+                        const nx = -(s2.y - s1.y) / sLen;
+                        const ny = (s2.x - s1.x) / sLen;
+                        [s1, s2].forEach(pt => {
+                            ctx.beginPath();
+                            ctx.moveTo(pt.x - nx * 7, pt.y - ny * 7);
+                            ctx.lineTo(pt.x + nx * 7, pt.y + ny * 7);
+                            ctx.stroke();
+                        });
+                    }
+
+                    const midX = (s1.x + s2.x) / 2;
+                    const midY = (s1.y + s2.y) / 2 - 18;
+                    drawDimBadge(
+                        midX,
+                        midY,
+                        `مائل: ${directDist.toFixed(2)} م (${Math.abs(angleDeg).toFixed(1)}°)`,
+                        incColor,
+                        '#e9d5ff'
+                    );
+                }
+            } else {
+                // Subtle reference line between p1 and p2 if both ΔX and ΔY exist
+                if (screenDx > 4 && screenDy > 4) {
+                    ctx.strokeStyle = isPreview
+                        ? 'rgba(148, 163, 184, 0.45)'
+                        : 'rgba(148, 163, 184, 0.35)';
+                    ctx.lineWidth = 1.2;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(s1.x, s1.y);
+                    ctx.lineTo(s2.x, s2.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    const sq = Math.min(10, screenDx * 0.3, screenDy * 0.3);
+                    const dirX = s1.x < corner.x ? -1 : 1;
+                    const dirY = s2.y > corner.y ? 1 : -1;
+                    ctx.strokeStyle = '#94a3b8';
+                    ctx.lineWidth = 1.2;
+                    ctx.strokeRect(
+                        dirX > 0 ? corner.x : corner.x - sq,
+                        dirY > 0 ? corner.y : corner.y - sq,
+                        sq,
+                        sq
+                    );
+                }
+
+                // A) Horizontal Dimension Line (بعد أفقي ΔX)
+                if (absDx > 1e-4) {
+                    const hColor = isPreview ? '#38bdf8' : '#10b981';
+                    ctx.strokeStyle = hColor;
+                    ctx.fillStyle = hColor;
+                    ctx.lineWidth = 2.2;
+                    if (isPreview) ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(s1.x, s1.y);
+                    ctx.lineTo(corner.x, corner.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    [s1, corner].forEach(pt => {
+                        ctx.beginPath();
+                        ctx.moveTo(pt.x, pt.y - 6);
+                        ctx.lineTo(pt.x, pt.y + 6);
+                        ctx.stroke();
+                    });
+
+                    const hMidX = (s1.x + corner.x) / 2;
+                    const hMidY = s1.y + (s2.y >= s1.y ? -18 : 18);
+                    drawDimBadge(hMidX, hMidY, `أفقي: ${absDx.toFixed(2)} م`, hColor, '#38bdf8');
+                }
+
+                // B) Vertical Dimension Line (بعد عمودي ΔY)
+                if (absDy > 1e-4) {
+                    const vColor = isPreview ? '#fbbf24' : '#f59e0b';
+                    ctx.strokeStyle = vColor;
+                    ctx.fillStyle = vColor;
+                    ctx.lineWidth = 2.2;
+                    if (isPreview) ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(corner.x, corner.y);
+                    ctx.lineTo(s2.x, s2.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    [corner, s2].forEach(pt => {
+                        ctx.beginPath();
+                        ctx.moveTo(pt.x - 6, pt.y);
+                        ctx.lineTo(pt.x + 6, pt.y);
+                        ctx.stroke();
+                    });
+
+                    const vMidX = corner.x + (s2.x >= s1.x ? 48 : -48);
+                    const vMidY = (corner.y + s2.y) / 2;
+                    drawDimBadge(vMidX, vMidY, `عمودي: ${absDy.toFixed(2)} م`, vColor, '#fbbf24');
+                }
+            }
+
+            // Start & End Anchor Dots on saved measurements
+            if (!isPreview) {
+                [s1, s2].forEach((pt, idx) => {
+                    ctx.fillStyle = idx === 0 ? '#22c55e' : '#f59e0b';
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 4.5, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+
+            ctx.restore();
+        };
+
+        if (showTexts || measureActive) {
+            for (const m of measurements) {
+                drawMeasurement(m.p1, m.p2, m.mode || 'ortho_both', false);
+            }
+        }
+
+        const activeTargetPt = snapPoint || cursorCadPos;
+        if (measureActive && measureStart && activeTargetPt) {
+            drawMeasurement(measureStart, activeTargetPt, measureMode, true);
+        }
+
+        // 5. Render AutoCAD OSNAP Indicators for Start Point (نقطة البداية) & End Point (نقطة النهاية)
+        if (measureActive) {
+            if (measureStart) {
+                drawSnapMarker(measureStart, 'نقطة البداية (سناب)', '#22c55e');
+                if (activeTargetPt) {
+                    const effectiveEnd =
+                        measureMode === 'ortho_lock'
+                            ? Math.abs(activeTargetPt.x - measureStart.x) >=
+                              Math.abs(activeTargetPt.y - measureStart.y)
+                                ? { x: activeTargetPt.x, y: measureStart.y }
+                                : { x: measureStart.x, y: activeTargetPt.y }
+                            : activeTargetPt;
+                    drawSnapMarker(
+                        effectiveEnd,
+                        snapPoint ? 'نقطة النهاية (سناب)' : 'نقطة النهاية',
+                        '#f59e0b'
+                    );
+                }
+            } else if (activeTargetPt) {
+                drawSnapMarker(
+                    activeTargetPt,
+                    snapPoint ? 'نقطة البداية (سناب)' : 'حدد نقطة البداية',
+                    '#22c55e'
+                );
+            }
         }
 
         ctx.restore();
@@ -564,6 +776,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         visibleLayerMap,
         measurements,
         measureActive,
+        measureMode,
         measureStart,
         snapPoint,
         cursorCadPos,
@@ -585,14 +798,14 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         return () => ro.disconnect();
     }, [renderCanvas]);
 
-    // Find nearest OSNAP vertex within 18px screen distance
+    // Find nearest OSNAP vertex, midpoint, or nearest point on a visible line/polyline segment
     const findNearestSnapPoint = useCallback(
         (screenX: number, screenY: number): CadPoint | null => {
-            if (!cadDoc || cadDoc.snapPoints.length === 0) return null;
+            if (!cadDoc) return null;
             const { zoom, panX, panY } = viewRef.current;
             const { minX, maxY } = cadDoc.bounds;
-            const maxPixelDist = 18;
-            let bestDist = maxPixelDist;
+            const maxVertexDist = 28;
+            let bestDist = maxVertexDist;
             let bestPt: CadPoint | null = null;
 
             for (let i = 0; i < cadDoc.snapPoints.length; i++) {
@@ -605,10 +818,58 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                     bestPt = pt;
                 }
             }
+
+            if (bestPt && bestDist <= 18) {
+                return bestPt;
+            }
+
+            let bestSegDist = bestPt ? bestDist : 24;
+            for (let pIdx = 0; pIdx < cadDoc.primitives.length; pIdx++) {
+                const prim = cadDoc.primitives[pIdx];
+                if (prim.kind !== 'polyline' || visibleLayerMap.get(prim.layer) === false) continue;
+                const pts = prim.points;
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const a = pts[i];
+                    const b = pts[i + 1];
+                    const ax = panX + (a.x - minX) * zoom;
+                    const ay = panY + (maxY - a.y) * zoom;
+                    const bx = panX + (b.x - minX) * zoom;
+                    const by = panY + (maxY - b.y) * zoom;
+
+                    const abx = bx - ax;
+                    const aby = by - ay;
+                    const lenSq = abx * abx + aby * aby;
+                    if (lenSq < 1e-4) continue;
+                    const t = Math.max(0, Math.min(1, ((screenX - ax) * abx + (screenY - ay) * aby) / lenSq));
+                    const projScreenX = ax + t * abx;
+                    const projScreenY = ay + t * aby;
+                    const d = Math.hypot(projScreenX - screenX, projScreenY - screenY);
+                    if (d < bestSegDist) {
+                        bestSegDist = d;
+                        bestPt = {
+                            x: a.x + t * (b.x - a.x),
+                            y: a.y + t * (b.y - a.y),
+                        };
+                    }
+                }
+            }
+
             return bestPt;
         },
-        [cadDoc]
+        [cadDoc, visibleLayerMap]
     );
+
+    // When Measure Tool is activated, immediately show an initial Snap Point near viewport center
+    useEffect(() => {
+        if (measureActive && cadDoc && viewportRef.current) {
+            const cx = viewportRef.current.clientWidth / 2;
+            const cy = viewportRef.current.clientHeight / 2;
+            const initialSnap = findNearestSnapPoint(cx, cy);
+            const initialCad = initialSnap || screenToCad(cx, cy);
+            setCursorCadPos(initialCad);
+            setSnapPoint(initialSnap || initialCad);
+        }
+    }, [measureActive, cadDoc, findNearestSnapPoint, screenToCad]);
 
     // Zoom around a specific screen focal point (fx, fy)
     const zoomAtScreenPoint = useCallback(
@@ -634,6 +895,39 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         [renderCanvas]
     );
 
+    const commitPointSelection = useCallback(
+        (sx: number, sy: number) => {
+            const snapped = findNearestSnapPoint(sx, sy);
+            const rawPt = snapped || screenToCad(sx, sy);
+            setCursorCadPos(rawPt);
+            setSnapPoint(snapped || rawPt);
+
+            if (!measureStart) {
+                setMeasureStart(rawPt);
+            } else {
+                const targetPt: CadPoint =
+                    measureMode === 'ortho_lock'
+                        ? Math.abs(rawPt.x - measureStart.x) >= Math.abs(rawPt.y - measureStart.y)
+                            ? { x: rawPt.x, y: measureStart.y }
+                            : { x: measureStart.x, y: rawPt.y }
+                        : rawPt;
+
+                const dx = targetPt.x - measureStart.x;
+                const dy = targetPt.y - measureStart.y;
+                const distance = Math.hypot(dx, dy);
+                const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+                if (distance > 1e-4) {
+                    setMeasurements(prev => [
+                        ...prev,
+                        { p1: measureStart, p2: targetPt, distance, dx, dy, angleDeg, mode: measureMode },
+                    ]);
+                }
+                setMeasureStart(null);
+            }
+        },
+        [findNearestSnapPoint, screenToCad, measureStart, measureMode]
+    );
+
     // Native Touch & Mouse Gestures for Vector Canvas (Focal-Point Pinch Zoom + Pan + Measure Click)
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -651,30 +945,6 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
             moved: boolean;
         } | null = null;
         let lastTapTime = 0;
-
-        const handlePointSelect = (clientX: number, clientY: number) => {
-            const rect = canvas.getBoundingClientRect();
-            const sx = clientX - rect.left;
-            const sy = clientY - rect.top;
-            const snapped = findNearestSnapPoint(sx, sy);
-            const targetPt = snapped || screenToCad(sx, sy);
-
-            if (!measureStart) {
-                setMeasureStart(targetPt);
-            } else {
-                const dx = targetPt.x - measureStart.x;
-                const dy = targetPt.y - measureStart.y;
-                const distance = Math.hypot(dx, dy);
-                const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
-                if (distance > 1e-4) {
-                    setMeasurements(prev => [
-                        ...prev,
-                        { p1: measureStart, p2: targetPt, distance, dx, dy, angleDeg },
-                    ]);
-                }
-                setMeasureStart(null);
-            }
-        };
 
         const onTouchStart = (e: TouchEvent) => {
             if (e.touches.length === 1) {
@@ -694,8 +964,10 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                     const rect = canvas.getBoundingClientRect();
                     const sx = t.clientX - rect.left;
                     const sy = t.clientY - rect.top;
-                    setCursorCadPos(screenToCad(sx, sy));
-                    setSnapPoint(findNearestSnapPoint(sx, sy));
+                    const snapped = findNearestSnapPoint(sx, sy);
+                    const cadPt = snapped || screenToCad(sx, sy);
+                    setCursorCadPos(cadPt);
+                    setSnapPoint(snapped || cadPt);
                 }
             } else if (e.touches.length === 2) {
                 e.preventDefault();
@@ -764,7 +1036,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                 const t = e.touches[0];
                 const dx = t.clientX - gesture.lastX;
                 const dy = t.clientY - gesture.lastY;
-                if (Math.hypot(t.clientX - gesture.startX, t.clientY - gesture.startY) > 7) {
+                if (Math.hypot(t.clientX - gesture.startX, t.clientY - gesture.startY) > 9) {
                     gesture.moved = true;
                 }
 
@@ -772,8 +1044,10 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                     const rect = canvas.getBoundingClientRect();
                     const sx = t.clientX - rect.left;
                     const sy = t.clientY - rect.top;
-                    setCursorCadPos(screenToCad(sx, sy));
-                    setSnapPoint(findNearestSnapPoint(sx, sy));
+                    const snapped = findNearestSnapPoint(sx, sy);
+                    const cadPt = snapped || screenToCad(sx, sy);
+                    setCursorCadPos(cadPt);
+                    setSnapPoint(snapped || cadPt);
                 }
 
                 viewRef.current.panX += dx;
@@ -789,7 +1063,8 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                 if (!gesture.moved && e.changedTouches.length > 0) {
                     const t = e.changedTouches[0];
                     if (measureActive) {
-                        handlePointSelect(t.clientX, t.clientY);
+                        const rect = canvas.getBoundingClientRect();
+                        commitPointSelection(t.clientX - rect.left, t.clientY - rect.top);
                     } else {
                         const now = Date.now();
                         if (now - lastTapTime < 280) {
@@ -824,9 +1099,9 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         viewMode,
         cadDoc,
         measureActive,
-        measureStart,
         findNearestSnapPoint,
         screenToCad,
+        commitPointSelection,
         zoomAtScreenPoint,
         renderCanvas,
     ]);
@@ -855,7 +1130,8 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         const cadPt = screenToCad(sx, sy);
         setCursorCadPos(cadPt);
         if (measureActive) {
-            setSnapPoint(findNearestSnapPoint(sx, sy));
+            const snapped = findNearestSnapPoint(sx, sy);
+            setSnapPoint(snapped || cadPt);
         }
 
         if (mouseDragRef.current) {
@@ -880,24 +1156,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         const rect = canvasRef.current.getBoundingClientRect();
         const sx = e.clientX - rect.left;
         const sy = e.clientY - rect.top;
-        const snapped = findNearestSnapPoint(sx, sy);
-        const targetPt = snapped || screenToCad(sx, sy);
-
-        if (!measureStart) {
-            setMeasureStart(targetPt);
-        } else {
-            const dx = targetPt.x - measureStart.x;
-            const dy = targetPt.y - measureStart.y;
-            const distance = Math.hypot(dx, dy);
-            const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
-            if (distance > 1e-4) {
-                setMeasurements(prev => [
-                    ...prev,
-                    { p1: measureStart, p2: targetPt, distance, dx, dy, angleDeg },
-                ]);
-            }
-            setMeasureStart(null);
-        }
+        commitPointSelection(sx, sy);
     };
 
     const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -922,74 +1181,399 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
         setLayers(prev => prev.map(l => ({ ...l, visible })));
     };
 
-    // Export high-res PNG or Print CAD Sheet
-    const handleExportPng = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const dataUrl = canvas.toDataURL('image/png');
-        const a = document.createElement('a');
-        a.href = dataUrl;
-        a.download = `${item.name.replace(/\.(dwg|dxf)$/i, '')}_CAD.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    };
-
-    const handlePrintDrawing = () => {
-        const canvas = canvasRef.current;
-        const imgUrl = canvas && viewMode === 'vector' ? canvas.toDataURL('image/png') : previewImage;
-        if (!imgUrl) return;
-
-        const visibleLayersCount = layers.filter(l => l.visible).length;
-        const html = `
-            <div style="direction: rtl; font-family: 'Cairo', sans-serif; padding: 8px;">
-                <div style="border: 2px solid #0f172a; border-radius: 12px; padding: 12px; background: #fff;">
-                    <div style="text-align: center; margin-bottom: 12px;">
-                        <img src="${imgUrl}" style="max-width: 100%; max-height: 72vh; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 8px;" />
-                    </div>
-                    <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
-                        <tr>
-                            <td style="border: 1px solid #cbd5e1; padding: 6px 10px; font-weight: bold; background: #f8fafc;">اسم اللوحة الهندسية</td>
-                            <td style="border: 1px solid #cbd5e1; padding: 6px 10px;">${item.name}</td>
-                            <td style="border: 1px solid #cbd5e1; padding: 6px 10px; font-weight: bold; background: #f8fafc;">الطبقات المعروضة</td>
-                            <td style="border: 1px solid #cbd5e1; padding: 6px 10px;">${visibleLayersCount} / ${layers.length}</td>
-                        </tr>
-                    </table>
-                </div>
-            </div>
-        `;
-        printService.printReport(html, `مخطط هندسي - ${item.name}`, undefined, {
-            showHeader: true,
-            showFooter: true,
+    // Start Window Selection (Crop) Mode for Export PNG or Print PDF
+    const openWindowSelector = (action: 'export_png' | 'print_pdf') => {
+        const vp = viewportRef.current;
+        const vw = vp?.clientWidth || 800;
+        const vh = vp?.clientHeight || 600;
+        const w = Math.round(vw * 0.78);
+        const h = Math.round(vh * 0.74);
+        setCropRect({
+            x: Math.round((vw - w) / 2),
+            y: Math.round((vh - h) / 2),
+            w,
+            h,
         });
+        setCropWhiteBg(action === 'print_pdf');
+        setCropAction(action);
     };
 
+    // Render the selected screen window (cropRect) to a high-resolution dataURL
+    const generateCroppedCadDataUrl = useCallback(
+        (rect: CropRect, forceWhiteBg: boolean): string | null => {
+            const vp = viewportRef.current;
+            const canvas = canvasRef.current;
+            if (!vp) return null;
+
+            // If in vector mode and cadDoc is loaded, render the exact crop window at high DPI
+            if (cadDoc && viewMode === 'vector') {
+                const exportScale = 2.5;
+                const outCanvas = document.createElement('canvas');
+                outCanvas.width = Math.max(100, Math.round(rect.w * exportScale));
+                outCanvas.height = Math.max(100, Math.round(rect.h * exportScale));
+                const ctx = outCanvas.getContext('2d');
+                if (!ctx) return null;
+
+                const theme = forceWhiteBg ? THEME_CONFIG.white : THEME_CONFIG[bgTheme];
+                ctx.save();
+                ctx.scale(exportScale, exportScale);
+
+                // Background
+                ctx.fillStyle = theme.bgHex;
+                ctx.fillRect(0, 0, rect.w, rect.h);
+
+                // Translate so cropRect.x, cropRect.y becomes (0,0)
+                ctx.translate(-rect.x, -rect.y);
+
+                const { zoom, panX, panY } = viewRef.current;
+                const { minX, maxY } = cadDoc.bounds;
+                const toSX = (cx: number) => panX + (cx - minX) * zoom;
+                const toSY = (cy: number) => panY + (maxY - cy) * zoom;
+
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.lineWidth = 1.15;
+
+                for (const prim of cadDoc.primitives) {
+                    if (visibleLayerMap.get(prim.layer) === false) continue;
+                    if (!showTexts && (prim.kind === 'text' || prim.isDimension)) continue;
+
+                    const strokeColor = prim.isAdaptiveWhite
+                        ? theme.adaptiveStroke
+                        : forceWhiteBg && prim.colorHex.toLowerCase() === '#ffffff'
+                        ? '#0f172a'
+                        : prim.colorHex;
+                    ctx.strokeStyle = strokeColor;
+                    ctx.fillStyle = strokeColor;
+
+                    if (prim.kind === 'polyline') {
+                        const pts = prim.points;
+                        if (pts.length < 2) continue;
+                        if (prim.dashed) ctx.setLineDash([8, 4, 2, 4]);
+                        ctx.beginPath();
+                        ctx.moveTo(toSX(pts[0].x), toSY(pts[0].y));
+                        for (let i = 1; i < pts.length; i++) {
+                            ctx.lineTo(toSX(pts[i].x), toSY(pts[i].y));
+                        }
+                        if (prim.closed) ctx.closePath();
+                        if (prim.filled) {
+                            ctx.globalAlpha = 0.28;
+                            ctx.fill();
+                            ctx.globalAlpha = 1.0;
+                        }
+                        ctx.stroke();
+                        if (prim.dashed) ctx.setLineDash([]);
+                    } else if (prim.kind === 'circle') {
+                        const sx = toSX(prim.cx);
+                        const sy = toSY(prim.cy);
+                        const sr = prim.r * zoom;
+                        if (sr < 0.3) continue;
+                        ctx.beginPath();
+                        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+                        ctx.stroke();
+                    } else if (prim.kind === 'arc') {
+                        const sx = toSX(prim.cx);
+                        const sy = toSY(prim.cy);
+                        const sr = prim.r * zoom;
+                        if (sr < 0.3) continue;
+                        ctx.beginPath();
+                        ctx.arc(sx, sy, sr, -prim.startAngle, -prim.endAngle, prim.ccw !== false);
+                        ctx.stroke();
+                    } else if (prim.kind === 'ellipse') {
+                        const sx = toSX(prim.cx);
+                        const sy = toSY(prim.cy);
+                        const srx = prim.rx * zoom;
+                        const sry = prim.ry * zoom;
+                        if (Math.max(srx, sry) < 0.3) continue;
+                        ctx.beginPath();
+                        ctx.ellipse(sx, sy, srx, sry, -prim.rotation, -prim.startAngle, -prim.endAngle, true);
+                        ctx.stroke();
+                    } else if (prim.kind === 'text') {
+                        const fontPx = prim.height * zoom;
+                        if (fontPx < 1.2 || fontPx > 900) continue;
+                        const sx = toSX(prim.x);
+                        const sy = toSY(prim.y);
+                        const isArabicText = /[\u0600-\u06FF]/.test(prim.text);
+                        ctx.save();
+                        ctx.translate(sx, sy);
+                        if (prim.rotation) ctx.rotate(-prim.rotation);
+                        const wf =
+                            prim.widthFactor && prim.widthFactor > 0.1
+                                ? prim.widthFactor
+                                : isArabicText
+                                ? 0.88
+                                : 0.92;
+                        if (Math.abs(wf - 1) > 0.01) ctx.scale(wf, 1);
+                        ctx.direction = isArabicText ? 'rtl' : 'ltr';
+                        ctx.font = `500 ${fontPx.toFixed(2)}px "Cairo", "Segoe UI", Tahoma, sans-serif`;
+                        ctx.textAlign = prim.align;
+                        ctx.textBaseline = prim.valign || 'alphabetic';
+                        ctx.fillText(prim.text, 0, 0);
+                        ctx.restore();
+                    }
+                }
+
+                ctx.restore();
+                return outCanvas.toDataURL('image/png');
+            }
+
+            if (canvas) {
+                return canvas.toDataURL('image/png');
+            }
+            return previewImage || null;
+        },
+        [cadDoc, viewMode, bgTheme, visibleLayerMap, showTexts, previewImage]
+    );
+
+    const handleConfirmCropAction = () => {
+        const dataUrl = generateCroppedCadDataUrl(cropRect, cropWhiteBg);
+        const currentAction = cropAction;
+        setCropAction(null);
+        if (!dataUrl) return;
+
+        if (currentAction === 'export_png') {
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = `${item.name.replace(/\.(dwg|dxf)$/i, '')}_CAD.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setStatus('تم تصدير الجزء المحدد كصورة PNG عالية الدقة');
+            setTimeout(() => setStatus(''), 3000);
+        } else if (currentAction === 'print_pdf') {
+            const visibleLayersCount = layers.filter(l => l.visible).length;
+            const html = `
+                <div style="direction: rtl; font-family: 'Cairo', sans-serif; padding: 8px;">
+                    <div style="border: 2px solid #0f172a; border-radius: 12px; padding: 12px; background: #fff;">
+                        <div style="text-align: center; margin-bottom: 12px;">
+                            <img src="${dataUrl}" style="max-width: 100%; max-height: 75vh; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 8px;" />
+                        </div>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
+                            <tr>
+                                <td style="border: 1px solid #cbd5e1; padding: 6px 10px; font-weight: bold; background: #f8fafc;">اسم اللوحة الهندسية</td>
+                                <td style="border: 1px solid #cbd5e1; padding: 6px 10px;">${item.name}</td>
+                                <td style="border: 1px solid #cbd5e1; padding: 6px 10px; font-weight: bold; background: #f8fafc;">الطبقات المعروضة</td>
+                                <td style="border: 1px solid #cbd5e1; padding: 6px 10px;">${visibleLayersCount} / ${layers.length}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            `;
+            printService.printReport(html, `مخطط هندسي - ${item.name}`, undefined, {
+                showHeader: true,
+                showFooter: true,
+            });
+        }
+    };
+
+    // Window Selection Pointer Drag/Resize Handlers
+    const startCropDrag = (
+        type: 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'draw',
+        clientX: number,
+        clientY: number
+    ) => {
+        const vp = viewportRef.current;
+        if (!vp) return;
+        const vpRect = vp.getBoundingClientRect();
+        const localX = clientX - vpRect.left;
+        const localY = clientY - vpRect.top;
+
+        if (type === 'draw') {
+            const newRect = { x: localX, y: localY, w: 10, h: 10 };
+            setCropRect(newRect);
+            cropDragRef.current = {
+                type: 'draw',
+                startX: localX,
+                startY: localY,
+                initialRect: newRect,
+            };
+        } else {
+            cropDragRef.current = {
+                type,
+                startX: localX,
+                startY: localY,
+                initialRect: { ...cropRect },
+            };
+        }
+    };
+
+    const moveCropDrag = (clientX: number, clientY: number) => {
+        const drag = cropDragRef.current;
+        const vp = viewportRef.current;
+        if (!drag || !vp) return;
+        const vpRect = vp.getBoundingClientRect();
+        const vw = vp.clientWidth;
+        const vh = vp.clientHeight;
+        const curX = Math.max(8, Math.min(vw - 8, clientX - vpRect.left));
+        const curY = Math.max(8, Math.min(vh - 8, clientY - vpRect.top));
+        const dx = curX - drag.startX;
+        const dy = curY - drag.startY;
+        const r = drag.initialRect;
+        const minSize = 60;
+
+        if (drag.type === 'move') {
+            const nx = Math.max(8, Math.min(vw - r.w - 8, r.x + dx));
+            const ny = Math.max(8, Math.min(vh - r.h - 8, r.y + dy));
+            setCropRect({ x: nx, y: ny, w: r.w, h: r.h });
+        } else if (drag.type === 'draw') {
+            const x = Math.min(drag.startX, curX);
+            const y = Math.min(drag.startY, curY);
+            const w = Math.max(minSize, Math.abs(curX - drag.startX));
+            const h = Math.max(minSize, Math.abs(curY - drag.startY));
+            setCropRect({ x, y, w, h });
+        } else if (drag.type === 'se') {
+            const nw = Math.max(minSize, Math.min(vw - r.x - 8, r.w + dx));
+            const nh = Math.max(minSize, Math.min(vh - r.y - 8, r.h + dy));
+            setCropRect({ ...r, w: nw, h: nh });
+        } else if (drag.type === 'sw') {
+            const nx = Math.max(8, Math.min(r.x + r.w - minSize, r.x + dx));
+            const nw = r.x + r.w - nx;
+            const nh = Math.max(minSize, Math.min(vh - r.y - 8, r.h + dy));
+            setCropRect({ x: nx, y: r.y, w: nw, h: nh });
+        } else if (drag.type === 'ne') {
+            const ny = Math.max(8, Math.min(r.y + r.h - minSize, r.y + dy));
+            const nh = r.y + r.h - ny;
+            const nw = Math.max(minSize, Math.min(vw - r.x - 8, r.w + dx));
+            setCropRect({ x: r.x, y: ny, w: nw, h: nh });
+        } else if (drag.type === 'nw') {
+            const nx = Math.max(8, Math.min(r.x + r.w - minSize, r.x + dx));
+            const ny = Math.max(8, Math.min(r.y + r.h - minSize, r.y + dy));
+            setCropRect({
+                x: nx,
+                y: ny,
+                w: r.x + r.w - nx,
+                h: r.y + r.h - ny,
+            });
+        }
+    };
+
+    const endCropDrag = () => {
+        cropDragRef.current = null;
+    };
+
+    // Open in External Mobile App (DWG FastView / AutoCAD Mobile) using cached Blob immediately
     const handleOpenInApp = async () => {
-        setLoading(true);
-        setStatus('جاري تحضير المخطط للفتح الخارجي...');
+        setStatus('جاري فتح المخطط في تطبيق الأوتوكاد الخارجي...');
         try {
-            await openDwgInExternalApp(item.id, item.name);
-            setStatus('يرجى اختيار DWG FastView من القائمة');
+            await openDwgInExternalApp(item.id, item.name, loadedBlobRef.current, true);
+            setStatus('اختر تطبيق DWG FastView أو AutoCAD من القائمة');
         } catch {
-            setStatus('فشل فتح الملف');
+            setStatus('تم تنزيل ملف المخطط لفتحه في التطبيق الخارجي');
         } finally {
-            setLoading(false);
             setTimeout(() => setStatus(''), 4000);
         }
     };
 
-    const handleShare = async () => {
-        if (isSharing) return;
+    // Share CAD File (Native File Share / PNG Share / Link Share)
+    const handleNativeShareFile = async () => {
         setIsSharing(true);
         try {
-            const blob = await api.downloadFileBlob(item.id);
-            const file = new File([blob], item.name, { type: blob.type || 'application/acad' });
-            await api.shareSmart(item, file);
-        } catch {
-            alert('فشل تحضير الملف للمشاركة.');
+            let blob = loadedBlobRef.current;
+            if (!blob) {
+                blob = await api.downloadFileBlob(item.id);
+                loadedBlobRef.current = blob;
+            }
+            const safeName =
+                item.name.toLowerCase().endsWith('.dwg') || item.name.toLowerCase().endsWith('.dxf')
+                    ? item.name
+                    : `${item.name}.dwg`;
+            const file = new File([blob], safeName, { type: 'application/octet-stream' });
+
+            if (navigator.share) {
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({
+                        files: [file],
+                        title: safeName,
+                        text: `مخطط هندسي: ${safeName}`,
+                    });
+                    setShowShareModal(false);
+                    return;
+                }
+                const shareUrl = item.webViewLink || item.url || window.location.href;
+                await navigator.share({
+                    title: safeName,
+                    text: `مخطط هندسي: ${safeName}`,
+                    url: shareUrl,
+                });
+                setShowShareModal(false);
+                return;
+            }
+            // Fallback: trigger download
+            await openDwgInExternalApp(item.id, safeName, blob, false);
+            setStatus('تم تحميل الملف لمشاركته');
+            setTimeout(() => setStatus(''), 3000);
+        } catch (err: any) {
+            if (err?.name !== 'AbortError') {
+                setStatus('تم تجهيز الملف للمشاركة');
+                setTimeout(() => setStatus(''), 3000);
+            }
         } finally {
             setIsSharing(false);
         }
+    };
+
+    const handleShareAsImage = async () => {
+        setIsSharing(true);
+        try {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+            if (!blob) return;
+            const imgName = `${item.name.replace(/\.(dwg|dxf)$/i, '')}_CAD.png`;
+            const file = new File([blob], imgName, { type: 'image/png' });
+
+            if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    files: [file],
+                    title: imgName,
+                    text: `صورة مخطط: ${item.name}`,
+                });
+                setShowShareModal(false);
+                return;
+            }
+            const dataUrl = canvas.toDataURL('image/png');
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = imgName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setShowShareModal(false);
+            setStatus('تم حفظ صورة المخطط لمشاركتها');
+            setTimeout(() => setStatus(''), 3000);
+        } catch (err: any) {
+            if (err?.name !== 'AbortError') {
+                setStatus('تعذر مشاركة الصورة مباشرة');
+                setTimeout(() => setStatus(''), 3000);
+            }
+        } finally {
+            setIsSharing(false);
+        }
+    };
+
+    const handleCopyShareLink = async () => {
+        const shareUrl =
+            item.webViewLink ||
+            item.url ||
+            `https://drive.google.com/file/d/${item.id}/view`;
+        try {
+            await navigator.clipboard.writeText(shareUrl);
+            setShowShareModal(false);
+            setStatus('تم نسخ رابط المخطط إلى الحافظة بنجاح');
+            setTimeout(() => setStatus(''), 3000);
+        } catch {
+            setStatus(shareUrl);
+        }
+    };
+
+    const handleWhatsAppShare = () => {
+        const shareUrl =
+            item.webViewLink ||
+            item.url ||
+            `https://drive.google.com/file/d/${item.id}/view`;
+        const text = encodeURIComponent(`مخطط أوتوكاد هندسي: ${item.name}\n${shareUrl}`);
+        window.open(`https://wa.me/?text=${text}`, '_blank', 'noopener,noreferrer');
+        setShowShareModal(false);
     };
 
     // Fallback Preview Image Pan/Zoom Handlers
@@ -1092,60 +1676,8 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                     </div>
                 </div>
 
-                {/* Quick Engineering Controls */}
-                <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                    {cadDoc && (
-                        <>
-                            {/* Layers Button */}
-                            <button
-                                type="button"
-                                onClick={() => setShowLayersPanel(prev => !prev)}
-                                className={`!min-h-0 h-8 px-2.5 rounded-xl flex items-center gap-1.5 text-[11px] font-bold transition border ${
-                                    showLayersPanel
-                                        ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
-                                        : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
-                                }`}
-                                title="التحكم في الطبقات (Layers)"
-                            >
-                                <i className="fa-solid fa-layer-group text-xs"></i>
-                                <span className="hidden sm:inline">الطبقات</span>
-                                <span className="text-[9px] px-1 py-0.2 rounded bg-black/30 font-mono">
-                                    {layers.filter(l => l.visible).length}/{layers.length}
-                                </span>
-                            </button>
-
-                            {/* Measure Tool Button */}
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setMeasureActive(prev => !prev);
-                                    setMeasureStart(null);
-                                }}
-                                className={`!min-h-0 h-8 px-2.5 rounded-xl flex items-center gap-1.5 text-[11px] font-bold transition border ${
-                                    measureActive
-                                        ? 'bg-emerald-600 text-white border-emerald-400 shadow-md'
-                                        : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
-                                }`}
-                                title="أداة القياس الهندسي (Measure)"
-                            >
-                                <i className="fa-solid fa-ruler-combined text-xs"></i>
-                                <span className="hidden sm:inline">قياس</span>
-                            </button>
-
-                            {/* Background Theme Switcher */}
-                            <button
-                                type="button"
-                                onClick={cycleBgTheme}
-                                className="!min-h-0 h-8 px-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/10 flex items-center gap-1.5 text-[11px] font-bold transition"
-                                title={`تغيير الخلفية (${THEME_CONFIG[bgTheme].label})`}
-                            >
-                                <i className="fa-solid fa-palette text-xs text-sky-300"></i>
-                                <span className="hidden md:inline">{THEME_CONFIG[bgTheme].label}</span>
-                            </button>
-                        </>
-                    )}
-
-                    {/* Options Menu Button */}
+                {/* Quick Engineering Controls (3-dots Menu + Close Button) */}
+                <div className="flex items-center gap-1.5 shrink-0">
                     <div className="relative">
                         <button
                             type="button"
@@ -1155,7 +1687,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                     ? 'bg-indigo-600 text-white border-indigo-400'
                                     : 'bg-white/10 hover:bg-white/20 text-white border-white/10'
                             }`}
-                            title="خيارات المخطط"
+                            title="خيارات وأدوات المخطط"
                         >
                             {loading || isSharing ? (
                                 <i className="fa-solid fa-circle-notch fa-spin text-xs text-yellow-300"></i>
@@ -1170,7 +1702,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                     className="fixed inset-0 z-[90]"
                                     onClick={() => setShowActionsMenu(false)}
                                 ></div>
-                                <div className="absolute left-0 top-10 w-64 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1 text-white animate-scale-in origin-top-left">
+                                <div className="absolute left-0 top-10 w-64 sm:w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-1.5 z-[100] space-y-0.5 text-white animate-scale-in origin-top-left max-h-[84vh] overflow-y-auto custom-scrollbar">
                                     <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
                                         <span className="text-[10px] font-bold text-slate-400">
                                             أدوات وخيارات الأوتوكاد
@@ -1180,18 +1712,102 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
 
                                     {cadDoc && (
                                         <>
+                                            {/* 1. Layers Control */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowActionsMenu(false);
+                                                    setShowLayersPanel(prev => !prev);
+                                                }}
+                                                className={`!min-h-0 w-full px-2.5 py-1.5 rounded-xl flex items-center justify-between gap-2 transition text-[10px] sm:text-[11px] font-bold ${
+                                                    showLayersPanel
+                                                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                                        : 'hover:bg-white/10 text-white'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <div className="w-6 h-6 rounded-lg bg-slate-800 text-amber-400 flex items-center justify-center shrink-0">
+                                                        <i className="fa-solid fa-layer-group text-[10px]"></i>
+                                                    </div>
+                                                    <span className="truncate whitespace-nowrap">
+                                                        التحكم في الطبقات (Layers)
+                                                    </span>
+                                                </div>
+                                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-amber-300 shrink-0">
+                                                    {layers.filter(l => l.visible).length}/{layers.length}
+                                                </span>
+                                            </button>
+
+                                            {/* 2. Engineering Measurement Tool */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowActionsMenu(false);
+                                                    setMeasureActive(prev => !prev);
+                                                    setMeasureStart(null);
+                                                }}
+                                                className={`!min-h-0 w-full px-2.5 py-1.5 rounded-xl flex items-center justify-between gap-2 transition text-[10px] sm:text-[11px] font-bold ${
+                                                    measureActive
+                                                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                                        : 'hover:bg-white/10 text-white'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <div className="w-6 h-6 rounded-lg bg-slate-800 text-emerald-400 flex items-center justify-center shrink-0">
+                                                        <i className="fa-solid fa-ruler-combined text-[10px]"></i>
+                                                    </div>
+                                                    <span className="truncate whitespace-nowrap">
+                                                        أداة القياس (أفقي / عمودي / مائل)
+                                                    </span>
+                                                </div>
+                                                <span
+                                                    className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
+                                                        measureActive
+                                                            ? 'bg-emerald-500 text-slate-950'
+                                                            : 'bg-slate-800 text-slate-400'
+                                                    }`}
+                                                >
+                                                    {measureActive ? 'مفعل' : 'تفعيل'}
+                                                </span>
+                                            </button>
+
+                                            {/* 3. Background Theme Switcher */}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    cycleBgTheme();
+                                                }}
+                                                className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center justify-between gap-2 transition text-[10px] sm:text-[11px] font-bold"
+                                            >
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <div className="w-6 h-6 rounded-lg bg-slate-800 text-sky-400 flex items-center justify-center shrink-0">
+                                                        <i className="fa-solid fa-palette text-[10px]"></i>
+                                                    </div>
+                                                    <span className="truncate whitespace-nowrap">
+                                                        تغيير لون الخلفية
+                                                    </span>
+                                                </div>
+                                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-sky-300 border border-slate-700 shrink-0">
+                                                    {THEME_CONFIG[bgTheme].label}
+                                                </span>
+                                            </button>
+
+                                            <div className="border-t border-slate-800 my-1"></div>
+
                                             <button
                                                 type="button"
                                                 onClick={() => {
                                                     setShowActionsMenu(false);
                                                     fitToScreen();
                                                 }}
-                                                className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                                className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                             >
-                                                <div className="w-7 h-7 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center shrink-0">
-                                                    <i className="fa-solid fa-expand text-xs"></i>
+                                                <div className="w-6 h-6 rounded-lg bg-slate-800 text-teal-400 flex items-center justify-center shrink-0">
+                                                    <i className="fa-solid fa-expand text-[10px]"></i>
                                                 </div>
-                                                <span>ملاءمة المخطط للشاشة (Zoom Extents)</span>
+                                                <span className="truncate whitespace-nowrap">
+                                                    ملاءمة المخطط للشاشة (Zoom Extents)
+                                                </span>
                                             </button>
 
                                             <button
@@ -1200,12 +1816,14 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                                     setShowTexts(prev => !prev);
                                                     setShowActionsMenu(false);
                                                 }}
-                                                className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                                className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                             >
-                                                <div className="w-7 h-7 rounded-lg bg-slate-800 text-amber-400 flex items-center justify-center shrink-0">
-                                                    <i className="fa-solid fa-font text-xs"></i>
+                                                <div className="w-6 h-6 rounded-lg bg-slate-800 text-amber-400 flex items-center justify-center shrink-0">
+                                                    <i className="fa-solid fa-font text-[10px]"></i>
                                                 </div>
-                                                <span>{showTexts ? 'إخفاء النصوص والأبعاد' : 'إظهار النصوص والأبعاد'}</span>
+                                                <span className="truncate whitespace-nowrap">
+                                                    {showTexts ? 'إخفاء النصوص والأبعاد' : 'إظهار النصوص والأبعاد'}
+                                                </span>
                                             </button>
 
                                             <button
@@ -1214,26 +1832,30 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                                     setShowGrid(prev => !prev);
                                                     setShowActionsMenu(false);
                                                 }}
-                                                className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                                className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                             >
-                                                <div className="w-7 h-7 rounded-lg bg-slate-800 text-sky-400 flex items-center justify-center shrink-0">
-                                                    <i className="fa-solid fa-border-all text-xs"></i>
+                                                <div className="w-6 h-6 rounded-lg bg-slate-800 text-sky-400 flex items-center justify-center shrink-0">
+                                                    <i className="fa-solid fa-border-all text-[10px]"></i>
                                                 </div>
-                                                <span>{showGrid ? 'إخفاء الشبكة الهندسية' : 'إظهار الشبكة الهندسية'}</span>
+                                                <span className="truncate whitespace-nowrap">
+                                                    {showGrid ? 'إخفاء الشبكة الهندسية' : 'إظهار الشبكة الهندسية'}
+                                                </span>
                                             </button>
 
                                             <button
                                                 type="button"
                                                 onClick={() => {
                                                     setShowActionsMenu(false);
-                                                    handleExportPng();
+                                                    openWindowSelector('export_png');
                                                 }}
-                                                className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                                className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                             >
-                                                <div className="w-7 h-7 rounded-lg bg-slate-800 text-purple-400 flex items-center justify-center shrink-0">
-                                                    <i className="fa-solid fa-image text-xs"></i>
+                                                <div className="w-6 h-6 rounded-lg bg-slate-800 text-purple-400 flex items-center justify-center shrink-0">
+                                                    <i className="fa-solid fa-crop-simple text-[10px]"></i>
                                                 </div>
-                                                <span>تصدير المخطط كصورة (PNG)</span>
+                                                <span className="truncate whitespace-nowrap">
+                                                    تحديد جزء وتصديره كصورة (PNG)
+                                                </span>
                                             </button>
                                         </>
                                     )}
@@ -1242,14 +1864,16 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                         type="button"
                                         onClick={() => {
                                             setShowActionsMenu(false);
-                                            handlePrintDrawing();
+                                            openWindowSelector('print_pdf');
                                         }}
-                                        className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                        className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                     >
-                                        <div className="w-7 h-7 rounded-lg bg-slate-800 text-indigo-400 flex items-center justify-center shrink-0">
-                                            <i className="fa-solid fa-print text-xs"></i>
+                                        <div className="w-6 h-6 rounded-lg bg-slate-800 text-indigo-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-print text-[10px]"></i>
                                         </div>
-                                        <span>طباعة / تصدير PDF</span>
+                                        <span className="truncate whitespace-nowrap">
+                                            تحديد نافذة للطباعة / تصدير PDF
+                                        </span>
                                     </button>
 
                                     <button
@@ -1258,27 +1882,30 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                             setShowActionsMenu(false);
                                             localFileInputRef.current?.click();
                                         }}
-                                        className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                        className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                     >
-                                        <div className="w-7 h-7 rounded-lg bg-slate-800 text-cyan-400 flex items-center justify-center shrink-0">
-                                            <i className="fa-solid fa-folder-open text-xs"></i>
+                                        <div className="w-6 h-6 rounded-lg bg-slate-800 text-cyan-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-folder-open text-[10px]"></i>
                                         </div>
-                                        <span>فتح ملف DWG / DXF من الجهاز</span>
+                                        <span className="truncate whitespace-nowrap">
+                                            فتح ملف DWG / DXF من الجهاز
+                                        </span>
                                     </button>
 
                                     <button
                                         type="button"
                                         onClick={() => {
                                             setShowActionsMenu(false);
-                                            handleShare();
+                                            setShowShareModal(true);
                                         }}
-                                        disabled={isSharing}
-                                        className="!min-h-0 w-full px-3 py-2 rounded-xl hover:bg-white/10 flex items-center gap-2.5 transition text-xs font-bold"
+                                        className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl hover:bg-white/10 flex items-center gap-2 transition text-[10px] sm:text-[11px] font-bold"
                                     >
-                                        <div className="w-7 h-7 rounded-lg bg-slate-800 text-emerald-400 flex items-center justify-center shrink-0">
-                                            <i className="fa-solid fa-share-nodes text-xs"></i>
+                                        <div className="w-6 h-6 rounded-lg bg-slate-800 text-emerald-400 flex items-center justify-center shrink-0">
+                                            <i className="fa-solid fa-share-nodes text-[10px]"></i>
                                         </div>
-                                        <span>مشاركة المخطط</span>
+                                        <span className="truncate whitespace-nowrap">
+                                            مشاركة المخطط (ملف / صورة / رابط)
+                                        </span>
                                     </button>
 
                                     <div className="border-t border-slate-800 pt-1">
@@ -1289,12 +1916,14 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                                 handleOpenInApp();
                                             }}
                                             disabled={loading}
-                                            className="!min-h-0 w-full px-3 py-2 rounded-xl bg-[#c41e3a] hover:bg-[#a01830] text-white flex items-center gap-2.5 transition shadow-md text-xs font-bold disabled:opacity-50"
+                                            className="!min-h-0 w-full px-2.5 py-1.5 rounded-xl bg-[#c41e3a] hover:bg-[#a01830] text-white flex items-center gap-2 transition shadow-md text-[10px] sm:text-[11px] font-bold disabled:opacity-50"
                                         >
-                                            <div className="w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
-                                                <i className="fa-solid fa-cube text-xs"></i>
+                                            <div className="w-6 h-6 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+                                                <i className="fa-solid fa-mobile-screen-button text-[10px]"></i>
                                             </div>
-                                            <span>فتح خارجي (DWG FastView)</span>
+                                            <span className="truncate whitespace-nowrap">
+                                                فتح في تطبيق خارجي (DWG FastView)
+                                            </span>
                                         </button>
                                     </div>
                                 </div>
@@ -1316,37 +1945,77 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
 
             {/* Interactive Measurement Banner when active */}
             {(measureActive || measurements.length > 0) && (
-                <div className="relative z-20 bg-slate-900/95 border-b border-emerald-500/30 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-white">
+                <div className="relative z-20 bg-slate-900/95 border-b border-emerald-500/30 px-2.5 sm:px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-white">
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-[11px]">
-                            <i className="fa-solid fa-ruler-combined"></i>
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-[10px] sm:text-[11px]">
+                            <i className="fa-solid fa-crosshairs text-emerald-400"></i>
                             {measureActive
                                 ? measureStart
-                                    ? 'حدد النقطة الثانية على المخطط (يدعم الالتقاط التلقائي OSNAP)'
-                                    : 'حدد النقطة الأولى للقياس على المخطط'
-                                : 'نتائج القياس'}
+                                    ? 'حدد نقطة النهاية (مؤشر السناب مفعل)'
+                                    : 'حدد نقطة البداية (مؤشر السناب مفعل)'
+                                : 'نتائج القياس الهندسي'}
                         </span>
                         {lastMeasurement && (
-                            <div className="flex items-center gap-2 font-mono text-[11px] bg-black/40 px-2.5 py-0.5 rounded-lg border border-white/10">
-                                <span className="text-emerald-400 font-bold">
-                                    L = {lastMeasurement.distance.toFixed(3)}
+                            <div className="flex items-center gap-2 font-mono text-[10px] sm:text-[11px] bg-black/40 px-2 py-0.5 rounded-lg border border-white/10 flex-wrap">
+                                <span className="text-purple-300 font-bold">
+                                    مائل = {lastMeasurement.distance.toFixed(2)} م
                                 </span>
-                                <span className="text-slate-400">|</span>
-                                <span className="text-sky-300">
-                                    ΔX = {Math.abs(lastMeasurement.dx).toFixed(3)}
+                                <span className="text-slate-600">|</span>
+                                <span className="text-sky-300 font-bold">
+                                    أفقي ΔX = {Math.abs(lastMeasurement.dx).toFixed(2)} م
                                 </span>
-                                <span className="text-slate-400">|</span>
-                                <span className="text-amber-300">
-                                    ΔY = {Math.abs(lastMeasurement.dy).toFixed(3)}
-                                </span>
-                                <span className="text-slate-400">|</span>
-                                <span className="text-purple-300">
-                                    ∠ {lastMeasurement.angleDeg.toFixed(1)}°
+                                <span className="text-slate-600">|</span>
+                                <span className="text-amber-300 font-bold">
+                                    عمودي ΔY = {Math.abs(lastMeasurement.dy).toFixed(2)} م
                                 </span>
                             </div>
                         )}
                     </div>
-                    <div className="flex items-center gap-1.5">
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                        {measureActive && (
+                            <div className="inline-flex items-center bg-slate-950/80 p-0.5 rounded-xl border border-slate-700/80 gap-0.5">
+                                <button
+                                    type="button"
+                                    onClick={() => setMeasureMode('ortho_both')}
+                                    className={`!min-h-0 px-2 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 ${
+                                        measureMode === 'ortho_both'
+                                            ? 'bg-sky-500 text-slate-950 shadow'
+                                            : 'text-slate-300 hover:bg-white/5'
+                                    }`}
+                                    title="إظهار البعد الأفقي والعمودي معاً"
+                                >
+                                    <i className="fa-solid fa-vector-square text-[9px]"></i>
+                                    <span>أفقي + عمودي</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setMeasureMode('inclined')}
+                                    className={`!min-h-0 px-2 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 ${
+                                        measureMode === 'inclined'
+                                            ? 'bg-purple-500 text-white shadow'
+                                            : 'text-slate-300 hover:bg-white/5'
+                                    }`}
+                                    title="أخذ مقاس بوضع مائل مباشر بين النقطتين"
+                                >
+                                    <i className="fa-solid fa-ruler-horizontal -rotate-45 text-[9px]"></i>
+                                    <span>وضع مائل</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setMeasureMode('ortho_lock')}
+                                    className={`!min-h-0 px-2 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 ${
+                                        measureMode === 'ortho_lock'
+                                            ? 'bg-amber-500 text-slate-950 shadow'
+                                            : 'text-slate-300 hover:bg-white/5'
+                                    }`}
+                                    title="قفل القياس على محور واحد متعامد (أفقي فقط أو عمودي فقط)"
+                                >
+                                    <i className="fa-solid fa-arrows-up-down-left-right text-[9px]"></i>
+                                    <span>متعامد فقط</span>
+                                </button>
+                            </div>
+                        )}
                         {measurements.length > 0 && (
                             <button
                                 type="button"
@@ -1354,9 +2023,9 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                     setMeasurements([]);
                                     setMeasureStart(null);
                                 }}
-                                className="!min-h-0 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-[11px] font-bold transition"
+                                className="!min-h-0 px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-[10px] font-bold transition"
                             >
-                                مسح القياسات ({measurements.length})
+                                مسح ({measurements.length})
                             </button>
                         )}
                         {measureActive && (
@@ -1366,9 +2035,9 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                     setMeasureActive(false);
                                     setMeasureStart(null);
                                 }}
-                                className="!min-h-0 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold transition"
+                                className="!min-h-0 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold transition"
                             >
-                                إنهاء القياس
+                                إنهاء
                             </button>
                         )}
                     </div>
@@ -1418,6 +2087,267 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                             measureActive ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
                         }`}
                     />
+                )}
+
+                {/* Interactive Window Selection Overlay for Print / Export PNG */}
+                {cropAction && (
+                    <div
+                        className="absolute inset-0 z-40 select-none touch-none"
+                        onMouseMove={e => moveCropDrag(e.clientX, e.clientY)}
+                        onMouseUp={endCropDrag}
+                        onMouseLeave={endCropDrag}
+                        onTouchMove={e => {
+                            if (e.touches.length === 1) {
+                                moveCropDrag(e.touches[0].clientX, e.touches[0].clientY);
+                            }
+                        }}
+                        onTouchEnd={endCropDrag}
+                    >
+                        {/* Top instruction bar (single compact row, no fullscreen button) */}
+                        <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 backdrop-blur-xl border border-indigo-500/40 rounded-xl px-2.5 py-1.5 shadow-2xl flex items-center justify-between gap-1.5 flex-nowrap whitespace-nowrap text-white w-[95vw] max-w-md">
+                            <div className="flex items-center gap-1 text-[9px] sm:text-[10px] font-bold text-indigo-300 truncate min-w-0">
+                                <i className="fa-solid fa-crop-simple text-[9px] shrink-0"></i>
+                                <span className="truncate">
+                                    {cropAction === 'export_png' ? 'نافذة تصدير الصورة' : 'نافذة الطباعة PDF'}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => setCropWhiteBg(prev => !prev)}
+                                    className={`!min-h-0 px-2 py-1 rounded-lg text-[9px] sm:text-[10px] font-bold border transition flex items-center gap-1 ${
+                                        cropWhiteBg
+                                            ? 'bg-white text-slate-900 border-white'
+                                            : 'bg-slate-800 text-slate-300 border-slate-700'
+                                    }`}
+                                >
+                                    <i className="fa-solid fa-fill-drip text-[8px]"></i>
+                                    <span>{cropWhiteBg ? 'خلفية بيضاء' : 'لون الشاشة'}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleConfirmCropAction}
+                                    className="!min-h-0 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] sm:text-[10px] font-extrabold shadow-md transition flex items-center gap-1"
+                                >
+                                    <i
+                                        className={`fa-solid ${
+                                            cropAction === 'export_png' ? 'fa-download' : 'fa-print'
+                                        } text-[9px]`}
+                                    ></i>
+                                    <span>
+                                        {cropAction === 'export_png' ? 'حفظ الصورة' : 'طباعة'}
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setCropAction(null)}
+                                    className="!min-h-0 px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-[9px] sm:text-[10px] font-bold transition"
+                                >
+                                    إلغاء
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Bottom instruction pill constrained within screen bounds */}
+                        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-emerald-300 border border-emerald-500/40 px-2.5 py-1 rounded-xl text-[9px] sm:text-[10px] font-mono font-bold max-w-[92vw] truncate pointer-events-none shadow-lg text-center">
+                            اسحب النافذة أو الزوايا لتحديد الجزء المطلوب ({Math.round(cropRect.w)} ×{' '}
+                            {Math.round(cropRect.h)})
+                        </div>
+
+                        {/* Background Dimmer outside cropRect (allows drawing a new box by dragging) */}
+                        <div
+                            className="absolute inset-0 cursor-crosshair"
+                            onMouseDown={e => startCropDrag('draw', e.clientX, e.clientY)}
+                            onTouchStart={e => {
+                                if (e.touches.length === 1) {
+                                    startCropDrag('draw', e.touches[0].clientX, e.touches[0].clientY);
+                                }
+                            }}
+                        />
+
+                        {/* Interactive Selection Window Box */}
+                        <div
+                            style={{
+                                left: `${cropRect.x}px`,
+                                top: `${cropRect.y}px`,
+                                width: `${cropRect.w}px`,
+                                height: `${cropRect.h}px`,
+                                boxShadow: '0 0 0 9999px rgba(2, 6, 23, 0.68)',
+                            }}
+                            onMouseDown={e => {
+                                e.stopPropagation();
+                                startCropDrag('move', e.clientX, e.clientY);
+                            }}
+                            onTouchStart={e => {
+                                e.stopPropagation();
+                                if (e.touches.length === 1) {
+                                    startCropDrag('move', e.touches[0].clientX, e.touches[0].clientY);
+                                }
+                            }}
+                            className="absolute border-2 border-dashed border-emerald-400 cursor-move"
+                        >
+                            {/* Rule of thirds helper grid inside crop window */}
+                            <div className="w-full h-full grid grid-cols-3 grid-rows-3 pointer-events-none">
+                                <div className="border-r border-b border-emerald-400/20" />
+                                <div className="border-r border-b border-emerald-400/20" />
+                                <div className="border-b border-emerald-400/20" />
+                                <div className="border-r border-b border-emerald-400/20" />
+                                <div className="border-r border-b border-emerald-400/20" />
+                                <div className="border-b border-emerald-400/20" />
+                                <div className="border-r border-emerald-400/20" />
+                                <div className="border-r border-emerald-400/20" />
+                                <div />
+                            </div>
+
+                            {/* 4 Corner Resize Handles */}
+                            <div
+                                onMouseDown={e => {
+                                    e.stopPropagation();
+                                    startCropDrag('nw', e.clientX, e.clientY);
+                                }}
+                                onTouchStart={e => {
+                                    e.stopPropagation();
+                                    if (e.touches.length === 1) {
+                                        startCropDrag('nw', e.touches[0].clientX, e.touches[0].clientY);
+                                    }
+                                }}
+                                className="absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-md cursor-nwse-resize"
+                            />
+                            <div
+                                onMouseDown={e => {
+                                    e.stopPropagation();
+                                    startCropDrag('ne', e.clientX, e.clientY);
+                                }}
+                                onTouchStart={e => {
+                                    e.stopPropagation();
+                                    if (e.touches.length === 1) {
+                                        startCropDrag('ne', e.touches[0].clientX, e.touches[0].clientY);
+                                    }
+                                }}
+                                className="absolute -top-2.5 -right-2.5 w-5 h-5 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-md cursor-nesw-resize"
+                            />
+                            <div
+                                onMouseDown={e => {
+                                    e.stopPropagation();
+                                    startCropDrag('sw', e.clientX, e.clientY);
+                                }}
+                                onTouchStart={e => {
+                                    e.stopPropagation();
+                                    if (e.touches.length === 1) {
+                                        startCropDrag('sw', e.touches[0].clientX, e.touches[0].clientY);
+                                    }
+                                }}
+                                className="absolute -bottom-2.5 -left-2.5 w-5 h-5 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-md cursor-nesw-resize"
+                            />
+                            <div
+                                onMouseDown={e => {
+                                    e.stopPropagation();
+                                    startCropDrag('se', e.clientX, e.clientY);
+                                }}
+                                onTouchStart={e => {
+                                    e.stopPropagation();
+                                    if (e.touches.length === 1) {
+                                        startCropDrag('se', e.touches[0].clientX, e.touches[0].clientY);
+                                    }
+                                }}
+                                className="absolute -bottom-2.5 -right-2.5 w-5 h-5 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-md cursor-nwse-resize"
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* Share & External App Modal */}
+                {showShareModal && (
+                    <div className="fixed inset-0 z-[110] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                        <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-sm w-full p-5 text-white shadow-2xl space-y-3">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                                        <i className="fa-solid fa-share-nodes text-sm"></i>
+                                    </div>
+                                    <div>
+                                        <h3 className="font-extrabold text-xs sm:text-sm">
+                                            مشاركة وفتح المخطط الهندسي
+                                        </h3>
+                                        <p className="text-[10px] text-slate-400 truncate max-w-[210px]">
+                                            {item.name}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowShareModal(false)}
+                                    className="!min-h-0 w-7 h-7 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-xs"
+                                >
+                                    <i className="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+
+                            <div className="space-y-2">
+                                <button
+                                    type="button"
+                                    onClick={handleNativeShareFile}
+                                    disabled={isSharing}
+                                    className="!min-h-0 w-full py-2.5 px-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-between transition shadow-lg"
+                                >
+                                    <div className="flex items-center gap-2.5">
+                                        <i className="fa-solid fa-file-export text-sm"></i>
+                                        <span>مشاركة ملف الأوتوكاد الأصلي (DWG)</span>
+                                    </div>
+                                    <i className="fa-solid fa-chevron-left text-[10px] opacity-80"></i>
+                                </button>
+
+                                {cadDoc && (
+                                    <button
+                                        type="button"
+                                        onClick={handleShareAsImage}
+                                        disabled={isSharing}
+                                        className="!min-h-0 w-full py-2.5 px-3.5 rounded-2xl bg-purple-600/90 hover:bg-purple-500 text-white font-bold text-xs flex items-center justify-between transition shadow-lg"
+                                    >
+                                        <div className="flex items-center gap-2.5">
+                                            <i className="fa-solid fa-image text-sm"></i>
+                                            <span>مشاركة كصورة عالية الدقة (PNG)</span>
+                                        </div>
+                                        <i className="fa-solid fa-chevron-left text-[10px] opacity-80"></i>
+                                    </button>
+                                )}
+
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setShowShareModal(false);
+                                        handleOpenInApp();
+                                    }}
+                                    className="!min-h-0 w-full py-2.5 px-3.5 rounded-2xl bg-[#c41e3a] hover:bg-[#a01830] text-white font-bold text-xs flex items-center justify-between transition shadow-lg"
+                                >
+                                    <div className="flex items-center gap-2.5">
+                                        <i className="fa-solid fa-mobile-screen-button text-sm"></i>
+                                        <span>فتح في تطبيق موبايل (DWG FastView / AutoCAD)</span>
+                                    </div>
+                                    <i className="fa-solid fa-chevron-left text-[10px] opacity-80"></i>
+                                </button>
+
+                                <div className="grid grid-cols-2 gap-2 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={handleWhatsAppShare}
+                                        className="!min-h-0 py-2 px-3 rounded-xl bg-green-600/20 hover:bg-green-600/30 text-green-300 border border-green-500/30 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                                    >
+                                        <i className="fa-brands fa-whatsapp text-sm"></i>
+                                        <span>مشاركة واتساب</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleCopyShareLink}
+                                        className="!min-h-0 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                                    >
+                                        <i className="fa-solid fa-link text-xs text-sky-400"></i>
+                                        <span>نسخ رابط الملف</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 )}
 
                 {/* Preview Image Mode (if user toggled or fallback with thumbnail) */}
@@ -1486,7 +2416,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
                                 onClick={handleOpenInApp}
                                 className="!min-h-0 w-full py-2 px-4 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-bold text-xs flex items-center justify-center gap-2 border border-white/10 transition"
                             >
-                                <i className="fa-solid fa-cube text-red-400"></i>
+                                <i className="fa-solid fa-mobile-screen-button text-red-400"></i>
                                 <span>فتح بواسطة تطبيق DWG FastView الخارجي</span>
                             </button>
                         </div>
@@ -1651,7 +2581,7 @@ const DwgViewer: React.FC<DwgViewerProps> = ({ item, onClose }) => {
 
                 {/* Status Toast */}
                 {status && !loading && (
-                    <div className="absolute bottom-14 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-xl text-xs font-bold border border-white/10 backdrop-blur-md text-center animate-slide-up z-30">
+                    <div className="absolute bottom-14 left-1/2 -translate-x-1/2 bg-black/85 text-white px-4 py-2 rounded-xl text-xs font-bold border border-white/15 backdrop-blur-md text-center animate-slide-up z-50 shadow-xl">
                         {status}
                     </div>
                 )}

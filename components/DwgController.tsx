@@ -81,30 +81,60 @@ export const DwgController: React.FC<DwgControllerProps> = ({
     );
 };
 
-// --- Helper Function to Open DWG/DXF in External App (FastView) ---
-export const openDwgInExternalApp = async (fileId: string, fileName: string) => {
-    try {
-        const blob = await api.downloadFileBlob(fileId);
-        const lower = fileName.toLowerCase();
-        const isDxf = lower.endsWith('.dxf');
-        const cadBlob = new Blob([blob], { type: isDxf ? 'application/dxf' : 'application/acad' });
-        const url = URL.createObjectURL(cadBlob);
-        
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = (lower.endsWith('.dwg') || lower.endsWith('.dxf')) ? fileName : `${fileName}.dwg`;
-        a.target = '_self';
-        
-        document.body.appendChild(a);
-        a.click();
-        
-        setTimeout(() => {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }, 1000);
+// --- Helper Function to Open DWG/DXF in External App (FastView / AutoCAD Mobile) ---
+export const openDwgInExternalApp = async (
+    fileId: string,
+    fileName: string,
+    cachedBlob?: Blob | null,
+    useMobileChooser = false
+) => {
+    const safeName =
+        fileName.toLowerCase().endsWith('.dwg') || fileName.toLowerCase().endsWith('.dxf')
+            ? fileName
+            : `${fileName}.dwg`;
+    const isDxf = safeName.toLowerCase().endsWith('.dxf');
 
-    } catch (error) {
-        console.error("Failed to open CAD file", error);
-        alert("فشل تحميل ملف الأوتوكاد. تأكد من الاتصال بالإنترنت.");
+    let blob = cachedBlob || null;
+    if (!blob || blob.size === 0) {
+        blob = await api.downloadFileBlob(fileId);
     }
+
+    // On mobile (Android / iOS), Web Share Level 2 with a File opens the system app chooser (including DWG FastView / AutoCAD Mobile)
+    if (useMobileChooser && typeof navigator !== 'undefined' && navigator.share) {
+        try {
+            const shareFile = new File([blob], safeName, {
+                type: 'application/octet-stream',
+            });
+            if (!navigator.canShare || navigator.canShare({ files: [shareFile] })) {
+                await navigator.share({
+                    files: [shareFile],
+                    title: safeName,
+                    text: `فتح المخطط الهندسي: ${safeName}`,
+                });
+                return;
+            }
+        } catch (err: any) {
+            if (err?.name === 'AbortError') return;
+        }
+    }
+
+    const cadBlob = new Blob([blob], {
+        type: isDxf ? 'application/dxf' : 'application/acad',
+    });
+    const url = URL.createObjectURL(cadBlob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = safeName;
+    a.target = '_self';
+
+    document.body.appendChild(a);
+    a.click();
+
+    setTimeout(() => {
+        if (document.body.contains(a)) {
+            document.body.removeChild(a);
+        }
+        URL.revokeObjectURL(url);
+    }, 2500);
 };

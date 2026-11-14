@@ -25,6 +25,7 @@ export type CadPrimitive =
           closed: boolean;
           filled?: boolean;
           dashed?: boolean;
+          isDimension?: boolean;
       }
     | {
           kind: 'circle';
@@ -34,6 +35,7 @@ export type CadPrimitive =
           cx: number;
           cy: number;
           r: number;
+          isDimension?: boolean;
       }
     | {
           kind: 'arc';
@@ -46,6 +48,7 @@ export type CadPrimitive =
           startAngle: number; // radians
           endAngle: number;   // radians
           ccw?: boolean;
+          isDimension?: boolean;
       }
     | {
           kind: 'ellipse';
@@ -59,6 +62,7 @@ export type CadPrimitive =
           rotation: number; // radians
           startAngle: number;
           endAngle: number;
+          isDimension?: boolean;
       }
     | {
           kind: 'text';
@@ -71,6 +75,9 @@ export type CadPrimitive =
           height: number;
           rotation: number; // radians
           align: 'left' | 'center' | 'right';
+          valign?: 'alphabetic' | 'middle' | 'top' | 'bottom';
+          widthFactor?: number;
+          isDimension?: boolean;
       }
     | {
           kind: 'point';
@@ -79,6 +86,7 @@ export type CadPrimitive =
           isAdaptiveWhite: boolean;
           x: number;
           y: number;
+          isDimension?: boolean;
       };
 
 export interface CadBoundingBox {
@@ -142,19 +150,194 @@ function intToHex(rgb: number): string {
 }
 
 function aciToColor(aci: number | undefined | null): { hex: string; isAdaptiveWhite: boolean } {
-    if (aci == null || aci === 7 || aci === 256 || aci === 0 || aci < 0 || aci > 255) {
+    if (aci == null || aci === 256 || aci === 0) {
         return { hex: '#ffffff', isAdaptiveWhite: true };
     }
-    const rgb = ACI_PALETTE[Math.abs(aci)] ?? 0xffffff;
-    if (rgb === 0xffffff || rgb === 0x000000) {
+    const absAci = Math.abs(Math.round(aci));
+    if (absAci === 7 || absAci < 1 || absAci > 255) {
+        return { hex: '#ffffff', isAdaptiveWhite: true };
+    }
+    const rgb = ACI_PALETTE[absAci] ?? 0xffffff;
+    if (absAci === 255) {
+        return { hex: '#f8fafc', isAdaptiveWhite: false };
+    }
+    if (rgb === 0x000000) {
         return { hex: '#ffffff', isAdaptiveWhite: true };
     }
     return { hex: intToHex(rgb), isAdaptiveWhite: false };
 }
 
+// Mapping for Arabic AutoCAD SHX fonts (xarab.shx, sosa.shx, arab.shx, etc.)
+const SHX_ARABIC_CHAR_MAP: Record<string, string> = {
+    H: 'ا',
+    h: 'ا',
+    B: 'لأ',
+    b: 'لا',
+    F: 'ب',
+    f: 'ب',
+    J: 'ت',
+    j: 'ت',
+    E: 'ث',
+    e: 'ث',
+    '[': 'ج',
+    '{': 'ج',
+    P: 'ح',
+    p: 'ح',
+    O: 'خ',
+    o: 'خ',
+    ']': 'د',
+    '}': 'د',
+    '~': 'ذ',
+    V: 'ر',
+    v: 'ر',
+    '>': 'ز',
+    S: 'س',
+    s: 'س',
+    A: 'ش',
+    a: 'ش',
+    W: 'ص',
+    w: 'ص',
+    Q: 'ض',
+    q: 'ض',
+    "'": 'ط',
+    '`': 'ط',
+    '"': 'ط',
+    '/': 'ظ',
+    '?': 'ظ',
+    U: 'ع',
+    u: 'ع',
+    Y: 'غ',
+    y: 'غ',
+    T: 'ف',
+    t: 'ف',
+    R: 'ق',
+    r: 'ق',
+    ':': 'ك',
+    ';': 'ك',
+    G: 'ل',
+    g: 'ل',
+    L: 'م',
+    l: 'م',
+    I: 'م',
+    K: 'ن',
+    k: 'ن',
+    i: 'ه',
+    ',': 'و',
+    D: 'ي',
+    d: 'ي',
+    M: 'ة',
+    m: 'ة',
+    N: 'ى',
+    n: 'ى',
+    Z: 'ئ',
+    z: 'ئ',
+    C: 'ؤ',
+    c: 'ؤ',
+    X: 'ء',
+    x: 'ء',
+};
+
+const STANDARD_ENGLISH_CAD_WORDS = new Set([
+    'PLAN', 'SCALE', 'SEC', 'SECTION', 'DETAIL', 'ELEVATION', 'GRID', 'AXIS',
+    'LEVEL', 'LVL', 'TOC', 'TOS', 'FFL', 'SSL', 'SFL', 'TYP', 'MIN', 'MAX',
+    'BEAM', 'SLAB', 'COL', 'COLUMN', 'FOOTING', 'WALL', 'STAIR', 'NOTE', 'NOTES',
+    'DWG', 'DXF', 'CAD', 'NO', 'DATE', 'PROJECT', 'CLIENT', 'REV', 'SHEET',
+    'AREA', 'TOTAL', 'DIM', 'DIA', 'PHI', 'R', 'L', 'W', 'H', 'T', 'B', 'M', 'KG', 'CM', 'MM',
+]);
+
+export function isLikelyShxArabicLine(line: string): boolean {
+    if (!line || /[\u0600-\u06FF]/.test(line)) return false;
+    const trimmed = line.trim();
+    if (trimmed.length < 2) return false;
+
+    if (/^[\d\s.,+\-*/=():%°⌀×xX]+$/.test(trimmed)) return false;
+    if (/^[A-Z]{1,4}\s*[-/]?\s*\d+[A-Z]?$/i.test(trimmed)) return false;
+
+    const upperClean = trimmed.replace(/[^A-Za-z]/g, '').toUpperCase();
+    if (STANDARD_ENGLISH_CAD_WORDS.has(upperClean)) return false;
+
+    if (/(Hg|HB|tD|uK|ugD|gH|sL|hJ|dm|km|pm|drG|srT|d>d|d,l|fr'v|lbp\/)/.test(trimmed)) {
+        return true;
+    }
+
+    if (/[a-z][A-Z]/.test(trimmed)) {
+        return true;
+    }
+
+    if (/[A-Za-z][\[\]:;,>'`~\/]|[[\]:;,>'`~\/][A-Za-z]/.test(trimmed)) {
+        return true;
+    }
+
+    return false;
+}
+
+function decodeShxWordToken(token: string): string {
+    if (/^[\d.,+\-%°⌀]+$/.test(token)) return token;
+    if (token === '\\') return '/';
+    if (token === '-' || token === '–' || token === '(' || token === ')') return token;
+
+    const unitMatch = token.match(/^([A-Za-z:\[\]]+)(\d+)$/);
+    if (unitMatch) {
+        return decodeShxWordToken(unitMatch[1]) + unitMatch[2];
+    }
+
+    let spaced = token
+        .replace(/([^,fgk:\s])(Hg|HB)/g, '$1 $2')
+        .replace(/([JLKGTDMUQFPOSAWRYEm;>])(?=[A-Za-z,\[])/g, '$1 ')
+        .replace(/(tD|uK|ugD|uk\]|dlL|dlj\])(?=[A-Za-z])/g, '$1 ');
+
+    const subWords = spaced.split(/\s+/);
+    const decodedSubWords = subWords.map(sw => {
+        let w = sw;
+        w = w.replace(/^i\]/, '[i]');
+        w = w.replace(/^ugD$/, 'ugN');
+        w = w.replace(/^(Hgd|hgd)$/, 'إلى');
+        w = w.replace(/^BdrG$/, 'لا يقل');
+        w = w.replace(/^HBdrG$/, 'ألا يقل');
+        w = w.replace(/^jxHUldU$/, 'يراعى مع');
+        w = w.replace(/^jxHU$/, 'يراعى');
+
+        let out = '';
+        for (let i = 0; i < w.length; i++) {
+            const ch = w[i];
+            if (/[\u0600-\u06FF\s\d]/.test(ch)) {
+                out += ch;
+            } else if (ch === '.' && i > 0 && i < w.length - 1) {
+                out += 'ز';
+            } else if (SHX_ARABIC_CHAR_MAP[ch] !== undefined) {
+                out += SHX_ARABIC_CHAR_MAP[ch];
+            } else {
+                out += ch;
+            }
+        }
+        return out;
+    });
+
+    return decodedSubWords.join(' ');
+}
+
+export function decodeShxArabicText(text: string): string {
+    if (!text) return '';
+    return text
+        .split('\n')
+        .map(line => {
+            if (!isLikelyShxArabicLine(line)) return line;
+            const parts = line.split(/(\s+)/);
+            return parts
+                .map(part => {
+                    if (/^\s+$/.test(part)) return part;
+                    return decodeShxWordToken(part);
+                })
+                .join('')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+        })
+        .join('\n');
+}
+
 export function cleanCadText(rawText: string): string {
     if (!rawText || typeof rawText !== 'string') return '';
-    return rawText
+    const cleaned = rawText
         .replace(/\\U\+([0-9A-Fa-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
         .replace(/\\P/gi, '\n')
         .replace(/\\[LOloKk]/g, '')
@@ -172,6 +355,7 @@ export function cleanCadText(rawText: string): string {
         .replace(/\\\\/g, '\\')
         .replace(/[{}]/g, '')
         .trim();
+    return decodeShxArabicText(cleaned);
 }
 
 // Bulge arc interpolation between two 2D vertices
@@ -393,7 +577,6 @@ function computeSmartBounds(primitives: CadPrimitive[]): CadBoundingBox {
     let minY = ys[0];
     let maxY = ys[n - 1];
 
-    // If we have enough points, check if extreme 1% points are massive outliers (e.g. stray point at (0,0) when site coordinates are 500,000)
     if (n >= 40) {
         const p02X = xs[Math.floor(n * 0.01)];
         const p98X = xs[Math.floor(n * 0.99)];
@@ -418,6 +601,207 @@ function computeSmartBounds(primitives: CadPrimitive[]): CadBoundingBox {
     return { minX, minY, maxX, maxY, width, height };
 }
 
+interface RawDwgColorInfo {
+    colorIndex?: number;
+    rgb?: number;
+}
+
+// Decode DWG R2000 & R2004+ CMC Color object accurately
+// In LibreDWG: 192 (0xC0) = ByLayer, 193 (0xC1) = ByBlock, 194 (0xC2) = TrueColor RGB, 195 (0xC3) = ACI in (rgb & 0xff)
+function decodeRawDwgColorObj(c: any, isLayer = false): RawDwgColorInfo {
+    if (!c) return { colorIndex: 256 };
+    const rgbVal = typeof c.rgb === 'number' ? c.rgb : 0;
+    const topByte = (rgbVal >>> 24) & 0xff;
+    const method = typeof c.method === 'number' && c.method > 0 ? c.method : topByte;
+
+    if (method === 194 || topByte === 194) {
+        return { rgb: rgbVal & 0xffffff, colorIndex: 256 };
+    }
+    if (method === 195 || topByte === 195) {
+        const idx = rgbVal & 0xff;
+        if (idx >= 1 && idx <= 255) {
+            return { colorIndex: idx };
+        }
+    }
+    if (!isLayer && (method === 192 || topByte === 192)) {
+        return { colorIndex: 256 };
+    }
+    if (!isLayer && (method === 193 || topByte === 193)) {
+        return { colorIndex: 0 };
+    }
+    if (typeof c.index === 'number') {
+        const idx = isLayer ? Math.abs(c.index) : c.index;
+        if (idx >= 0 && idx <= 256) {
+            return { colorIndex: idx };
+        }
+    }
+    return { colorIndex: 256 };
+}
+
+function extractRawDwgColorMaps(
+    libredwg: any,
+    dataPtr: any
+): {
+    entityColors: Map<string, RawDwgColorInfo>;
+    layerColors: Map<string, RawDwgColorInfo>;
+} {
+    const entityColors = new Map<string, RawDwgColorInfo>();
+    const layerColors = new Map<string, RawDwgColorInfo>();
+    try {
+        const numObjects = libredwg.dwg_get_num_objects(dataPtr);
+        for (let i = 0; i < numObjects; i++) {
+            const obj = libredwg.dwg_get_object(dataPtr, i);
+            if (!obj) continue;
+            const supertype = libredwg.dwg_object_get_supertype(obj);
+            if (supertype === 1) {
+                // DWG_SUPERTYPE_ENTITY
+                const etio = libredwg.dwg_object_to_entity_tio(obj);
+                if (!etio) continue;
+                const hObj = libredwg.dwg_object_entity_get_handle_object(etio);
+                const cObj = libredwg.dwg_object_entity_get_color_object(etio);
+                if (hObj && hObj.value != null && cObj) {
+                    const handleStr = hObj.value.toString(16).toUpperCase();
+                    entityColors.set(handleStr, decodeRawDwgColorObj(cObj, false));
+                }
+            } else if (supertype === 2) {
+                // DWG_SUPERTYPE_OBJECT (check if LAYER = 51)
+                const fixedType = libredwg.dwg_object_get_fixedtype(obj);
+                if (fixedType === 51) {
+                    const tio = libredwg.dwg_object_to_object_tio(obj);
+                    if (!tio) continue;
+                    const name = libredwg.dwg_dynapi_entity_data(tio, 'name');
+                    const cObj = libredwg.dwg_dynapi_entity_data(tio, 'color');
+                    if (name && cObj) {
+                        layerColors.set(name, decodeRawDwgColorObj(cObj, true));
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Raw color extraction fallback:', e);
+    }
+    return { entityColors, layerColors };
+}
+
+// Post-process primitives to detect any exploded dimension lines & start/end ticks/points
+function markExplodedDimensions(primitives: CadPrimitive[]) {
+    const dimTextPoints: Array<{ x: number; y: number; h: number }> = [];
+    const defPoints: CadPoint[] = [];
+
+    for (const p of primitives) {
+        if (p.kind === 'point') {
+            p.isDimension = true;
+            defPoints.push({ x: p.x, y: p.y });
+        } else if (p.kind === 'text') {
+            const t = p.text.trim();
+            // Numeric dimension text e.g. "4.00", "0.25", "1.20 m"
+            if (/^\d+([.,]\d+)?(\s*(m|cm|mm|م|سم))?$/i.test(t)) {
+                dimTextPoints.push({ x: p.x, y: p.y, h: Math.max(0.08, p.height) });
+            }
+        }
+    }
+
+    if (defPoints.length === 0 && dimTextPoints.length === 0) return;
+
+    // Collect short tick marks (2-point lines or 3/4-point arrow solids with small length)
+    const tickEndpoints: CadPoint[] = [...defPoints];
+    const shortPolys: Array<{ prim: CadPrimitive & { kind: 'polyline' }; len: number; mid: CadPoint }> = [];
+
+    for (const p of primitives) {
+        if (p.kind !== 'polyline' || p.isDimension) continue;
+        if (p.points.length >= 2 && p.points.length <= 4) {
+            let totalLen = 0;
+            for (let i = 0; i < p.points.length - 1; i++) {
+                totalLen += Math.hypot(
+                    p.points[i + 1].x - p.points[i].x,
+                    p.points[i + 1].y - p.points[i].y
+                );
+            }
+            if (totalLen > 1e-4 && totalLen <= 0.45) {
+                const mid = {
+                    x: (p.points[0].x + p.points[p.points.length - 1].x) / 2,
+                    y: (p.points[0].y + p.points[p.points.length - 1].y) / 2,
+                };
+                shortPolys.push({ prim: p, len: totalLen, mid });
+            }
+        }
+    }
+
+    // Check 2-point lines that start and end at defPoints or near numeric dimension texts
+    for (const p of primitives) {
+        if (p.kind !== 'polyline' || p.isDimension || p.closed || p.points.length !== 2) continue;
+        const a = p.points[0];
+        const b = p.points[1];
+        const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+        if (segLen < 1e-4) continue;
+
+        // Check if endpoints touch a DEFPOINT
+        let touchesDefPointA = false;
+        let touchesDefPointB = false;
+        for (let i = 0; i < defPoints.length; i++) {
+            const dp = defPoints[i];
+            if (!touchesDefPointA && Math.hypot(dp.x - a.x, dp.y - a.y) < 0.08) {
+                touchesDefPointA = true;
+            }
+            if (!touchesDefPointB && Math.hypot(dp.x - b.x, dp.y - b.y) < 0.08) {
+                touchesDefPointB = true;
+            }
+            if (touchesDefPointA && touchesDefPointB) break;
+        }
+
+        // Check if this segment passes right next to a numeric dimension text of matching length or proximity
+        let nearDimText = false;
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        for (let i = 0; i < dimTextPoints.length; i++) {
+            const dt = dimTextPoints[i];
+            const distToMid = Math.hypot(dt.x - midX, dt.y - midY);
+            if (distToMid <= Math.max(0.6, dt.h * 3.2)) {
+                nearDimText = true;
+                break;
+            }
+        }
+
+        // Check if both endpoints have short tick marks crossing them
+        let tickAtA: (CadPrimitive & { kind: 'polyline' }) | null = null;
+        let tickAtB: (CadPrimitive & { kind: 'polyline' }) | null = null;
+        for (let i = 0; i < shortPolys.length; i++) {
+            const sp = shortPolys[i];
+            if (!tickAtA && Math.hypot(sp.mid.x - a.x, sp.mid.y - a.y) < 0.18) {
+                tickAtA = sp.prim;
+            }
+            if (!tickAtB && Math.hypot(sp.mid.x - b.x, sp.mid.y - b.y) < 0.18) {
+                tickAtB = sp.prim;
+            }
+        }
+
+        if (
+            (touchesDefPointA && touchesDefPointB) ||
+            (nearDimText && (touchesDefPointA || touchesDefPointB || (tickAtA && tickAtB))) ||
+            (tickAtA && tickAtB && nearDimText)
+        ) {
+            p.isDimension = true;
+            if (tickAtA) tickAtA.isDimension = true;
+            if (tickAtB) tickAtB.isDimension = true;
+            tickEndpoints.push(a, b);
+        }
+    }
+
+    // Also mark any short tick mark or extension line touching the identified dimension endpoints
+    if (tickEndpoints.length > 0) {
+        for (const sp of shortPolys) {
+            if (sp.prim.isDimension) continue;
+            for (let i = 0; i < tickEndpoints.length; i++) {
+                const ep = tickEndpoints[i];
+                if (Math.hypot(sp.mid.x - ep.x, sp.mid.y - ep.y) < 0.15) {
+                    sp.prim.isDimension = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 export async function parseCadBuffer(buffer: ArrayBuffer, fileName: string): Promise<CadDocument> {
     const lowerName = (fileName || '').toLowerCase();
     const headerBytes = new Uint8Array(buffer.slice(0, Math.min(64, buffer.byteLength)));
@@ -433,7 +817,6 @@ export async function parseCadBuffer(buffer: ArrayBuffer, fileName: string): Pro
         try {
             const decoder = new TextDecoder('utf-8');
             let text = decoder.decode(buffer);
-            // If Arabic Windows-1256 characters exist in older DXF files and UTF-8 produced replacement chars
             if (text.includes('\uFFFD')) {
                 try {
                     text = new TextDecoder('windows-1256').decode(buffer);
@@ -462,18 +845,40 @@ export async function parseCadBuffer(buffer: ArrayBuffer, fileName: string): Pro
         embeddedThumbnailUrl = convertBmpToDataUrl(bmp);
     } catch {}
 
+    const rawColorMaps = extractRawDwgColorMaps(libredwg, dataPtr);
     const db = libredwg.convert(dataPtr);
     try {
         libredwg.dwg_free(dataPtr);
     } catch {}
 
-    return convertLibreDwgDatabase(db, isDxfExtension ? 'DXF' : 'DWG', embeddedThumbnailUrl);
+    return convertLibreDwgDatabase(
+        db,
+        isDxfExtension ? 'DXF' : 'DWG',
+        embeddedThumbnailUrl,
+        rawColorMaps
+    );
+}
+
+function isDimensionLayerName(layerName: string): boolean {
+    if (!layerName) return false;
+    return /(dim|defpoint|anno|leader|ابعاد|أبعاد|مناسيب)/i.test(layerName);
+}
+
+function isDimensionBlockName(blockName: string): boolean {
+    if (!blockName) return false;
+    return /^(\*D|_ARCHTICK|_OBLIQUE|_CLOSED|_OPEN|_DOT|_SMALL|_NONE|_ORIGIN|_BOX|_INTEGRAL|DIM|ARROW|TICK)/i.test(
+        blockName
+    );
 }
 
 function convertLibreDwgDatabase(
     db: any,
     format: 'DWG' | 'DXF',
-    embeddedThumbnailUrl?: string
+    embeddedThumbnailUrl?: string,
+    rawColorMaps?: {
+        entityColors: Map<string, RawDwgColorInfo>;
+        layerColors: Map<string, RawDwgColorInfo>;
+    }
 ): CadDocument {
     const layerMap = new Map<string, CadLayer>();
     const blockMap = new Map<string, { entities: any[]; baseX: number; baseY: number }>();
@@ -481,14 +886,30 @@ function convertLibreDwgDatabase(
     const rawLayers = db?.tables?.LAYER?.entries || [];
     for (const l of rawLayers) {
         if (!l || !l.name) continue;
-        let resolvedColor = aciToColor(l.colorIndex);
-        if (l.color && l.color > 0 && l.color <= 0xffffff && l.colorIndex !== 7) {
-            resolvedColor = { hex: intToHex(l.color), isAdaptiveWhite: l.color === 0xffffff };
+        const rawLayerColor = rawColorMaps?.layerColors.get(l.name);
+        const effColorIndex =
+            rawLayerColor?.colorIndex != null && rawLayerColor.colorIndex !== 256
+                ? rawLayerColor.colorIndex
+                : l.colorIndex != null
+                ? Math.abs(l.colorIndex)
+                : 7;
+
+        let resolvedColor = aciToColor(effColorIndex);
+        if (rawLayerColor?.rgb != null && rawLayerColor.rgb > 0 && rawLayerColor.rgb < 0xffffff) {
+            resolvedColor = { hex: intToHex(rawLayerColor.rgb), isAdaptiveWhite: false };
+        } else if (
+            l.color != null &&
+            l.color > 0 &&
+            l.color < 0xffffff &&
+            (effColorIndex === 256 || effColorIndex === 0)
+        ) {
+            resolvedColor = { hex: intToHex(l.color), isAdaptiveWhite: false };
         }
+
         layerMap.set(l.name, {
             name: l.name,
             colorHex: resolvedColor.hex,
-            colorIndex: l.colorIndex ?? 7,
+            colorIndex: effColorIndex,
             visible: !l.off && !l.frozen,
             entityCount: 0,
         });
@@ -532,7 +953,7 @@ function convertLibreDwgDatabase(
 
     const primitives: CadPrimitive[] = [];
     const snapPoints: CadPoint[] = [];
-    const MAX_SNAP_POINTS = 15000;
+    const MAX_SNAP_POINTS = 35000;
 
     const addSnap = (pt: CadPoint) => {
         if (
@@ -549,29 +970,37 @@ function convertLibreDwgDatabase(
         effectiveLayerName: string,
         parentColor?: { hex: string; isAdaptiveWhite: boolean }
     ): { hex: string; isAdaptiveWhite: boolean } => {
-        // Direct RGB color
-        if (
-            entity.color != null &&
-            entity.color > 0 &&
-            entity.color <= 0xffffff &&
-            entity.colorIndex !== 256 &&
-            entity.colorIndex !== 0 &&
-            entity.colorIndex !== 7
-        ) {
-            return { hex: intToHex(entity.color), isAdaptiveWhite: entity.color === 0xffffff };
+        const handleKey = entity.handle ? String(entity.handle).toUpperCase() : '';
+        const rawEntColor = handleKey ? rawColorMaps?.entityColors.get(handleKey) : undefined;
+
+        // 1. TrueColor RGB (method 194)
+        const trueRgb = rawEntColor?.rgb ?? (entity.color != null && entity.color < 0xffffff ? entity.color : undefined);
+        if (trueRgb != null && trueRgb > 0 && trueRgb < 0xffffff) {
+            return { hex: intToHex(trueRgb), isAdaptiveWhite: false };
         }
-        const ci = entity.colorIndex;
+
+        // 2. Explicit ACI Color Index on entity (1..255)
+        const ci =
+            rawEntColor?.colorIndex != null
+                ? rawEntColor.colorIndex
+                : entity.colorIndex;
+
+        if (ci != null && ci >= 1 && ci <= 255) {
+            return aciToColor(ci);
+        }
+
+        // 3. ByBlock (0) -> inherit parent block/dimension color if available
         if (ci === 0 && parentColor) {
             return parentColor;
         }
-        if (ci == null || ci === 256 || ci === 0) {
-            const layer = ensureLayer(effectiveLayerName);
-            return {
-                hex: layer.colorHex,
-                isAdaptiveWhite: layer.colorIndex === 7 || layer.colorHex.toLowerCase() === '#ffffff',
-            };
-        }
-        return aciToColor(ci);
+
+        // 4. ByLayer (256 or default) -> use effective layer's exact color
+        const layer = ensureLayer(effectiveLayerName);
+        return {
+            hex: layer.colorHex,
+            isAdaptiveWhite:
+                layer.colorIndex === 7 || layer.colorHex.toLowerCase() === '#ffffff',
+        };
     };
 
     const processEntity = (
@@ -579,7 +1008,8 @@ function convertLibreDwgDatabase(
         tf: Transform2D,
         inheritedLayer?: string,
         inheritedColor?: { hex: string; isAdaptiveWhite: boolean },
-        depth = 0
+        depth = 0,
+        inDimension = false
     ) => {
         if (!entity || entity.isVisible === false || depth > 6) return;
 
@@ -590,6 +1020,16 @@ function convertLibreDwgDatabase(
         if (depth === 0) {
             layerObj.entityCount++;
         }
+
+        const isDim =
+            inDimension ||
+            entity.type === 'DIMENSION' ||
+            entity.type === 'LEADER' ||
+            entity.type === 'MULTILEADER' ||
+            entity.type === 'TOLERANCE' ||
+            entity.type === 'POINT' ||
+            isDimensionLayerName(effectiveLayerName) ||
+            isDimensionLayerName(rawLayerName);
 
         const color = resolveEntityColor(entity, effectiveLayerName, inheritedColor);
         const flipX = entity.extrusionDirection && entity.extrusionDirection.z === -1 ? -1 : 1;
@@ -611,9 +1051,11 @@ function convertLibreDwgDatabase(
                     isAdaptiveWhite: color.isAdaptiveWhite,
                     points: [p1, p2],
                     closed: false,
+                    isDimension: isDim,
                 });
                 addSnap(p1);
                 addSnap(p2);
+                addSnap({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 });
                 break;
             }
             case 'LWPOLYLINE':
@@ -638,9 +1080,17 @@ function convertLibreDwgDatabase(
                         isAdaptiveWhite: color.isAdaptiveWhite,
                         points: transformed,
                         closed,
+                        isDimension: isDim,
                     });
-                    for (const v of normalizedVerts) {
-                        addSnap(applyTransform({ x: v.x, y: v.y }, localTf));
+                    const tfVerts = normalizedVerts.map((v: any) =>
+                        applyTransform({ x: v.x, y: v.y }, localTf)
+                    );
+                    for (let i = 0; i < tfVerts.length; i++) {
+                        addSnap(tfVerts[i]);
+                        const next = tfVerts[(i + 1) % tfVerts.length];
+                        if (closed || i < tfVerts.length - 1) {
+                            addSnap({ x: (tfVerts[i].x + next.x) / 2, y: (tfVerts[i].y + next.y) / 2 });
+                        }
                     }
                 }
                 break;
@@ -657,6 +1107,7 @@ function convertLibreDwgDatabase(
                     cx: center.x,
                     cy: center.y,
                     r,
+                    isDimension: isDim,
                 });
                 addSnap(center);
                 break;
@@ -678,6 +1129,7 @@ function convertLibreDwgDatabase(
                     startAngle,
                     endAngle,
                     ccw: localTf.sx * localTf.sy >= 0,
+                    isDimension: isDim,
                 });
                 addSnap({
                     x: center.x + r * Math.cos(startAngle),
@@ -709,6 +1161,7 @@ function convertLibreDwgDatabase(
                     rotation: rot,
                     startAngle: entity.startAngle ?? 0,
                     endAngle: entity.endAngle ?? Math.PI * 2,
+                    isDimension: isDim,
                 });
                 addSnap(center);
                 break;
@@ -728,6 +1181,7 @@ function convertLibreDwgDatabase(
                     isAdaptiveWhite: color.isAdaptiveWhite,
                     points: transformed,
                     closed: Boolean(entity.flag & 1),
+                    isDimension: isDim,
                 });
                 break;
             }
@@ -750,11 +1204,13 @@ function convertLibreDwgDatabase(
                         points: pts,
                         closed: true,
                         filled: entity.type === 'SOLID',
+                        isDimension: isDim,
                     });
                 }
                 break;
             }
-            case 'LEADER': {
+            case 'LEADER':
+            case 'MULTILEADER': {
                 const verts = entity.vertices || [];
                 if (verts.length >= 2) {
                     const pts = verts.map((v: any) => applyTransform(v, localTf));
@@ -765,7 +1221,25 @@ function convertLibreDwgDatabase(
                         isAdaptiveWhite: color.isAdaptiveWhite,
                         points: pts,
                         closed: false,
+                        isDimension: true,
                     });
+                }
+                if (Array.isArray(entity.leaderSections)) {
+                    for (const sec of entity.leaderSections) {
+                        for (const ll of sec.leaderLines || []) {
+                            if (Array.isArray(ll.vertices) && ll.vertices.length >= 2) {
+                                primitives.push({
+                                    kind: 'polyline',
+                                    layer: effectiveLayerName,
+                                    colorHex: color.hex,
+                                    isAdaptiveWhite: color.isAdaptiveWhite,
+                                    points: ll.vertices.map((v: any) => applyTransform(v, localTf)),
+                                    closed: false,
+                                    isDimension: true,
+                                });
+                            }
+                        }
+                    }
                 }
                 break;
             }
@@ -782,6 +1256,7 @@ function convertLibreDwgDatabase(
                             points: expanded.map(p => applyTransform(p, localTf)),
                             closed: bp.isClosed ?? true,
                             filled: Boolean(entity.solidFill),
+                            isDimension: isDim,
                         });
                     } else if (Array.isArray(bp.edges)) {
                         const edgePts: CadPoint[] = [];
@@ -799,6 +1274,7 @@ function convertLibreDwgDatabase(
                                 isAdaptiveWhite: color.isAdaptiveWhite,
                                 points: edgePts,
                                 closed: true,
+                                isDimension: isDim,
                             });
                         }
                     }
@@ -808,16 +1284,66 @@ function convertLibreDwgDatabase(
             case 'TEXT':
             case 'ATTRIB':
             case 'ATTDEF': {
-                const rawStr = entity.text || entity.defaultValue || '';
+                if (entity.type === 'ATTDEF' && depth > 0) break;
+
+                const textBase =
+                    entity.text && typeof entity.text === 'object' ? entity.text : entity;
+                const rawStr =
+                    (typeof textBase.text === 'string' ? textBase.text : '') ||
+                    (typeof entity.text === 'string' ? entity.text : '') ||
+                    entity.defaultValue ||
+                    '';
+                const wasShxArabic = isLikelyShxArabicLine(rawStr);
                 const text = cleanCadText(rawStr);
-                const pt = entity.startPoint || entity.insertionPoint || entity.endPoint;
-                if (!text || !pt) break;
-                const pos = applyTransform(pt, localTf);
-                const height = Math.max(0.05, (entity.textHeight || entity.height || 2.5) * avgScale);
-                const rot = (entity.rotation || 0) + localTf.rot;
+                if (!text) break;
+
+                const halign = textBase.halign ?? entity.halign ?? 0;
+                const valign = textBase.valign ?? entity.valign ?? 0;
+                const startPt = textBase.startPoint || entity.startPoint || entity.insertionPoint;
+                const endPt =
+                    textBase.endPoint ||
+                    entity.endPoint ||
+                    entity.alignmentPoint ||
+                    textBase.alignmentPoint;
+                const hasValidEndPt =
+                    endPt &&
+                    Number.isFinite(endPt.x) &&
+                    Number.isFinite(endPt.y) &&
+                    (Math.abs(endPt.x) > 1e-6 || Math.abs(endPt.y) > 1e-6);
+
+                let anchorPt = startPt || endPt;
+                if ((halign !== 0 || valign !== 0) && hasValidEndPt) {
+                    if ((halign === 3 || halign === 5) && startPt) {
+                        anchorPt = {
+                            x: (startPt.x + endPt.x) / 2,
+                            y: (startPt.y + endPt.y) / 2,
+                        };
+                    } else {
+                        anchorPt = endPt;
+                    }
+                }
+                if (!anchorPt) break;
+
+                const pos = applyTransform(anchorPt, localTf);
+                const rawH = textBase.textHeight || entity.textHeight || entity.height || 0.25;
+                const height = Math.max(0.02, rawH * avgScale);
+                const rot = (textBase.rotation ?? entity.rotation ?? 0) + localTf.rot;
+                const rawWidthFactor = textBase.xScale ?? entity.xScale ?? entity.widthFactor ?? 1;
+                const widthFactor = Math.max(0.4, Math.min(1.5, rawWidthFactor));
+
                 let align: 'left' | 'center' | 'right' = 'left';
-                if (entity.halign === 1 || entity.halign === 4) align = 'center';
-                else if (entity.halign === 2) align = 'right';
+                if (halign === 1 || halign === 4 || halign === 3 || halign === 5) {
+                    align = 'center';
+                } else if (halign === 2) {
+                    align = 'right';
+                } else if (wasShxArabic) {
+                    align = 'right';
+                }
+
+                let vBaseline: 'alphabetic' | 'middle' | 'top' | 'bottom' = 'alphabetic';
+                if (valign === 2 || halign === 4) vBaseline = 'middle';
+                else if (valign === 3) vBaseline = 'top';
+                else if (valign === 1) vBaseline = 'bottom';
 
                 primitives.push({
                     kind: 'text',
@@ -830,17 +1356,22 @@ function convertLibreDwgDatabase(
                     height,
                     rotation: rot,
                     align,
+                    valign: vBaseline,
+                    widthFactor,
+                    isDimension: true,
                 });
                 break;
             }
             case 'MTEXT': {
-                const cleaned = cleanCadText(entity.text || '');
+                const rawMText = entity.text || '';
+                const wasShxArabic = isLikelyShxArabicLine(rawMText);
+                const cleaned = cleanCadText(rawMText);
                 const pt = entity.insertionPoint || entity.startPoint;
                 if (!cleaned || !pt) break;
                 const pos = applyTransform(pt, localTf);
-                const height = Math.max(0.05, (entity.textHeight || entity.height || 2.5) * avgScale);
+                const height = Math.max(0.02, (entity.textHeight || entity.height || 0.25) * avgScale);
                 const rot = (entity.rotation || 0) + localTf.rot;
-                let align: 'left' | 'center' | 'right' = 'left';
+                let align: 'left' | 'center' | 'right' = wasShxArabic ? 'right' : 'left';
                 const ap = entity.attachmentPoint;
                 if (ap === 2 || ap === 5 || ap === 8) align = 'center';
                 else if (ap === 3 || ap === 6 || ap === 9) align = 'right';
@@ -858,25 +1389,114 @@ function convertLibreDwgDatabase(
                         height,
                         rotation: rot,
                         align,
+                        isDimension: true,
                     });
                 });
                 break;
             }
+            case 'ACAD_TABLE':
+            case 'TABLE': {
+                const startPt = entity.startPoint || entity.insertionPoint;
+                const rowHeights: number[] = entity.rowHeightArr || [];
+                const colWidths: number[] = entity.columnWidthArr || [];
+                const cells: any[] = entity.cells || [];
+                if (startPt && rowHeights.length > 0 && colWidths.length > 0) {
+                    let currY = startPt.y;
+                    const totalW = colWidths.reduce((s, w) => s + w, 0);
+                    const totalH = rowHeights.reduce((s, h) => s + h, 0);
+                    for (let r = 0; r < rowHeights.length; r++) {
+                        const rh = rowHeights[r];
+                        let currX = startPt.x;
+                        for (let c = 0; c < colWidths.length; c++) {
+                            const cw = colWidths[c];
+                            const cell = cells[r * colWidths.length + c];
+                            const pTL = applyTransform({ x: currX, y: currY }, localTf);
+                            const pTR = applyTransform({ x: currX + cw, y: currY }, localTf);
+                            const pBR = applyTransform({ x: currX + cw, y: currY - rh }, localTf);
+                            const pBL = applyTransform({ x: currX, y: currY - rh }, localTf);
+                            primitives.push({
+                                kind: 'polyline',
+                                layer: effectiveLayerName,
+                                colorHex: color.hex,
+                                isAdaptiveWhite: color.isAdaptiveWhite,
+                                points: [pTL, pTR, pBR, pBL],
+                                closed: true,
+                                isDimension: isDim,
+                            });
+                            if (cell?.text) {
+                                const cellText = cleanCadText(String(cell.text));
+                                if (cellText) {
+                                    const centerPt = applyTransform(
+                                        { x: currX + cw / 2, y: currY - rh / 2 },
+                                        localTf
+                                    );
+                                    const th = Math.max(
+                                        0.02,
+                                        (cell.textHeight || rh * 0.35) * avgScale
+                                    );
+                                    primitives.push({
+                                        kind: 'text',
+                                        layer: effectiveLayerName,
+                                        colorHex: color.hex,
+                                        isAdaptiveWhite: color.isAdaptiveWhite,
+                                        x: centerPt.x,
+                                        y: centerPt.y,
+                                        text: cellText,
+                                        height: th,
+                                        rotation: localTf.rot,
+                                        align: 'center',
+                                        valign: 'middle',
+                                        isDimension: true,
+                                    });
+                                }
+                            }
+                            currX += cw;
+                        }
+                        currY -= rh;
+                    }
+                    addSnap(applyTransform(startPt, localTf));
+                    addSnap(
+                        applyTransform({ x: startPt.x + totalW, y: startPt.y - totalH }, localTf)
+                    );
+                }
+                break;
+            }
             case 'INSERT': {
                 const block = blockMap.get(entity.name);
-                if (!block || !entity.insertionPoint) break;
-                const childTf: Transform2D = {
-                    tx: entity.insertionPoint.x,
-                    ty: entity.insertionPoint.y,
-                    sx: entity.xScale ?? 1,
-                    sy: entity.yScale ?? 1,
-                    rot: entity.rotation || 0,
-                    baseX: block.baseX,
-                    baseY: block.baseY,
-                };
-                const combinedTf = composeTransforms(localTf, childTf);
-                for (const sub of block.entities) {
-                    processEntity(sub, combinedTf, effectiveLayerName, color, depth + 1);
+                const childIsDim = isDim || isDimensionBlockName(entity.name);
+                if (block && entity.insertionPoint) {
+                    const childTf: Transform2D = {
+                        tx: entity.insertionPoint.x,
+                        ty: entity.insertionPoint.y,
+                        sx: entity.xScale ?? 1,
+                        sy: entity.yScale ?? 1,
+                        rot: entity.rotation || 0,
+                        baseX: block.baseX,
+                        baseY: block.baseY,
+                    };
+                    const combinedTf = composeTransforms(localTf, childTf);
+                    for (const sub of block.entities) {
+                        processEntity(
+                            sub,
+                            combinedTf,
+                            effectiveLayerName,
+                            color,
+                            depth + 1,
+                            childIsDim
+                        );
+                    }
+                }
+                if (Array.isArray(entity.attribs) && entity.attribs.length > 0) {
+                    for (const attr of entity.attribs) {
+                        processEntity(
+                            attr,
+                            localTf,
+                            effectiveLayerName,
+                            color,
+                            depth + 1,
+                            childIsDim
+                        );
+                    }
                 }
                 break;
             }
@@ -884,15 +1504,16 @@ function convertLibreDwgDatabase(
                 const block = entity.name ? blockMap.get(entity.name) : null;
                 if (block && block.entities.length > 0) {
                     for (const sub of block.entities) {
-                        processEntity(sub, localTf, effectiveLayerName, color, depth + 1);
+                        processEntity(sub, localTf, effectiveLayerName, color, depth + 1, true);
                     }
                 } else {
-                    // Fallback dimension rendering
                     const p1 = entity.subDefinitionPoint1;
                     const p2 = entity.subDefinitionPoint2 || entity.definitionPoint;
+                    let dimLen = 2.0;
                     if (p1 && p2) {
                         const tp1 = applyTransform(p1, localTf);
                         const tp2 = applyTransform(p2, localTf);
+                        dimLen = Math.hypot(tp2.x - tp1.x, tp2.y - tp1.y) || 2.0;
                         primitives.push({
                             kind: 'polyline',
                             layer: effectiveLayerName,
@@ -900,6 +1521,7 @@ function convertLibreDwgDatabase(
                             isAdaptiveWhite: color.isAdaptiveWhite,
                             points: [tp1, tp2],
                             closed: false,
+                            isDimension: true,
                         });
                         addSnap(tp1);
                         addSnap(tp2);
@@ -913,6 +1535,10 @@ function convertLibreDwgDatabase(
                             : '';
                     if (tPt && rawDimText) {
                         const pos = applyTransform(tPt, localTf);
+                        const dimTextHeight = Math.max(
+                            0.06,
+                            Math.min(2.5 * avgScale, dimLen * 0.12)
+                        );
                         primitives.push({
                             kind: 'text',
                             layer: effectiveLayerName,
@@ -921,9 +1547,11 @@ function convertLibreDwgDatabase(
                             x: pos.x,
                             y: pos.y,
                             text: rawDimText,
-                            height: 2.5 * avgScale,
-                            rotation: localTf.rot,
+                            height: dimTextHeight,
+                            rotation: (entity.textRotation || 0) + localTf.rot,
                             align: 'center',
+                            valign: 'middle',
+                            isDimension: true,
                         });
                     }
                 }
@@ -940,6 +1568,7 @@ function convertLibreDwgDatabase(
                         isAdaptiveWhite: color.isAdaptiveWhite,
                         x: pos.x,
                         y: pos.y,
+                        isDimension: true,
                     });
                     addSnap(pos);
                 }
@@ -953,6 +1582,9 @@ function convertLibreDwgDatabase(
     for (const ent of modelSpaceEntities) {
         processEntity(ent, IDENTITY_TRANSFORM);
     }
+
+    // Mark any exploded dimensions (dimension lines + start/end ticks + defpoints)
+    markExplodedDimensions(primitives);
 
     const layers = Array.from(layerMap.values()).filter(
         l => l.entityCount > 0 || l.name === '0'
@@ -981,10 +1613,10 @@ export function parseDxfText(dxfText: string): CadDocument {
     const rawLayers = dxf.tables?.layer?.layers || {};
     for (const key of Object.keys(rawLayers)) {
         const l = rawLayers[key];
-        const aci = l.colorIndex ?? 7;
+        const aci = l.colorIndex != null ? Math.abs(l.colorIndex) : 7;
         const resolved =
-            l.color && l.color > 0 && l.color <= 0xffffff && aci !== 7
-                ? { hex: intToHex(l.color), isAdaptiveWhite: l.color === 0xffffff }
+            l.color && l.color > 0 && l.color < 0xffffff && (aci === 256 || aci === 0)
+                ? { hex: intToHex(l.color), isAdaptiveWhite: false }
                 : aciToColor(aci);
         layerMap.set(l.name || key, {
             name: l.name || key,
@@ -1028,13 +1660,13 @@ export function parseDxfText(dxfText: string): CadDocument {
         layerName: string,
         parentColor?: { hex: string; isAdaptiveWhite: boolean }
     ) => {
-        if (entity.color && entity.color > 0 && entity.color <= 0xffffff && entity.colorIndex !== 7) {
-            return { hex: intToHex(entity.color), isAdaptiveWhite: entity.color === 0xffffff };
-        }
-        if (entity.colorIndex === 0 && parentColor) return parentColor;
-        if (entity.colorIndex != null && entity.colorIndex !== 256 && entity.colorIndex !== 0) {
+        if (entity.colorIndex != null && entity.colorIndex >= 1 && entity.colorIndex <= 255) {
             return aciToColor(entity.colorIndex);
         }
+        if (entity.color && entity.color > 0 && entity.color < 0xffffff && entity.colorIndex !== 7) {
+            return { hex: intToHex(entity.color), isAdaptiveWhite: false };
+        }
+        if (entity.colorIndex === 0 && parentColor) return parentColor;
         const layer = ensureLayer(layerName);
         return {
             hex: layer.colorHex,
@@ -1047,13 +1679,23 @@ export function parseDxfText(dxfText: string): CadDocument {
         tf: Transform2D,
         inheritedLayer?: string,
         inheritedColor?: { hex: string; isAdaptiveWhite: boolean },
-        depth = 0
+        depth = 0,
+        inDimension = false
     ) => {
         if (!entity || entity.visible === false || depth > 6) return;
         const rawLayer = entity.layer || '0';
         const effectiveLayer = rawLayer === '0' && inheritedLayer ? inheritedLayer : rawLayer;
         const layerObj = ensureLayer(effectiveLayer);
         if (depth === 0) layerObj.entityCount++;
+
+        const isDim =
+            inDimension ||
+            entity.type === 'DIMENSION' ||
+            entity.type === 'LEADER' ||
+            entity.type === 'MULTILEADER' ||
+            entity.type === 'POINT' ||
+            isDimensionLayerName(effectiveLayer) ||
+            isDimensionLayerName(rawLayer);
 
         const color = resolveDxfColor(entity, effectiveLayer, inheritedColor);
         const avgScale = (Math.abs(tf.sx) + Math.abs(tf.sy)) / 2 || 1;
@@ -1071,6 +1713,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                         isAdaptiveWhite: color.isAdaptiveWhite,
                         points: [p1, p2],
                         closed: false,
+                        isDimension: isDim,
                     });
                     addSnap(p1);
                     addSnap(p2);
@@ -1090,6 +1733,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                     isAdaptiveWhite: color.isAdaptiveWhite,
                     points: expanded.map(p => applyTransform(p, tf)),
                     closed,
+                    isDimension: isDim,
                 });
                 for (const v of verts) addSnap(applyTransform(v, tf));
                 break;
@@ -1105,6 +1749,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                     cx: c.x,
                     cy: c.y,
                     r: entity.radius * avgScale,
+                    isDimension: isDim,
                 });
                 addSnap(c);
                 break;
@@ -1112,7 +1757,6 @@ export function parseDxfText(dxfText: string): CadDocument {
             case 'ARC': {
                 if (!entity.center || !entity.radius) break;
                 const c = applyTransform(entity.center, tf);
-                // dxf-parser stores startAngle/endAngle in radians (or degrees if > 2*PI)
                 const toRad = (a: number) => (Math.abs(a) > Math.PI * 2 + 0.01 ? (a * Math.PI) / 180 : a);
                 const sa = toRad(entity.startAngle || 0) + tf.rot;
                 const ea = toRad(entity.endAngle || 0) + tf.rot;
@@ -1128,6 +1772,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                     startAngle: sa,
                     endAngle: ea,
                     ccw: true,
+                    isDimension: isDim,
                 });
                 break;
             }
@@ -1151,6 +1796,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                     rotation: rot,
                     startAngle: entity.startAngle ?? 0,
                     endAngle: entity.endAngle ?? Math.PI * 2,
+                    isDimension: isDim,
                 });
                 break;
             }
@@ -1165,6 +1811,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                         isAdaptiveWhite: color.isAdaptiveWhite,
                         points: approx.map(p => applyTransform(p, tf)),
                         closed: Boolean(entity.closed),
+                        isDimension: isDim,
                     });
                 }
                 break;
@@ -1182,6 +1829,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                         points: ordered.map((p: any) => applyTransform(p, tf)),
                         closed: true,
                         filled: entity.type === 'SOLID',
+                        isDimension: isDim,
                     });
                 }
                 break;
@@ -1189,12 +1837,27 @@ export function parseDxfText(dxfText: string): CadDocument {
             case 'TEXT':
             case 'MTEXT':
             case 'ATTRIB': {
-                const cleaned = cleanCadText(entity.text || '');
-                const pt = entity.startPoint || entity.position;
+                const rawStr = entity.text || '';
+                const wasShxArabic = isLikelyShxArabicLine(rawStr);
+                const cleaned = cleanCadText(rawStr);
+                const halign = entity.halign ?? 0;
+                const valign = entity.valign ?? 0;
+                const startPt = entity.startPoint || entity.position;
+                const endPt = entity.endPoint;
+                const pt =
+                    (halign !== 0 || valign !== 0) &&
+                    endPt &&
+                    (Math.abs(endPt.x) > 1e-6 || Math.abs(endPt.y) > 1e-6)
+                        ? endPt
+                        : startPt;
                 if (!cleaned || !pt) break;
                 const pos = applyTransform(pt, tf);
-                const height = Math.max(0.05, (entity.textHeight || entity.height || 2.5) * avgScale);
+                const height = Math.max(0.02, (entity.textHeight || entity.height || 0.25) * avgScale);
                 const rotRad = ((entity.rotation || 0) * Math.PI) / 180 + tf.rot;
+                let align: 'left' | 'center' | 'right' = wasShxArabic ? 'right' : 'left';
+                if (halign === 1 || halign === 4) align = 'center';
+                else if (halign === 2) align = 'right';
+
                 const lines = cleaned.split('\n').filter(Boolean);
                 lines.forEach((line, idx) => {
                     primitives.push({
@@ -1207,7 +1870,8 @@ export function parseDxfText(dxfText: string): CadDocument {
                         text: line,
                         height,
                         rotation: rotRad,
-                        align: 'left',
+                        align,
+                        isDimension: true,
                     });
                 });
                 break;
@@ -1215,6 +1879,7 @@ export function parseDxfText(dxfText: string): CadDocument {
             case 'INSERT': {
                 const block = blocks[entity.name];
                 if (!block || !Array.isArray(block.entities) || !entity.position) break;
+                const childIsDim = isDim || isDimensionBlockName(entity.name);
                 const childTf: Transform2D = {
                     tx: entity.position.x,
                     ty: entity.position.y,
@@ -1226,7 +1891,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                 };
                 const combined = composeTransforms(tf, childTf);
                 for (const sub of block.entities) {
-                    processDxfEntity(sub, combined, effectiveLayer, color, depth + 1);
+                    processDxfEntity(sub, combined, effectiveLayer, color, depth + 1, childIsDim);
                 }
                 break;
             }
@@ -1234,7 +1899,7 @@ export function parseDxfText(dxfText: string): CadDocument {
                 const block = entity.block ? blocks[entity.block] : null;
                 if (block && Array.isArray(block.entities)) {
                     for (const sub of block.entities) {
-                        processDxfEntity(sub, tf, effectiveLayer, color, depth + 1);
+                        processDxfEntity(sub, tf, effectiveLayer, color, depth + 1, true);
                     }
                 }
                 break;
@@ -1247,6 +1912,8 @@ export function parseDxfText(dxfText: string): CadDocument {
     for (const ent of dxf.entities || []) {
         processDxfEntity(ent, IDENTITY_TRANSFORM);
     }
+
+    markExplodedDimensions(primitives);
 
     const layers = Array.from(layerMap.values()).filter(l => l.entityCount > 0 || l.name === '0');
     const bounds = computeSmartBounds(primitives);
@@ -1280,7 +1947,6 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
     const xLabels = ['A', 'B', 'C', 'D'];
     const yLabels = ['1', '2', '3', '4'];
 
-    // 1. Axes Grid & Bubbles
     xCoords.forEach((x, i) => {
         primitives.push({
             kind: 'polyline',
@@ -1347,7 +2013,6 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
         });
     });
 
-    // 2. Footings (PC & RC) and Columns at intersections
     const addRect = (
         layer: string,
         colorHex: string,
@@ -1386,14 +2051,10 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
             const pcW = rcW + 0.6;
             const pcH = rcH + 0.6;
 
-            // Plain Concrete (PC)
             addRect('S-PC (الخرسانة العادية)', '#38bdf8', x, y, pcW, pcH);
-            // Reinforced Concrete Footing (RC)
             addRect('S-FOOT (القواعد المسلحة)', '#eab308', x, y, rcW, rcH);
-            // Column (C1 / C2)
             addRect('S-COLS (الأعمدة الخرسانية)', '#22c55e', x, y, 0.35, 0.7, true);
 
-            // Label
             primitives.push({
                 kind: 'text',
                 layer: 'A-DIMS (الأبعاد والمناسيب)',
@@ -1405,11 +2066,11 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
                 height: 0.24,
                 rotation: 0,
                 align: 'right',
+                isDimension: true,
             });
         });
     });
 
-    // 3. Ground Beams (الميدات الرابطة)
     for (let xi = 0; xi < xCoords.length; xi++) {
         for (let yi = 0; yi < yCoords.length - 1; yi++) {
             const x = xCoords[xi];
@@ -1458,7 +2119,6 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
         }
     }
 
-    // 4. Exterior Dimensions & Title Block
     for (let i = 0; i < xCoords.length - 1; i++) {
         const x1 = xCoords[i];
         const x2 = xCoords[i + 1];
@@ -1470,6 +2130,7 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
             isAdaptiveWhite: true,
             points: [{ x: x1, y: 14.9 }, { x: x2, y: 14.9 }],
             closed: false,
+            isDimension: true,
         });
         primitives.push({
             kind: 'text',
@@ -1482,6 +2143,7 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
             height: 0.32,
             rotation: 0,
             align: 'center',
+            isDimension: true,
         });
     }
 
@@ -1496,6 +2158,7 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
             isAdaptiveWhite: true,
             points: [{ x: 17.4, y: y1 }, { x: 17.4, y: y2 }],
             closed: false,
+            isDimension: true,
         });
         primitives.push({
             kind: 'text',
@@ -1508,6 +2171,7 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
             height: 0.32,
             rotation: 0,
             align: 'center',
+            isDimension: true,
         });
     }
 
@@ -1522,6 +2186,7 @@ export function createSampleStructuralCadDocument(drawingTitle = 'مخطط ال�
         height: 0.45,
         rotation: 0,
         align: 'center',
+        isDimension: true,
     });
 
     return {
