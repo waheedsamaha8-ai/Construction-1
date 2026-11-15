@@ -9,7 +9,7 @@ import { imageUtils } from '../services/imageUtils';
 import { wrapTablesInHtml, ReportGenerator } from '../services/reportGenerator';
 import ProjectReportModal from './ProjectReportModal';
 import InteractiveReportViewer from './InteractiveReportViewer';
-import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult, PricingCalculationResult, FileItem, ItemType } from '../types';
+import { Project, BOQItem, ProjectLog, ScheduleResult, MaterialCalculationResult, PricingCalculationResult, FileItem, ItemType, EngineeringReportItem } from '../types';
 
 interface ProjectAIProps {
   projectId: string;
@@ -28,6 +28,8 @@ interface Message {
   type?: 'text' | 'schedule' | 'calc_material' | 'calc_pricing';
   isSaved?: boolean;
   savedFileId?: string;
+  savedReportId?: string;
+  savedTitle?: string;
 }
 
 // MERGED CONFIGURATION
@@ -36,10 +38,11 @@ const AGENT_CONFIG: Record<AgentType, { title: string, icon: string, color: stri
         title: "المدير العام (General Manager)", 
         icon: "fa-user-tie", 
         color: "blue", 
-        desc: "المسؤول الأول. يربط بين الموقف المالي والتنفيذي. اطلب منه: تقارير تنفيذية، خطابات للمالك، تقييم الأداء العام.", 
+        desc: "المسؤول الأول. يربط بين الموقف المالي والتنفيذي. اطلب منه: تقارير تنفيذية، تحليل اليوميات، خطابات للمالك، وتقييم الأداء العام.", 
         prompts: [
+            "تحليل شامل لليوميات واستخراج الموقف التنفيذي",
             "تقرير الموقف التنفيذي (Executive Report)",
-            "تحليل التأخير وأسبابه (Delay Analysis)",
+            "تحليل التأخير وأسبابه من واقع اليوميات (Delay Analysis)",
             "صياغة خطاب للمالك بخصوص الدفعات",
             "تقييم أداء المقاول العام",
             "خطة استدراك الجدول الزمني (Recovery Plan)"
@@ -49,8 +52,9 @@ const AGENT_CONFIG: Record<AgentType, { title: string, icon: string, color: stri
         title: "مدير التكاليف والعقود (Commercial)", 
         icon: "fa-scale-balanced", 
         color: "emerald", 
-        desc: "المرجع المالي. اطلب منه: مراجعة المستخلصات، فروق الأسعار، المطالبات (Claims)، وتحليل التدفق النقدي.", 
+        desc: "المرجع المالي. اطلب منه: مراجعة المستخلصات، مطابقة اليوميات بالمقايسة، فروق الأسعار، المطالبات (Claims)، وتحليل التدفق النقدي.", 
         prompts: [
+            "مطابقة الأعمال والكميات باليوميات مع المقايسة والمستخلصات",
             "تحليل التدفق النقدي (Cash Flow)", 
             "مراجعة نسبة الصرف مقابل الإنجاز",
             "صياغة مطالبة فروق أسعار",
@@ -62,8 +66,9 @@ const AGENT_CONFIG: Record<AgentType, { title: string, icon: string, color: stri
         title: "مدير المكتب الفني (Technical & QC)",
         icon: "fa-compass-drafting", 
         color: "indigo",
-        desc: "المرجع الهندسي. اطلب منه: اشتراطات الكود، مراجعة المواصفات، حل المشاكل الفنية، ومراجعة تقارير التربة.",
+        desc: "المرجع الهندسي. اطلب منه: قراءة اليوميات وصورها فنياً، اشتراطات الكود، مراجعة المواصفات، ومراجعة تقارير التربة.",
         prompts: [
+            "قراءة وتحليل تفاصيل التنفيذ وصور اليوميات فنياً",
             "تحليل تقرير التربة والتوصيات",
             "اشتراطات الكود المصري لهذا البند",
             "صياغة تقرير عدم مطابقة (NCR)",
@@ -75,13 +80,14 @@ const AGENT_CONFIG: Record<AgentType, { title: string, icon: string, color: stri
         title: "مدير الموقع (Site & Safety)",
         icon: "fa-helmet-safety",
         color: "orange",
-        desc: "المسؤول الميداني. اطلب منه: تقارير اليوميات، متابعة الأعمال اليومية، وتقارير السلامة من واقع الصور.",
+        desc: "المسؤول الميداني. اطلب منه: قراءة وتحليل اليوميات، متابعة الأعمال اليومية، استخراج العمالة والمعوقات، وتقارير السلامة من الصور.",
         prompts: [
+            "تحليل شامل لسجلات اليوميات واستخراج المعوقات والعمالة",
+            "تحليل صور اليوميات وفحص الجودة والسلامة",
             "تقرير زيارة موقع مصور (Site Report)",
             "تحليل سجلات اليوميات للأسبوع الماضي",
             "تحليل مخاطر السلامة (Risk Assessment)",
-            "تقرير بالموارد والعمالة في الموقع",
-            "خطة تنظيم الموقع (Site Logistics)"
+            "تقرير بالموارد والعمالة في الموقع"
         ]
     }
 };
@@ -94,14 +100,15 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
   const [isLoading, setIsLoading] = useState(false);
   const [fullProjectData, setFullProjectData] = useState<Project | null>(projectData || null); 
   
-  // Archiving & Report Menu State
-  const [archiveModalOpen, setArchiveModalOpen] = useState(false);
-  const [contentToArchive, setContentToArchive] = useState('');
-  const [archiveTitle, setArchiveTitle] = useState('');
+  // Save to Project & Report Menu State
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [contentToSave, setContentToSave] = useState('');
+  const [saveTitle, setSaveTitle] = useState('');
   const [targetMessageIndex, setTargetMessageIndex] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [activeMenuMessageIdx, setActiveMenuMessageIdx] = useState<number | null>(null);
   const [directEditingMessageIdx, setDirectEditingMessageIdx] = useState<number | null>(null);
+  const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   // Smart Report Modal State
   const [showReportModal, setShowReportModal] = useState(false);
@@ -132,21 +139,41 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
   }, [projectData]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadData = async () => {
-        if (projectData && (projectData.boqItems?.length || projectData.executionLogs?.length || projectData.payments?.length)) {
-            return;
-        }
-        setIsLoading(true);
+        const hasFullLogs = Boolean(projectData?.executionLogs && projectData.executionLogs.length > 0);
+        if (!projectData) setIsLoading(true);
         try {
-            // CRITICAL: Use getProjectById to fetch FULL data (Log sub-collection + Main Doc)
-            const project = await api.getProjectById(projectId);
-            
-            if (project) {
-                setFullProjectData(project); 
+            // Hydrate full data (Logs sub-collection + full images + BOQ + Payments) without overwriting fresher passed logs
+            const fetched = await api.getProjectById(projectId, !hasFullLogs);
+            if (fetched && !cancelled) {
+                setFullProjectData(prev => {
+                    const base = projectData || prev;
+                    if (!base) return fetched;
+                    const baseLogs = base.executionLogs || [];
+                    const fetchedLogs = fetched.executionLogs || [];
+                    if (baseLogs.length === 0 && fetchedLogs.length > 0) {
+                        return { ...fetched, ...base, executionLogs: fetchedLogs };
+                    }
+                    // Enrich any missing images on base logs from fetched logs
+                    const fetchedImgMap = new Map<string, string[]>();
+                    fetchedLogs.forEach(fl => {
+                        if (fl?.id && fl.images && fl.images.length > 0) fetchedImgMap.set(fl.id, fl.images);
+                    });
+                    const enrichedLogs = baseLogs.map(bl => {
+                        if (!bl) return bl;
+                        if ((!bl.images || bl.images.length === 0) && bl.id && fetchedImgMap.has(bl.id)) {
+                            return { ...bl, images: fetchedImgMap.get(bl.id) };
+                        }
+                        return bl;
+                    });
+                    return { ...fetched, ...base, executionLogs: enrichedLogs };
+                });
             }
-        } catch (e) { console.error("Context Load Error", e); } finally { setIsLoading(false); }
+        } catch (e) { console.error("Context Load Error", e); } finally { if (!cancelled) setIsLoading(false); }
     };
     loadData();
+    return () => { cancelled = true; };
   }, [projectId, folderId, projectData]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, activeAgent, isLoading]);
@@ -154,7 +181,9 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
   const handleAgentSelect = (agent: AgentType) => {
       setActiveAgent(agent);
       setAttachments([]);
-      let welcomeMsg = `أهلاً بك. أنا ${AGENT_CONFIG[agent].title}.\nلقد اطلعت على كافة بيانات المشروع (اليوميات، المستخلصات، المقايسة، والتقارير). كيف يمكنني مساعدتك الآن؟`;
+      const logsCount = fullProjectData?.executionLogs?.length || 0;
+      const logsHint = logsCount > 0 ? ` (${logsCount} سجل يوميات)` : '';
+      let welcomeMsg = `أهلاً بك. أنا ${AGENT_CONFIG[agent].title}.\nلقد اطلعت على كافة بيانات المشروع (اليوميات${logsHint}، المستخلصات، المقايسة، والتقارير). يمكنك سؤالي لتحليل اليوميات أو استخراج أي بيانات منها مباشرة.`;
       setMessages([{ role: 'model', content: welcomeMsg, type: 'text' }]);
   };
 
@@ -208,27 +237,116 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
   const togglePickerSelection = (fileId: string) => { const next = new Set(selectedPickerItems); if (next.has(fileId)) next.delete(fileId); else next.add(fileId); setSelectedPickerItems(next); };
   const confirmPickerSelection = async () => { if (selectedPickerItems.size === 0) return; setIsProcessingPicker(true); const newFiles: File[] = []; try { const selectedFileItems = pickerItems.filter(i => selectedPickerItems.has(i.id) && i.type === ItemType.FILE); for (const item of selectedFileItems) { const blob = await api.downloadFileBlob(item.id); const file = new File([blob], item.name, { type: item.mimeType }); newFiles.push(file); } setAttachments(prev => [...prev, ...newFiles]); setShowAppFilePicker(false); } catch(e) { alert("خطأ تحميل"); } finally { setIsProcessingPicker(false); } };
 
-  const handleOpenArchiveModal = (content: string, index: number) => { setContentToArchive(content); setArchiveTitle(`استشارة - ${new Date().toLocaleDateString('ar-EG')}`); setTargetMessageIndex(index); setArchiveModalOpen(true); };
-  const confirmArchive = async () => { if (!contentToArchive) return; setIsSaving(true); try { const cat = await aiHelper.classifyArchiveCategory(contentToArchive); const fileId = await api.saveToArchive(archiveTitle, contentToArchive, cat); if (targetMessageIndex !== null) { setMessages(prev => prev.map((m, i) => i === targetMessageIndex ? { ...m, isSaved: true, savedFileId: fileId } : m)); } alert(`تم الحفظ في: ${cat}`); setArchiveModalOpen(false); } catch(e) { alert("فشل الحفظ."); } finally { setIsSaving(false); } };
-  const handleEditAsLetter = (content: string, fileId?: string) => { if (fileId) { api.getFileMetadata(fileId).then(meta => { if (meta) { navigate(`/editor/${projectId}/${meta.parentId}?fileId=${fileId}`); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); } }).catch(() => { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); }); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${folderId}`, { state: { initialContent: content, filename: draftName } }); } };
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+      setToast({ text, type });
+      setTimeout(() => {
+          setToast(prev => (prev?.text === text ? null : prev));
+      }, 3200);
+  };
+
+  const extractReportTitle = (html: string): string => {
+      try {
+          const temp = document.createElement('div');
+          temp.innerHTML = html;
+          const heading = temp.querySelector('h1, h2, h3');
+          const text = (heading?.textContent || temp.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text && text.length >= 4) {
+              return text.slice(0, 80);
+          }
+      } catch {}
+      return `تقرير استشاري - ${new Date().toLocaleDateString('ar-EG')}`;
+  };
+
+  const extractReportSummary = (html: string): string => {
+      try {
+          const temp = document.createElement('div');
+          temp.innerHTML = html;
+          const text = (temp.textContent || '').replace(/\s+/g, ' ').trim();
+          return text.slice(0, 180);
+      } catch {
+          return '';
+      }
+  };
+
+  const handleOpenSaveToProjectModal = (content: string, index: number) => {
+      setContentToSave(content);
+      setSaveTitle(extractReportTitle(content));
+      setTargetMessageIndex(index);
+      setSaveModalOpen(true);
+  };
+
+  const confirmSaveToProject = async () => {
+      if (!contentToSave) return;
+      const cleanTitle = saveTitle.trim() || `تقرير استشاري - ${new Date().toLocaleDateString('ar-EG')}`;
+      setIsSaving(true);
+      try {
+          const latestProject = fullProjectData || projectData || await api.getProjectById(projectId);
+          const reportId = `rep_ai_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const newReport: EngineeringReportItem = {
+              id: reportId,
+              type: 'general',
+              title: cleanTitle,
+              summary: extractReportSummary(contentToSave),
+              content: contentToSave,
+              date: new Date().toISOString()
+          };
+
+          const existingReports = latestProject?.engineeringReports || [];
+          const updatedReports = [newReport, ...existingReports];
+          const updatedProject = await api.updateProject(projectId, {
+              engineeringReports: updatedReports
+          });
+          setFullProjectData(updatedProject);
+          onProjectUpdated?.(updatedProject);
+
+          let savedFileId: string | undefined;
+          const targetFolderId = folderId || latestProject?.driveFolderId || projectId;
+          if (targetFolderId) {
+              try {
+                  savedFileId = await api.saveToProject(targetFolderId, cleanTitle, contentToSave);
+              } catch (e) {
+                  console.warn('Failed to save report file into project folder:', e);
+              }
+          }
+
+          if (targetMessageIndex !== null) {
+              setMessages(prev => prev.map((m, i) => i === targetMessageIndex ? {
+                  ...m,
+                  isSaved: true,
+                  savedFileId: savedFileId || m.savedFileId,
+                  savedReportId: reportId,
+                  savedTitle: cleanTitle
+              } : m));
+          }
+          setSaveModalOpen(false);
+          showToast('تم حفظ التقرير في المشروع بنجاح');
+      } catch (e) {
+          console.error('Save to project failed:', e);
+          showToast('فشل حفظ التقرير في المشروع.', 'error');
+      } finally {
+          setIsSaving(false);
+      }
+  };
+
+  const handleEditAsLetter = (content: string, fileId?: string) => { const targetFolder = folderId || fullProjectData?.driveFolderId || projectId; if (fileId) { api.getFileMetadata(fileId).then(meta => { if (meta) { navigate(`/editor/${projectId}/${meta.parentId}?fileId=${fileId}`); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${targetFolder}`, { state: { initialContent: content, filename: draftName } }); } }).catch(() => { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${targetFolder}`, { state: { initialContent: content, filename: draftName } }); }); } else { const draftName = `تقرير_استشاري_${new Date().toLocaleDateString('ar-EG').replace(/\//g, '-')}`; navigate(`/editor/${projectId}/${targetFolder}`, { state: { initialContent: content, filename: draftName } }); } };
   const handlePrintResponse = (content: string, type: string) => { 
       printService.printReport(content, "تقرير استشاري", "PROJ-AI", { showHeader: false, showFooter: false }); 
   };
-  const handleCopyText = (content: string) => { const tempDiv = document.createElement("div"); tempDiv.innerHTML = content; navigator.clipboard.writeText(tempDiv.textContent || ""); alert("تم النسخ"); };
+  const handleCopyText = (content: string) => { const tempDiv = document.createElement("div"); tempDiv.innerHTML = content; navigator.clipboard.writeText(tempDiv.textContent || ""); showToast("تم النسخ"); };
 
   const handleGenerateReport = async (startDate: string, endDate: string, reportType: string, title: string) => {
       setIsGeneratingReport(true);
       try {
           const fullProject = fullProjectData || projectData || await api.getProjectById(projectId);
           const logs = fullProject?.executionLogs || [];
+          const startYmd = (startDate || '').trim().slice(0, 10);
+          const endYmd = (endDate || '').trim().slice(0, 10);
           const filteredLogs = logs.filter(log => {
-              const logDate = new Date(log.date);
-              const start = new Date(startDate);
-              const end = new Date(endDate);
-              logDate.setHours(0, 0, 0, 0);
-              start.setHours(0, 0, 0, 0);
-              end.setHours(23, 59, 59, 999);
-              return logDate >= start && logDate <= end;
+              if (!log?.date) return false;
+              const logYmd = String(log.date).trim().slice(0, 10);
+              if (startYmd && logYmd < startYmd) return false;
+              if (endYmd && logYmd > endYmd) return false;
+              return true;
           });
 
           const aiSummaryHtml = await aiHelper.generateCustomProjectReport(
@@ -333,7 +451,7 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                                                     <span className="text-[11px] font-bold text-slate-600 !bg-transparent !border-0 !p-0 !m-0">{msg.role === 'model' ? AGENT_CONFIG[activeAgent].title : 'أنت'}</span>
                                                     {msg.isSaved && (
                                                         <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                                            <i className="fa-solid fa-check text-[9px]"></i> محفوظ في الأرشيف
+                                                            <i className="fa-solid fa-check text-[9px]"></i> محفوظ في المشروع
                                                         </span>
                                                     )}
                                                 </div>
@@ -428,14 +546,14 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                                                                             type="button"
                                                                             onClick={() => {
                                                                                 setActiveMenuMessageIdx(null);
-                                                                                handleOpenArchiveModal(msg.content as string, idx);
+                                                                                handleOpenSaveToProjectModal(msg.content as string, idx);
                                                                             }}
                                                                             className="w-full px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-white flex items-center gap-2.5 transition text-xs font-bold text-right"
                                                                         >
                                                                             <div className="w-6 h-6 rounded-lg bg-teal-500/20 text-teal-300 flex items-center justify-center shrink-0">
-                                                                                <i className="fa-solid fa-box-archive text-xs"></i>
+                                                                                <i className="fa-solid fa-folder-plus text-xs"></i>
                                                                             </div>
-                                                                            <span>حفظ في الأرشيف الهندسي</span>
+                                                                            <span>حفظ في المشروع</span>
                                                                         </button>
                                                                     )}
 
@@ -446,6 +564,18 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                                                                             if (!window.confirm('هل أنت متأكد من حذف هذا التقرير؟')) return;
                                                                             if (msg.savedFileId) {
                                                                                 try { await api.deleteItem(msg.savedFileId); } catch (e) {}
+                                                                            }
+                                                                            if (msg.savedReportId) {
+                                                                                try {
+                                                                                    const currentProj = fullProjectData || await api.getProjectById(projectId);
+                                                                                    const remaining = (currentProj?.engineeringReports || []).filter(r => r.id !== msg.savedReportId);
+                                                                                    const updatedProject = await api.updateProject(projectId, {
+                                                                                        engineeringReports: remaining,
+                                                                                        ...(remaining.length === 0 ? { _allowEmptyReports: true } : {})
+                                                                                    });
+                                                                                    setFullProjectData(updatedProject);
+                                                                                    onProjectUpdated?.(updatedProject);
+                                                                                } catch (e) {}
                                                                             }
                                                                             if (isDirectEditingThis) setDirectEditingMessageIdx(null);
                                                                             setMessages(prev => prev.filter((_, i) => i !== idx));
@@ -476,6 +606,19 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                                                                 if (msg.savedFileId) {
                                                                     api.updateFileContent(msg.savedFileId, updatedHtml).catch(() => {});
                                                                 }
+                                                                if (msg.savedReportId && fullProjectData) {
+                                                                    const updatedReports = (fullProjectData.engineeringReports || []).map(r =>
+                                                                        r.id === msg.savedReportId
+                                                                            ? { ...r, content: updatedHtml, summary: extractReportSummary(updatedHtml) }
+                                                                            : r
+                                                                    );
+                                                                    api.updateProject(projectId, { engineeringReports: updatedReports })
+                                                                        .then((updatedProject) => {
+                                                                            setFullProjectData(updatedProject);
+                                                                            onProjectUpdated?.(updatedProject);
+                                                                        })
+                                                                        .catch(() => {});
+                                                                }
                                                             }}
                                                         />
                                                     ) : (
@@ -490,7 +633,7 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                                     <div className="w-full flex justify-center py-6 px-4">
                                         <div className="bg-white px-5 py-3 rounded-2xl shadow-md border border-indigo-100 flex items-center gap-3">
                                             <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-                                            <span className="text-xs font-bold text-indigo-900">جاري فحص سجل المشروع وتحليل البيانات عبر مفاتيح الذكاء الاصطناعي...</span>
+                                            <span className="text-xs font-bold text-indigo-900">جاري فحص سجل المشروع وتحليل البيانات بالذكاء الاصطناعي...</span>
                                         </div>
                                     </div>
                                 )}
@@ -582,6 +725,78 @@ const ProjectAI: React.FC<ProjectAIProps> = ({ projectId, folderId = '', project
                     <div className="p-3 bg-white border-t border-slate-200 shrink-0">
                         <button onClick={confirmPickerSelection} disabled={selectedPickerItems.size === 0 || isProcessingPicker} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50">{isProcessingPicker ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-check-double"></i>} {isProcessingPicker ? 'جاري التحميل...' : `إضافة ${selectedPickerItems.size} ملفات`}</button>
                     </div>
+                </div>
+            </div>
+        )}
+
+        {/* Save Report to Project Modal */}
+        {saveModalOpen && (
+            <div className="fixed inset-0 z-[2200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+                <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-scale-in border border-slate-200">
+                    <div className="bg-gradient-to-r from-teal-700 to-emerald-700 px-4 py-3 text-white flex justify-between items-center">
+                        <h3 className="font-bold text-sm flex items-center gap-2">
+                            <i className="fa-solid fa-folder-plus text-emerald-200"></i>
+                            حفظ التقرير في المشروع
+                        </h3>
+                        <button
+                            type="button"
+                            onClick={() => !isSaving && setSaveModalOpen(false)}
+                            disabled={isSaving}
+                            className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition"
+                        >
+                            <i className="fa-solid fa-times text-xs"></i>
+                        </button>
+                    </div>
+                    <div className="p-4 space-y-4 bg-slate-50">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1.5">عنوان التقرير</label>
+                            <input
+                                type="text"
+                                value={saveTitle}
+                                onChange={(e) => setSaveTitle(e.target.value)}
+                                placeholder="أدخل عنوان التقرير..."
+                                className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                                autoFocus
+                            />
+                        </div>
+                        <div className="bg-teal-50 border border-teal-200 rounded-xl p-2.5 flex items-center gap-2 text-[11px] font-semibold text-teal-800">
+                            <i className="fa-solid fa-circle-check text-teal-600 shrink-0"></i>
+                            <span>سيتم حفظ التقرير داخل تقارير سجل المشروع وملفاته مباشرة.</span>
+                        </div>
+                        <div className="flex gap-2.5 pt-1">
+                            <button
+                                type="button"
+                                onClick={confirmSaveToProject}
+                                disabled={isSaving}
+                                className="flex-1 bg-teal-600 hover:bg-teal-700 text-white py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                {isSaving ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-floppy-disk"></i>}
+                                <span>{isSaving ? 'جاري الحفظ...' : 'حفظ في المشروع'}</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSaveModalOpen(false)}
+                                disabled={isSaving}
+                                className="px-4 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold text-xs transition"
+                            >
+                                إلغاء
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* Toast Notification */}
+        {toast && (
+            <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[2300] animate-scale-in">
+                <div className={`px-4 py-2.5 rounded-2xl shadow-xl border text-xs font-bold flex items-center gap-2 ${
+                    toast.type === 'error'
+                        ? 'bg-red-600 text-white border-red-500'
+                        : 'bg-slate-900 text-white border-emerald-500/40'
+                }`}>
+                    <i className={`fa-solid ${toast.type === 'error' ? 'fa-circle-exclamation text-red-200' : 'fa-circle-check text-emerald-400'}`}></i>
+                    <span>{toast.text}</span>
                 </div>
             </div>
         )}

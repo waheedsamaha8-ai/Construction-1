@@ -1665,6 +1665,7 @@ export const api = {
   async getArchiveFolderId(): Promise<string> { const rootId = await this.ensureRootFolder(); return await this.ensureArchiveFolder(rootId); },
 
   async saveToArchive(title: string, content: string, sectionName?: string): Promise<string> { triggerLoadingStart(); try { const archiveId = await this.getArchiveFolderId(); if (!archiveId) { throw new Error("Could not find archive folder"); } let targetFolderId = archiveId; if (sectionName) { const archiveContents = await this.getContents(archiveId, true); const sectionFolder = archiveContents.find(f => f.name === sectionName && f.type === ItemType.FOLDER); if (sectionFolder) { targetFolderId = sectionFolder.id; } } const htmlDoc = createCardHtml(title, content); const file = await this.saveLetter(targetFolderId, title, htmlDoc); return file.id; } finally { triggerLoadingStop(); } },
+  async saveToProject(targetFolderId: string, title: string, content: string): Promise<string> { triggerLoadingStart(); try { const htmlDoc = createCardHtml(title, content); const file = await this.saveLetter(targetFolderId, title, htmlDoc); return file.id; } finally { triggerLoadingStop(); } },
   getCachedContents(folderId: string): FileItem[] | null {
       if (!folderId || isFileDeleted(folderId)) return null;
       const cached = contentCache.get(folderId);

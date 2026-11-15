@@ -267,8 +267,7 @@ export const calculatorService = {
                 config: {
                     responseMimeType: "application/json",
                     responseSchema: schema,
-                    tools: [{ googleSearch: {} }], // Enable search for live pricing
-                    temperature: 0.1
+                    tools: [{ googleSearch: {} }] // Enable search for live pricing
                 }
             });
 

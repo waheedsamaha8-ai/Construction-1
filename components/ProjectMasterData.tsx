@@ -1822,14 +1822,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // Calculated Previous Payment Total for Cumulative Logic
     const previousTotalPayments = useMemo(() => {
-        if (masterData.payments.length === 0) return 0;
-        return Math.max(...masterData.payments.map(p => p.cumulativeAmount || 0), 0);
+        const payments = masterData.payments || [];
+        if (payments.length === 0) return 0;
+        return Math.max(...payments.map(p => p.cumulativeAmount || 0), 0);
     }, [masterData.payments]);
 
     // Map each BOQ item ID to its linked daily logs
     const logsByBoqItemId = useMemo(() => {
         const map = new Map<string, ProjectLog[]>();
-        masterData.logs.forEach(log => {
+        (masterData.logs || []).forEach(log => {
             if (log.boqItemId) {
                 const list = map.get(log.boqItemId) || [];
                 list.push(log);
@@ -1841,7 +1842,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // Filterable BOQ items that can be linked to logs (non-note items)
     const linkableBoqItems = useMemo(() => {
-        return masterData.boqItems.filter(item => Boolean(item.quantity || item.unitPrice));
+        return (masterData.boqItems || []).filter(item => Boolean(item.quantity || item.unitPrice));
     }, [masterData.boqItems]);
 
     // --- SMART IPC / AUTOMATIC PAYMENT GENERATOR LOGIC ---
@@ -2473,8 +2474,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             });
 
             if (isEmergencyFallbackReport(htmlContent)) {
-                window.dispatchEvent(new CustomEvent('open_gemini_key_modal'));
-                return;
+                throw new Error("Report generation failed");
             }
 
             const savedReportObj: BOQItemSavedReport = {
@@ -3695,9 +3695,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const boqDerivedData = useMemo(() => {
         const groupedItems: { [key: string]: BOQItem[] } = {}; 
         const batchOrder: string[] = []; 
-        masterData.boqItems.forEach(item => { const bId = item.batchId || 'default'; if (!groupedItems[bId]) { groupedItems[bId] = []; batchOrder.push(bId); } groupedItems[bId].push(item); }); 
-        const grandTotalValue = masterData.boqItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0); 
-        const grandExecutedValue = masterData.boqItems.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0);
+        const boqList = masterData.boqItems || [];
+        boqList.forEach(item => { const bId = item.batchId || 'default'; if (!groupedItems[bId]) { groupedItems[bId] = []; batchOrder.push(bId); } groupedItems[bId].push(item); }); 
+        const grandTotalValue = boqList.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0); 
+        const grandExecutedValue = boqList.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0);
         return { groupedItems, batchOrder, grandTotalValue, grandExecutedValue };
     }, [masterData.boqItems]);
 
@@ -3705,14 +3706,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const filterableWorkCategories = useMemo(() => {
         const names = new Set<string>();
         allWorkCategories.forEach(c => { if (c.name) names.add(c.name); });
-        masterData.logs.forEach(l => { if (l.workCategory) names.add(l.workCategory); });
+        (masterData.logs || []).forEach(l => { if (l.workCategory) names.add(l.workCategory); });
         return Array.from(names);
     }, [allWorkCategories, masterData.logs]);
 
     // خريطة التواريخ المسجل لها يوميات (لتلوين وتمييز الأيام في التقويم)
     const loggedDatesMap = useMemo(() => {
         const map = new Map<string, number>();
-        masterData.logs.forEach(l => {
+        (masterData.logs || []).forEach(l => {
             if (l && l.date) {
                 const cleanDate = l.date.trim();
                 map.set(cleanDate, (map.get(cleanDate) || 0) + 1);
@@ -3724,7 +3725,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     // قائمة الشهور التي تحتوي على يوميات لسهولة الانتقال السريع داخل التقويم
     const loggedMonthsList = useMemo(() => {
         const monthCounts = new Map<string, number>();
-        masterData.logs.forEach(l => {
+        (masterData.logs || []).forEach(l => {
             if (l && l.date && l.date.length >= 7) {
                 const ym = l.date.slice(0, 7);
                 monthCounts.set(ym, (monthCounts.get(ym) || 0) + 1);
@@ -7726,10 +7727,27 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     <ProjectAI
                         projectId={projectId}
                         folderId={projectId}
-                        projectData={masterData}
+                        projectData={{
+                            ...(seedProject || initialProjectData || ({} as Project)),
+                            id: projectId,
+                            name: masterData.projectName || seedProject?.name || initialProjectData?.name || '',
+                            contractor: masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || '',
+                            fullDescription: masterData.fullDescription,
+                            executionLogs: masterData.logs || [],
+                            payments: masterData.payments || [],
+                            boqItems: masterData.boqItems || [],
+                            engineeringReports: masterData.engineeringReports || [],
+                            soilReportAnalysis: masterData.soilReport,
+                            rfis: masterData.rfis || [],
+                            submittals: masterData.submittals || [],
+                            correspondence: masterData.correspondence || [],
+                            checklists: masterData.checklists || [],
+                            ncrs: masterData.ncrs || []
+                        }}
                         onClose={() => setShowProjectAI(false)}
                         onProjectUpdated={(updated) => {
-                            setMasterData(updated);
+                            lastLocalEditRef.current = Date.now();
+                            applyProjectDataToState(updated, true);
                             if (onProjectUpdated) onProjectUpdated(updated);
                         }}
                     />

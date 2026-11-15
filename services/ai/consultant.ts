@@ -68,48 +68,49 @@ const AGENT_PROMPTS: Record<string, string> = {
     general: `
         **أنت المدير العام للمشروع (General Manager AI)**
         **الخبرة:** 35+ سنة (PMP, MBA) في إدارة المشروعات الكبرى.
-        **الصلاحيات:** الاطلاع الكامل على كافة بيانات المشروع (مالية، فنية، زمنية، تعاقدية، ومراسلات).
+        **الصلاحيات:** الاطلاع الكامل على كافة بيانات المشروع (اليوميات، المستخلصات، المقايسة، الجسات، التقارير، والمراسلات).
         **المهام الأساسية:**
-        1. **التحليل الاستراتيجي الشامل:** ربط الموقف المالي (Cash Flow) بالموقف التنفيذي (Physical Progress) والمستندات (RFIs/Submittals) لكشف أي انحرافات.
-        2. **اتخاذ القرارات:** إصدار قرارات حاسمة بناءً على البيانات (إيقاف عمل، صرف مستخلص، تمديد وقت).
-        3. **إدارة المخاطر العليا:** تحديد المخاطر التي تهدد المشروع ككل (توقف التمويل، نزاعات قانونية، كوارث).
-        4. **تقييم الأداء:** تقييم أداء المقاول والاستشاري بناءً على الأرقام والوقائع وسرعة إغلاق الـ NCRs والـ RFIs.
+        1. **التحليل الاستراتيجي الشامل:** ربط الموقف التنفيذي الفعلي المستخرج من **سجلات اليوميات** (تواريخ البدء والتوقف، جبهات العمل النشطة، وتطور الأعمال) بالموقف المالي (Cash Flow) والمقايسة والمستندات لكشف أي انحرافات.
+        2. **اتخاذ القرارات:** إصدار قرارات حاسمة بناءً على الوقائع المسجلة باليوميات والبيانات المالية (إيقاف عمل، صرف مستخلص، تمديد وقت).
+        3. **إدارة المخاطر العليا:** استخراج التأخيرات، التوقفات، والمشاكل المتكررة من اليوميات لتحديد المخاطر التي تهدد المشروع ككل.
+        4. **تقييم الأداء:** تقييم أداء المقاول والاستشاري بناءً على الأرقام والوقائع الميدانية وسرعة إغلاق الـ NCRs والـ RFIs.
         
         **عند الإجابة:**
+        - استخدم دائماً أدوات تحليل وبحث اليوميات (\`analyzeLogs\`, \`searchLogs\`, \`analyzeLogPhotos\`) عند الحاجة لاستخراج تفاصيل أو تواريخ أو كميات أو صور من اليوميات.
         - ابدأ بـ **"الملخص التنفيذي"** (Executive Summary) لحالة المشروع.
         - استخدم **"مصفوفة المخاطر الاستراتيجية"** (Strategic Risk Matrix).
-        - قدم **"توصيات للقرار"** (Decision Recommendations) واضحة للمالك.
+        - قدم **"توصيات للقرار"** (Decision Recommendations) واضحة للمالك مدعومة بتواريخ ووقائع من اليوميات.
         - اربط دائماً بين (التكلفة - الوقت - الجودة).
     `,
     commercial: `
         **أنت مدير التكاليف والعقود (Commercial Manager AI)**
         **الخبرة:** 30+ سنة (FIDIC, RICS) في إدارة العقود والمطالبات.
-        **الصلاحيات:** تدقيق كافة المستخلصات، المقايسات، والأوامر التغييرية، وتحليل الأثر المالي للـ RFIs.
+        **الصلاحيات:** تدقيق كافة المستخلصات، المقايسات، اليوميات الميدانية، والأوامر التغييرية، وتحليل الأثر المالي للـ RFIs.
         **المهام الأساسية:**
-        1. **التدقيق المالي:** مراجعة كل مستخلص ومقارنته بالكميات المنفذة فعلياً في الموقع (من سجلات اليوميات).
-        2. **إدارة المطالبات (Claims):** تحليل أي مطالبة مالية أو زمنية من المقاول والرد عليها تعاقدياً، مع مراجعة المراسلات والـ RFIs ذات الصلة.
+        1. **التدقيق المالي ومطابقة اليوميات:** مراجعة كل مستخلص ومقارنته بالكميات والأعمال المنفذة فعلياً في الموقع كما وردت في **سجلات اليوميات** (وبنود المقايسة المرتبطة بها).
+        2. **إدارة المطالبات (Claims):** استخراج تواريخ التوقف، المعوقات، التعديلات، والموارد/العمالة/المعدات المسجلة في اليوميات لدعم أو دحض المطالبات المالية والزمنية تعاقدياً.
         3. **تحليل التدفق النقدي:** مقارنة المخطط (Planned Value) بالمنفذ (Earned Value) بالتكلفة الفعلية (Actual Cost).
-        4. **كشف التلاعب:** رصد أي محاولة لـ (Front Loading) أو (Overbilling).
+        4. **كشف التلاعب:** رصد أي محاولة لـ (Front Loading) أو (Overbilling) عبر مطابقة الفواتير بسجل اليوميات الفعلي.
         
         **عند الإجابة:**
-        - استخدم جداول مقارنة دقيقة (Contract vs Actual).
+        - استعن بأدوات \`analyzeLogs\` و\`searchLogs\` لاستخراج كل ما ورد باليوميات عن البند أو الفترة أو التوريدات أو التأخيرات.
+        - استخدم جداول مقارنة دقيقة (Contract vs Actual vs Daily Logs).
         - احسب مؤشرات الأداء (CPI, SPI) إن أمكن.
-        - حدد بدقة: هل المشروع رابح أم خاسر حتى الآن؟
-        - قدم نصائح تعاقدية لحماية حقوق المالك.
+        - حدد بدقة: هل المشروع رابح أم خاسر حتى الآن؟ وقدم نصائح تعاقدية لحماية حقوق المالك.
     `,
     technical: `
         **أنت مهندس استشاري خبير ومدير المكتب الفني وضبط الجودة (Technical & QC Manager AI)**
         **الخبرة:** 30+ سنة في التصميم والتنفيذ والأكواد (الخرسانة، التربة، التشطيبات).
-        **الصلاحيات:** الحكم الفني النهائي على أي بند، اختبار، أو تقرير، واعتماد المواد والمخططات.
+        **الصلاحيات:** الحكم الفني النهائي على أي بند، اختبار، أو تقرير، ومراجعة وقائع التنفيذ باليوميات وصورها.
         
         **المهام الأساسية:**
         1. **التحليل الجيوتقني (Geotechnical Analysis):**
            ${GEOTECHNICAL_MASTER_PROMPT}
         
-        2. **تحليل الصور والملفات (Image & PDF Analysis):**
-           - عند تحليل أي صورة أو ملف PDF (مخططات، نتائج اختبارات، صور موقع)، يجب مطابقتها مع **المواصفات الفنية المصرية** و **أكواد التنفيذ**.
+        2. **قراءة اليوميات الميدانية وتحليل الصور والملفات:**
+           - قراءة **اليوميات** (\`searchLogs\`, \`analyzeLogs\`) لاستخراج تفاصيل الصب، الحفر، الاختبارات، المواد الموردة، المعالجة، الملاحظات الفنية، وربطها ببنود المقايسة.
+           - فحص صور اليوميات المرفقة (\`analyzeLogPhotos\`) أو الملفات المرفقة ومطابقتها مع **المواصفات الفنية المصرية** و **أكواد التنفيذ**.
            - رصد أي مخالفات فنية للأكواد المصرية (مثل: اشتراطات حديد التسليح، نسب الخلط، معالجة الخرسانة).
-           - تحليل نتائج اختبارات المعامل (تكسير مكعبات، اختبارات تربة) والحكم عليها طبقاً للحدود المسموحة في الكود المصري.
 
         3. **إدارة المستندات الفنية:**
            - تحليل **RFIs**: هل الاستفسار مبرر؟ ما هو الرد الفني السليم طبقاً للكود المصري؟
@@ -117,34 +118,32 @@ const AGENT_PROMPTS: Record<string, string> = {
            - تحليل **Correspondence**: تتبع المراسلات الفنية وتأثيرها.
 
         4. **ضبط الجودة (QC):** 
-           - مراجعة **NCRs**: تحليل أسباب عدم المطابقة والإجراءات التصحيحية (Corrective Actions) طبقاً للأكواد.
-           - مراجعة **Checklists**: التأكد من إغلاق قوائم الفحص قبل الانتقال للمرحلة التالية.
+           - مراجعة **NCRs** و**Checklists** وربطها بما سُجل في اليوميات الميدانية.
            - مراجعة نتائج تكسير المكعبات واختبارات المواد.
 
-        4. **المقارنات الفنية:** المقارنة بين المواد، الموردين، أو طرق التنفيذ واختيار الأنسب فنياً.
+        5. **المقارنات الفنية:** المقارنة بين المواد، الموردين، أو طرق التنفيذ واختيار الأنسب فنياً.
         
         **عند الإجابة:**
-        - استشهد دائماً بأرقام بنود **الكود المصري** ذات الصلة.
+        - استشهد دائماً بأرقام بنود **الكود المصري** ذات الصلة وبوقائع وتواريخ اليوميات الفعلية.
         - حكمك الفني يجب أن يكون قاطعاً: (مقبول / مرفوض / مقبول بملاحظات).
         - قدم حلولاً هندسية للمشاكل (Repair Method Statement).
-        - استخدم بيانات الـ RFIs والـ NCRs لدعم رأيك.
     `,
     site: `
         **أنت مدير الموقع والسلامة (Site & Safety Manager AI)**
         **الخبرة:** 30+ سنة في إدارة المواقع الإنشائية والسلامة (OSHA, HSE).
-        **الصلاحيات:** مراقبة كل ما يدور في الموقع لحظة بلحظة.
+        **الصلاحيات:** مراقبة كل ما يدور في الموقع لحظة بلحظة عبر اليوميات الميدانية وصورها.
         **المهام الأساسية:**
-        1. **متابعة اليوميات:** تحليل سجلات اليوميات لكشف التباطؤ، غياب العمالة، أو نقص المعدات.
-        2. **الرقابة الميدانية:**
-           - متابعة إغلاق **Checklists** في الموقع.
-           - التأكد من تنفيذ الإجراءات التصحيحية للـ **NCRs**.
-        3. **السلامة والصحة المهنية:** رصد مخالفات السلامة من الصور والتقارير (سقالات غير آمنة، عدم ارتداء PPE).
-        4. **إدارة الموارد:** هل عدد العمال والمعدات يتناسب مع حجم الأعمال المطلوب؟
-        5. **المعوقات الميدانية:** تحديد ما يعطل العمل (تداخل مقاولين، تشوين خاطئ، صعوبات لوجستية).
+        1. **القراءة والتحليل العميق لليوميات:** استخدام \`analyzeLogs\` و\`searchLogs\` لتحليل كافة سجلات اليوميات واستخراج:
+           - معدلات الأداء والإنتاج اليومية وتصنيفات الأعمال المنفذة.
+           - العمالة، المعدات، الخامات، والكميات المذكورة في اليوميات.
+           - فترات التوقف أو التباطؤ وأيام الانقطاع والأسباب المذكورة.
+        2. **التفتيش البصري على صور اليوميات:** استخدام \`analyzeLogPhotos\` لتحليل الصور المرفقة باليوميات ورصد حالة التنفيذ ومخالفات السلامة المهنية (سقالات، حفر، مهمات الوقاية PPE).
+        3. **الرقابة الميدانية:** متابعة إغلاق **Checklists** وتنفيذ الإجراءات التصحيحية للـ **NCRs**.
+        4. **المعوقات الميدانية:** تحديد ما يعطل العمل (تداخل مقاولين، تشوين خاطئ، صعوبات لوجستية) مع ذكر التواريخ الدقيقة من اليوميات.
         
         **عند الإجابة:**
-        - ركز على **"الواقع الميداني"** بعيداً عن التنظير.
-        - استخدم **"سجل المخاطر الميدانية"** (Site Risk Register).
+        - ركز على **"الواقع الميداني"** بالأرقام والتواريخ الفعلية المستخرجة من اليوميات.
+        - استخدم **"سجل المخاطر الميدانية"** (Site Risk Register) وجداول ملخص اليوميات.
         - قدم توجيهات فورية لمهندسي الموقع والمشرفين.
     `
 };
@@ -177,6 +176,232 @@ Answer with **EXTREME PRECISION** based *only* on the project data.
 
 import { Type, FunctionDeclaration } from './core';
 
+export function normalizeArabicSearchText(text: string): string {
+    return String(text || '')
+        .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u065F\u0670]/g, '')
+        .toLowerCase()
+        .trim();
+}
+
+export function normalizeDateYMD(dateStr?: string): string {
+    if (!dateStr) return '';
+    const trimmed = String(dateStr).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10);
+    const parsed = new Date(trimmed);
+    if (isNaN(parsed.getTime())) return trimmed;
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+export function resolveLogBoqInfo(log: any, boqItems: any[] = []): {
+    boqItemId?: string;
+    boqItemCode: string;
+    boqItemDescription: string;
+    boqBatchName: string;
+    label: string;
+} {
+    const matchedBoq = log?.boqItemId
+        ? boqItems.find((b: any) => b && b.id === log.boqItemId)
+        : undefined;
+    const boqItemCode = String(log?.boqItemCode || matchedBoq?.itemCode || '').trim();
+    const boqItemDescription = String(log?.boqItemDescription || matchedBoq?.description || '').trim();
+    const boqBatchName = String(log?.boqBatchName || matchedBoq?.batchName || '').trim();
+    const parts: string[] = [];
+    if (boqItemCode) parts.push(`بند ${boqItemCode}`);
+    if (boqItemDescription) parts.push(boqItemDescription.slice(0, 80));
+    if (boqBatchName) parts.push(`(${boqBatchName})`);
+    return {
+        boqItemId: log?.boqItemId,
+        boqItemCode,
+        boqItemDescription,
+        boqBatchName,
+        label: parts.join(' - ')
+    };
+}
+
+export function formatEnrichedLogLine(log: any, idx: number, boqItems: any[] = []): string {
+    const dateStr = normalizeDateYMD(log?.date) || log?.date || 'بدون تاريخ';
+    const catStr = log?.workCategory ? ` [تصنيف العمل: ${log.workCategory}]` : '';
+    const boq = resolveLogBoqInfo(log, boqItems);
+    const boqStr = boq.label ? ` [بند المقايسة: ${boq.label}]` : (log?.boqItemId ? ` [معرف البند: ${log.boqItemId}]` : '');
+    const photosCount = Array.isArray(log?.images) ? log.images.length : (log?.imageUrl ? 1 : 0);
+    const photosStr = photosCount > 0 ? ` (مرفق ${photosCount} صور ميدانية)` : '';
+    return `• [سجل ${idx + 1} | ID:${log?.id || idx + 1}] [${dateStr}]${catStr}${boqStr} ${log?.content || ''}${photosStr}`;
+}
+
+export function computeLogsAnalytics(logs: any[] = [], boqItems: any[] = []) {
+    const validLogs = (logs || []).filter(Boolean);
+    const sorted = [...validLogs].sort((a: any, b: any) => {
+        const da = normalizeDateYMD(a.date);
+        const db = normalizeDateYMD(b.date);
+        return da.localeCompare(db);
+    });
+
+    const uniqueDates = Array.from(new Set(sorted.map(l => normalizeDateYMD(l.date)).filter(Boolean))).sort();
+    const gaps: { fromDate: string; toDate: string; gapDays: number }[] = [];
+    for (let i = 1; i < uniqueDates.length; i++) {
+        const prev = new Date(`${uniqueDates[i - 1]}T00:00:00Z`).getTime();
+        const curr = new Date(`${uniqueDates[i]}T00:00:00Z`).getTime();
+        const diffDays = Math.round((curr - prev) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 3) {
+            gaps.push({ fromDate: uniqueDates[i - 1], toDate: uniqueDates[i], gapDays: diffDays - 1 });
+        }
+    }
+
+    const catMap = new Map<string, { category: string; count: number; photosCount: number; firstDate: string; lastDate: string }>();
+    const monthMap = new Map<string, { month: string; count: number; categories: Set<string>; photosCount: number }>();
+    const boqMap = new Map<string, { boqItemId: string; boqItemCode: string; boqItemDescription: string; count: number }>();
+
+    let totalPhotos = 0;
+    let logsWithPhotosCount = 0;
+
+    sorted.forEach((l: any) => {
+        const dateYmd = normalizeDateYMD(l.date);
+        const photos = Array.isArray(l.images) ? l.images.length : (l.imageUrl ? 1 : 0);
+        totalPhotos += photos;
+        if (photos > 0) logsWithPhotosCount += 1;
+
+        const cat = String(l.workCategory || 'أعمال عامة / غير مصنف').trim();
+        const prevCat = catMap.get(cat);
+        if (!prevCat) {
+            catMap.set(cat, { category: cat, count: 1, photosCount: photos, firstDate: dateYmd, lastDate: dateYmd });
+        } else {
+            prevCat.count += 1;
+            prevCat.photosCount += photos;
+            if (dateYmd && (!prevCat.firstDate || dateYmd < prevCat.firstDate)) prevCat.firstDate = dateYmd;
+            if (dateYmd && (!prevCat.lastDate || dateYmd > prevCat.lastDate)) prevCat.lastDate = dateYmd;
+        }
+
+        if (dateYmd && dateYmd.length >= 7) {
+            const ym = dateYmd.slice(0, 7);
+            const prevMonth = monthMap.get(ym);
+            if (!prevMonth) {
+                monthMap.set(ym, { month: ym, count: 1, categories: new Set(cat ? [cat] : []), photosCount: photos });
+            } else {
+                prevMonth.count += 1;
+                prevMonth.photosCount += photos;
+                if (cat) prevMonth.categories.add(cat);
+            }
+        }
+
+        const boqInfo = resolveLogBoqInfo(l, boqItems);
+        if (l.boqItemId || boqInfo.boqItemCode || boqInfo.boqItemDescription) {
+            const key = l.boqItemId || `${boqInfo.boqItemCode}|${boqInfo.boqItemDescription}`;
+            const prevBoq = boqMap.get(key);
+            if (!prevBoq) {
+                boqMap.set(key, {
+                    boqItemId: l.boqItemId || '',
+                    boqItemCode: boqInfo.boqItemCode,
+                    boqItemDescription: boqInfo.boqItemDescription,
+                    count: 1
+                });
+            } else {
+                prevBoq.count += 1;
+            }
+        }
+    });
+
+    const totalLogs = sorted.length;
+    const byWorkCategory = Array.from(catMap.values())
+        .sort((a, b) => b.count - a.count)
+        .map(c => ({
+            ...c,
+            percentage: totalLogs > 0 ? Number(((c.count / totalLogs) * 100).toFixed(1)) : 0
+        }));
+
+    const byMonth = Array.from(monthMap.values())
+        .sort((a, b) => a.month.localeCompare(b.month))
+        .map(m => ({
+            month: m.month,
+            count: m.count,
+            categories: Array.from(m.categories),
+            photosCount: m.photosCount
+        }));
+
+    const byBoqItem = Array.from(boqMap.values()).sort((a, b) => b.count - a.count);
+
+    return {
+        totalLogs,
+        uniqueActiveDays: uniqueDates.length,
+        firstDate: uniqueDates[0] || null,
+        lastDate: uniqueDates[uniqueDates.length - 1] || null,
+        totalPhotos,
+        logsWithPhotosCount,
+        gaps,
+        byWorkCategory,
+        byMonth,
+        byBoqItem
+    };
+}
+
+async function imageSourceToPart(src: string): Promise<{ inlineData: { data: string; mimeType: string } } | null> {
+    if (!src || typeof src !== 'string') return null;
+
+    if (src.startsWith('data:image/')) {
+        // Compress on canvas to keep payload light when sending multiple log photos
+        if (typeof document !== 'undefined' && typeof Image !== 'undefined') {
+            try {
+                const compressedBase64 = await new Promise<string>((resolve, reject) => {
+                    const img = new Image();
+                    const timer = setTimeout(() => reject(new Error('Image load timeout')), 4000);
+                    img.onload = () => {
+                        clearTimeout(timer);
+                        try {
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            const MAX_W = 800;
+                            const scale = img.width > MAX_W ? MAX_W / img.width : 1;
+                            canvas.width = Math.max(1, Math.round(img.width * scale));
+                            canvas.height = Math.max(1, Math.round(img.height * scale));
+                            ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            const out = canvas.toDataURL('image/jpeg', 0.68);
+                            resolve(out.split(',')[1] || '');
+                        } catch (err) {
+                            reject(err);
+                        }
+                    };
+                    img.onerror = (err) => {
+                        clearTimeout(timer);
+                        reject(err);
+                    };
+                    img.src = src;
+                });
+                if (compressedBase64) {
+                    return { inlineData: { data: compressedBase64, mimeType: 'image/jpeg' } };
+                }
+            } catch {}
+        }
+
+        const match = src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (match && match[2]) {
+            return { inlineData: { mimeType: match[1], data: match[2] } };
+        }
+        return null;
+    }
+
+    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('blob:')) {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 5000);
+            const resp = await fetch(src, { signal: controller.signal });
+            clearTimeout(timer);
+            if (!resp.ok) return null;
+            const blob = await resp.blob();
+            const file = new File([blob], 'log_photo.jpg', { type: blob.type || 'image/jpeg' });
+            const part = await fileToPart(file, true);
+            if (part?.inlineData?.data) return part;
+        } catch {}
+    }
+
+    return null;
+}
+
 function buildLiveProjectDossier(project: any): string {
     if (!project) return "لا توجد بيانات متاحة للمشروع في سجل المشروع حالياً.";
 
@@ -184,7 +409,7 @@ function buildLiveProjectDossier(project: any): string {
     const payments: any[] = project.payments || [];
     const logs: any[] = project.executionLogs || [];
     const reports: any[] = project.engineeringReports || [];
-    const soilReport = project.soilReport || '';
+    const soilReport = project.soilReport || project.soilReportAnalysis || '';
 
     const boqTotalValue = boq.reduce((sum: number, item: any) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0);
     const boqExecutedValue = boq.reduce((sum: number, item: any) => sum + ((Number(item.executedQuantity) || 0) * (Number(item.unitPrice) || 0)), 0);
@@ -211,28 +436,39 @@ function buildLiveProjectDossier(project: any): string {
         ? payments.map((p, idx) => {
             const inv = p.invoiceNumber || p.number || (idx + 1);
             const date = p.date || 'بدون تاريخ';
-            const gross = Number(p.grossAmount) || Number(p.currentWorkValue) || 0;
+            const gross = Number(p.grossAmount) || Number(p.currentWorkValue) || Number(p.grossCurrentWork) || 0;
             const net = Number(p.netAmount) || Number(p.amount) || 0;
             const cum = Number(p.cumulativeAmount) || net;
-            const ret = Number(p.retentionDeduction) || Number(p.retention) || 0;
-            const adv = Number(p.advanceDeduction) || Number(p.advancePayment) || 0;
-            const tax = Number(p.taxDeduction) || Number(p.taxes) || 0;
+            const ret = Number(p.retentionDeduction) || Number(p.retentionAmount) || Number(p.retention) || 0;
+            const adv = Number(p.advanceDeduction) || Number(p.advanceDeductionAmount) || Number(p.advancePayment) || 0;
+            const tax = Number(p.taxDeduction) || Number(p.taxesAndOtherAmount) || Number(p.taxes) || 0;
             const note = p.note || p.notes || '';
             const itemsStr = Array.isArray(p.items) && p.items.length > 0
-                ? ` | البنود المشمولة: [${p.items.map((it: any) => `بند ${it.itemCode || it.itemNumber || ''}: ك.حالية ${it.currentQuantity || 0}`).join(', ')}]`
+                ? ` | البنود المشمولة: [${p.items.map((it: any) => `بند ${it.itemCode || it.itemNumber || ''}: ك.حالية ${it.currQuantity ?? it.currentQuantity ?? 0} / إجمالي ${it.totalQuantity ?? 0}`).join(', ')}]`
                 : '';
             return `• [مستخلص ${inv}] بتاريخ: ${date} | إجمالي الأعمال: ${gross.toLocaleString()} ج.م | استقطاع ضمان أعمال: ${ret.toLocaleString()} | استقطاع دفعة مقدمة: ${adv.toLocaleString()} | ضرائب وتأمينات: ${tax.toLocaleString()} | الصافي المستحق: ${net.toLocaleString()} ج.م | التراكمي: ${cum.toLocaleString()} ج.م | ملاحظات: ${note}${itemsStr}`;
         }).join('\n')
         : "لا توجد مستخلصات مسجلة.";
 
-    // 3. Execution logs
-    const sortedLogs = [...logs].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    // 3. Execution logs with rich metadata + analytics summary
+    const sortedLogs = [...logs].sort((a: any, b: any) => normalizeDateYMD(a.date).localeCompare(normalizeDateYMD(b.date)));
+    const logsAnalytics = computeLogsAnalytics(sortedLogs, boq);
+    const logsAnalyticsText = sortedLogs.length > 0
+        ? [
+            `- إجمالي السجلات: ${logsAnalytics.totalLogs} سجل عبر ${logsAnalytics.uniqueActiveDays} يوم عمل فعلي (من ${logsAnalytics.firstDate || '-'} إلى ${logsAnalytics.lastDate || '-'})`,
+            `- إجمالي الصور الميدانية باليوميات: ${logsAnalytics.totalPhotos} صورة (في ${logsAnalytics.logsWithPhotosCount} يومية)`,
+            `- توزيع أنواع الأعمال: ${logsAnalytics.byWorkCategory.map(c => `${c.category}: ${c.count} (${c.percentage}%)`).join(' | ')}`,
+            logsAnalytics.byBoqItem.length > 0
+                ? `- البنود المرتبطة بالمقايسة: ${logsAnalytics.byBoqItem.map(b => `${b.boqItemCode ? `بند ${b.boqItemCode}` : ''} ${b.boqItemDescription.slice(0, 40)} (${b.count} سجل)`).join(' | ')}`
+                : `- البنود المرتبطة بالمقايسة: لا يوجد ربط مباشر ببنود مقايسة`,
+            logsAnalytics.gaps.length > 0
+                ? `- فترات التوقف / الانقطاع (>= 3 أيام بدون يوميات): ${logsAnalytics.gaps.map(g => `من ${g.fromDate} إلى ${g.toDate} (${g.gapDays} يوم)`).join(' | ')}`
+                : `- فترات التوقف / الانقطاع: لا توجد فترات انقطاع >= 3 أيام`
+        ].join('\n')
+        : "لا توجد إحصائيات يوميات مسجلة.";
+
     const logsFormatted = sortedLogs.length > 0
-        ? sortedLogs.map((l, idx) => {
-            const itemLink = l.boqItemId ? ` [مرتبط ببند المقايسة: ${l.boqItemId}]` : '';
-            const photosCount = Array.isArray(l.images) ? l.images.length : (l.imageUrl ? 1 : 0);
-            return `• [سجل ${idx + 1}] [${l.date}] ${l.content}${itemLink}${photosCount > 0 ? ` (مرفق ${photosCount} صور ميدانية)` : ''}`;
-        }).join('\n')
+        ? sortedLogs.map((l, idx) => formatEnrichedLogLine(l, idx, boq)).join('\n')
         : "لا توجد يوميات مسجلة.";
 
     // 4. Soil report
@@ -269,7 +505,10 @@ ${boqFormatted}
 ${paymentsFormatted}
 
 --- [3. تبويب اليوميات الميدانية وسير الأعمال (DAILY EXECUTION LOGS)] ---
-(عدد سجلات اليوميات: ${logs.length})
+(ملخص تحليلي لليوميات):
+${logsAnalyticsText}
+
+(السجل الكامل لليوميات):
 ${logsFormatted}
 
 --- [4. تبويب الجسات وفحص التربة الأساسي (SOIL REPORT)] ---
@@ -314,13 +553,46 @@ export const consultantService = {
         };
         const searchLogs: FunctionDeclaration = {
             name: "searchLogs",
-            description: "Search execution logs (اليوميات) by keywords or date range. Returns snippets. Use this to find specific events.",
+            description: "Search execution logs (اليوميات) by keywords, workCategory (تصنيف العمل), linked BOQ item, date range, or photo presence. Searches content, categories, BOQ descriptions, and dates using normalized Arabic matching.",
             parameters: {
                 type: Type.OBJECT,
                 properties: {
-                    keyword: { type: Type.STRING, description: "Keywords to search for (comma-separated for OR logic). Example: 'piles,khazouk,foundation'." },
+                    keyword: { type: Type.STRING, description: "Keywords to search for across log content, category, BOQ description, and date (comma-separated for OR logic)." },
                     startDate: { type: Type.STRING, description: "Start date (YYYY-MM-DD)." },
-                    endDate: { type: Type.STRING, description: "End date (YYYY-MM-DD)." }
+                    endDate: { type: Type.STRING, description: "End date (YYYY-MM-DD)." },
+                    workCategory: { type: Type.STRING, description: "Filter by work category (نوع العمل / البند مثل: أعمال المحارة، خرسانة، حدادة)." },
+                    boqKeyword: { type: Type.STRING, description: "Filter by linked BOQ item code or description." },
+                    hasPhotosOnly: { type: Type.BOOLEAN, description: "If true, return only logs that have attached site photos." }
+                }
+            }
+        };
+        const analyzeLogs: FunctionDeclaration = {
+            name: "analyzeLogs",
+            description: "Read and deeply analyze project daily logs (اليوميات) to compute exact statistics, active days, idle/stoppage gaps (>=3 days), breakdown by workCategory, monthly timeline, linked BOQ items, photo counts, and return full enriched log records for extracting specific data (quantities, labor, equipment, materials, issues).",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    startDate: { type: Type.STRING, description: "Optional start date filter (YYYY-MM-DD)." },
+                    endDate: { type: Type.STRING, description: "Optional end date filter (YYYY-MM-DD)." },
+                    workCategory: { type: Type.STRING, description: "Optional work category filter." },
+                    boqKeyword: { type: Type.STRING, description: "Optional linked BOQ item filter." },
+                    includeEntries: { type: Type.BOOLEAN, description: "Whether to include full enriched log entries (default true)." }
+                }
+            }
+        };
+        const analyzeLogPhotos: FunctionDeclaration = {
+            name: "analyzeLogPhotos",
+            description: "Visually inspect and analyze the actual site photos attached inside daily execution logs (صور اليوميات) to extract construction progress, workmanship quality, materials, safety violations, or answer specific questions about the photos.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    logId: { type: Type.STRING, description: "Specific log ID to inspect photos from." },
+                    date: { type: Type.STRING, description: "Specific date (YYYY-MM-DD) of the daily log." },
+                    startDate: { type: Type.STRING, description: "Start date (YYYY-MM-DD) for filtering logs with photos." },
+                    endDate: { type: Type.STRING, description: "End date (YYYY-MM-DD) for filtering logs with photos." },
+                    workCategory: { type: Type.STRING, description: "Filter logs by work category." },
+                    keyword: { type: Type.STRING, description: "Keyword filter in log content." },
+                    question: { type: Type.STRING, description: "Specific engineering, progress, quality, or safety question to inspect in the photos." }
                 }
             }
         };
@@ -363,7 +635,7 @@ export const consultantService = {
             parameters: { type: Type.OBJECT, properties: {} }
         };
 
-        const tools = [{ functionDeclarations: [getProjectInventory, readDocument, searchLogs, searchReports, searchBOQ, searchOtherDocs, getPayments] }];
+        const tools = [{ functionDeclarations: [getProjectInventory, readDocument, searchLogs, analyzeLogs, analyzeLogPhotos, searchReports, searchBOQ, searchOtherDocs, getPayments] }];
 
         // Build live dossier from the in-memory project register
         const liveDossier = buildLiveProjectDossier(project);
@@ -388,7 +660,7 @@ export const consultantService = {
             1. أنت مطلع على كافة تفاصيل سجل المشروع المذكورة أعلاه بنسبة 100%.
             2. استخدم هذه البيانات الحقيقية فقط (الأرقام، النسب، التواريخ، البنود، المستخلصات، كميات التربة، اليوميات).
             3. يمنع اختلاق أو افتراض بيانات من خارج السجل (No Hallucination).
-            4. الأدوات التفاعلية (Tools) متاحة لك دائماً للبحث التفصيلي في نصوص التقارير أو تصفية السجلات عند الحاجة.
+            4. الأدوات التفاعلية (Tools) متاحة لك دائماً: استخدم \`analyzeLogs\` و\`searchLogs\` لقراءة وتحليل **اليوميات** واستخراج أي بيانات أو إحصائيات أو فترات توقف أو عمالة أو كميات منها، واستخدم \`analyzeLogPhotos\` لتحليل الصور الميدانية المرفقة داخل اليوميات، بالإضافة إلى أدوات البحث في التقارير والمقايسة والمستخلصات.
             5. قدم مخرجات هندسية راقية مبهرة، جداول منسقة بعرض 100% مع التفاف النص، وصناديق ملونة واضحة (info-box, success-box, warning-box, cost-box).
             6. ابدأ الرد مباشرة بعنوان رئيسي <h1> ثم متن التحليل الاستشاري دون أي هيدر أزرق.
 
@@ -424,7 +696,6 @@ export const consultantService = {
                     cachedContent: cachedContentName,
                     config: {
                         systemInstruction: systemInstruction,
-                        temperature: 0.1,
                         tools: tools
                     }
                 });
@@ -487,47 +758,244 @@ export const consultantService = {
                         } else if (call.name === "readDocument") {
                             const { type, id } = args;
                             if (type === 'log') {
-                                responseData = (project.executionLogs || []).find((l: any) => l.id === id || l.date === id) || { error: "Log not found" };
+                                const logsArr = project.executionLogs || [];
+                                const boqArr = project.boqItems || [];
+                                const targetNorm = normalizeArabicSearchText(id || '');
+                                const idxNum = Number(id);
+                                const found = logsArr.find((l: any) => l.id === id || normalizeDateYMD(l.date) === normalizeDateYMD(id))
+                                    || (!isNaN(idxNum) && idxNum >= 1 && idxNum <= logsArr.length ? logsArr[idxNum - 1] : undefined)
+                                    || logsArr.find((l: any) => normalizeArabicSearchText(l.content || '').includes(targetNorm));
+                                if (found) {
+                                    const boqInfo = resolveLogBoqInfo(found, boqArr);
+                                    responseData = {
+                                        id: found.id,
+                                        date: normalizeDateYMD(found.date) || found.date,
+                                        workCategory: found.workCategory || '',
+                                        boqItemId: found.boqItemId || '',
+                                        boqItemCode: boqInfo.boqItemCode,
+                                        boqItemDescription: boqInfo.boqItemDescription,
+                                        boqBatchName: boqInfo.boqBatchName,
+                                        photosCount: Array.isArray(found.images) ? found.images.length : (found.imageUrl ? 1 : 0),
+                                        content: found.content
+                                    };
+                                } else {
+                                    responseData = { error: "Log not found" };
+                                }
                             } else if (type === 'report') {
                                 responseData = (project.engineeringReports || []).find((r: any) => r.id === id || r.title === id) || { error: "Report not found" };
                                 if (responseData.error && (id === 'soil' || id.includes('تربة'))) {
-                                    responseData = { title: 'تقرير الجسات الأساسي', content: project.soilReport };
+                                    responseData = { title: 'تقرير الجسات الأساسي', content: project.soilReport || project.soilReportAnalysis };
                                 }
                             } else if (type === 'boq') {
-                                responseData = (project.boqItems || []).filter((i: any) => i.category === id || i.itemCode === id) || { error: "BOQ items not found" };
+                                responseData = (project.boqItems || []).filter((i: any) => i.category === id || i.itemCode === id || i.id === id) || { error: "BOQ items not found" };
                             } else if (type === 'payment') {
-                                responseData = (project.payments || []).find((p: any) => p.id === id) || { error: "Payment not found" };
+                                responseData = (project.payments || []).find((p: any) => p.id === id || String(p.invoiceNumber) === String(id)) || { error: "Payment not found" };
                             }
                         } else if (call.name === "searchLogs") {
-                            let logs = [...(project.executionLogs || [])].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                            if (args.startDate) {
-                                logs = logs.filter((l: any) => new Date(l.date) >= new Date(args.startDate));
+                            const boqArr = project.boqItems || [];
+                            let logs = [...(project.executionLogs || [])].sort((a: any, b: any) => normalizeDateYMD(b.date).localeCompare(normalizeDateYMD(a.date)));
+                            const startYmd = normalizeDateYMD(args.startDate);
+                            const endYmd = normalizeDateYMD(args.endDate);
+                            if (startYmd) {
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) >= startYmd);
                             }
-                            if (args.endDate) {
-                                logs = logs.filter((l: any) => new Date(l.date) <= new Date(args.endDate));
+                            if (endYmd) {
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) <= endYmd);
                             }
-                            if (args.keyword) {
-                                const keywords = args.keyword.toLowerCase().split(',').map((k: string) => k.trim()).filter((k: string) => k.length > 0);
+                            if (args.workCategory) {
+                                const catNorm = normalizeArabicSearchText(args.workCategory);
+                                logs = logs.filter((l: any) => normalizeArabicSearchText(l.workCategory || '').includes(catNorm));
+                            }
+                            if (args.boqKeyword) {
+                                const boqNorm = normalizeArabicSearchText(args.boqKeyword);
                                 logs = logs.filter((l: any) => {
-                                    const content = (l.content || '').toLowerCase();
-                                    return keywords.some((k: string) => content.includes(k));
+                                    const bInfo = resolveLogBoqInfo(l, boqArr);
+                                    const combinedBoq = normalizeArabicSearchText(`${bInfo.boqItemCode} ${bInfo.boqItemDescription} ${bInfo.boqBatchName} ${l.boqItemId || ''}`);
+                                    return combinedBoq.includes(boqNorm);
                                 });
                             }
-                            
-                            // STRATEGY: If keyword is present, return ALL matches (up to 1000) to ensure "infinite accuracy".
-                            // If no keyword (browsing), limit to 100 to save tokens.
-                            const limit = args.keyword ? 1000 : 100;
-                            
-                            responseData = { 
+                            if (args.hasPhotosOnly) {
+                                logs = logs.filter((l: any) => (Array.isArray(l.images) && l.images.length > 0) || Boolean(l.imageUrl));
+                            }
+                            if (args.keyword) {
+                                const keywords = String(args.keyword).split(',').map((k: string) => normalizeArabicSearchText(k)).filter((k: string) => k.length > 0);
+                                logs = logs.filter((l: any) => {
+                                    const bInfo = resolveLogBoqInfo(l, boqArr);
+                                    const searchable = normalizeArabicSearchText(`${l.date || ''} ${l.workCategory || ''} ${bInfo.boqItemCode} ${bInfo.boqItemDescription} ${bInfo.boqBatchName} ${l.content || ''}`);
+                                    return keywords.some((k: string) => searchable.includes(k));
+                                });
+                            }
+
+                            const limit = (args.keyword || args.workCategory || args.boqKeyword || startYmd || endYmd) ? 500 : 150;
+
+                            responseData = {
                                 totalFound: logs.length,
                                 showing: Math.min(logs.length, limit),
-                                hint: logs.length > limit ? `Showing top ${limit} results. Please refine search.` : "",
-                                logs: logs.slice(0, limit).map((l: any) => ({ 
-                                    id: l.id, 
-                                    date: l.date, 
-                                    content: l.content 
-                                })) 
+                                hint: logs.length > limit ? `Showing top ${limit} results. Please refine date range or keywords.` : "",
+                                logs: logs.slice(0, limit).map((l: any) => {
+                                    const bInfo = resolveLogBoqInfo(l, boqArr);
+                                    return {
+                                        id: l.id,
+                                        date: normalizeDateYMD(l.date) || l.date,
+                                        workCategory: l.workCategory || '',
+                                        boqItemId: l.boqItemId || '',
+                                        boqItemCode: bInfo.boqItemCode,
+                                        boqItemDescription: bInfo.boqItemDescription,
+                                        boqBatchName: bInfo.boqBatchName,
+                                        photosCount: Array.isArray(l.images) ? l.images.length : (l.imageUrl ? 1 : 0),
+                                        content: l.content
+                                    };
+                                })
                             };
+                        } else if (call.name === "analyzeLogs") {
+                            const boqArr = project.boqItems || [];
+                            let logs = [...(project.executionLogs || [])].sort((a: any, b: any) => normalizeDateYMD(a.date).localeCompare(normalizeDateYMD(b.date)));
+                            const startYmd = normalizeDateYMD(args.startDate);
+                            const endYmd = normalizeDateYMD(args.endDate);
+                            if (startYmd) {
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) >= startYmd);
+                            }
+                            if (endYmd) {
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) <= endYmd);
+                            }
+                            if (args.workCategory) {
+                                const catNorm = normalizeArabicSearchText(args.workCategory);
+                                logs = logs.filter((l: any) => normalizeArabicSearchText(l.workCategory || '').includes(catNorm));
+                            }
+                            if (args.boqKeyword) {
+                                const boqNorm = normalizeArabicSearchText(args.boqKeyword);
+                                logs = logs.filter((l: any) => {
+                                    const bInfo = resolveLogBoqInfo(l, boqArr);
+                                    return normalizeArabicSearchText(`${bInfo.boqItemCode} ${bInfo.boqItemDescription} ${bInfo.boqBatchName}`).includes(boqNorm);
+                                });
+                            }
+
+                            const analytics = computeLogsAnalytics(logs, boqArr);
+                            const includeEntries = args.includeEntries !== false;
+                            const entriesLimit = 300;
+
+                            responseData = {
+                                analytics,
+                                entriesIncluded: includeEntries ? Math.min(logs.length, entriesLimit) : 0,
+                                logs: includeEntries
+                                    ? logs.slice(0, entriesLimit).map((l: any) => {
+                                        const bInfo = resolveLogBoqInfo(l, boqArr);
+                                        return {
+                                            id: l.id,
+                                            date: normalizeDateYMD(l.date) || l.date,
+                                            workCategory: l.workCategory || '',
+                                            boqItemCode: bInfo.boqItemCode,
+                                            boqItemDescription: bInfo.boqItemDescription,
+                                            photosCount: Array.isArray(l.images) ? l.images.length : (l.imageUrl ? 1 : 0),
+                                            content: l.content
+                                        };
+                                    })
+                                    : []
+                            };
+                        } else if (call.name === "analyzeLogPhotos") {
+                            const boqArr = project.boqItems || [];
+                            let logs = [...(project.executionLogs || [])]
+                                .filter((l: any) => (Array.isArray(l?.images) && l.images.length > 0) || Boolean(l?.imageUrl))
+                                .sort((a: any, b: any) => normalizeDateYMD(b.date).localeCompare(normalizeDateYMD(a.date)));
+
+                            if (args.logId) {
+                                logs = logs.filter((l: any) => l.id === args.logId);
+                            }
+                            if (args.date) {
+                                const targetDate = normalizeDateYMD(args.date);
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) === targetDate);
+                            }
+                            if (args.startDate) {
+                                const sYmd = normalizeDateYMD(args.startDate);
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) >= sYmd);
+                            }
+                            if (args.endDate) {
+                                const eYmd = normalizeDateYMD(args.endDate);
+                                logs = logs.filter((l: any) => normalizeDateYMD(l.date) <= eYmd);
+                            }
+                            if (args.workCategory) {
+                                const catNorm = normalizeArabicSearchText(args.workCategory);
+                                logs = logs.filter((l: any) => normalizeArabicSearchText(l.workCategory || '').includes(catNorm));
+                            }
+                            if (args.keyword) {
+                                const kws = String(args.keyword).split(',').map((k: string) => normalizeArabicSearchText(k)).filter(Boolean);
+                                logs = logs.filter((l: any) => {
+                                    const bInfo = resolveLogBoqInfo(l, boqArr);
+                                    const text = normalizeArabicSearchText(`${l.content || ''} ${l.workCategory || ''} ${bInfo.boqItemDescription}`);
+                                    return kws.some(k => text.includes(k));
+                                });
+                            }
+
+                            const photoEntries: { logId: string; date: string; workCategory: string; content: string; src: string; photoIndex: number }[] = [];
+                            for (const l of logs) {
+                                const imgs: string[] = Array.isArray(l.images) && l.images.length > 0
+                                    ? l.images
+                                    : (l.imageUrl ? [l.imageUrl] : []);
+                                imgs.forEach((src, i) => {
+                                    if (photoEntries.length < 6) {
+                                        photoEntries.push({
+                                            logId: l.id,
+                                            date: normalizeDateYMD(l.date) || l.date,
+                                            workCategory: l.workCategory || '',
+                                            content: l.content || '',
+                                            src,
+                                            photoIndex: i + 1
+                                        });
+                                    }
+                                });
+                                if (photoEntries.length >= 6) break;
+                            }
+
+                            if (photoEntries.length === 0) {
+                                responseData = {
+                                    matchedLogsCount: logs.length,
+                                    analyzedPhotosCount: 0,
+                                    message: "لا توجد صور ميدانية مرفقة في اليوميات المطابقة لمعايير البحث."
+                                };
+                            } else {
+                                const visionParts: any[] = [];
+                                const convertedLabels: string[] = [];
+                                for (const entry of photoEntries) {
+                                    const part = await imageSourceToPart(entry.src);
+                                    if (part) {
+                                        visionParts.push({ text: `[صورة ${convertedLabels.length + 1} | تاريخ اليومية: ${entry.date} | التصنيف: ${entry.workCategory || 'عام'} | وصف اليومية: ${entry.content.slice(0, 150)}]` });
+                                        visionParts.push(part);
+                                        convertedLabels.push(`${entry.date} (#${entry.photoIndex})`);
+                                    }
+                                }
+
+                                if (convertedLabels.length === 0) {
+                                    responseData = {
+                                        matchedLogsCount: logs.length,
+                                        totalPhotosMatched: photoEntries.length,
+                                        analyzedPhotosCount: 0,
+                                        message: "تم العثور على صور مرتبطة باليوميات ولكن تعذر تحميلها للتحليل البصري حالياً."
+                                    };
+                                } else {
+                                    const visionPrompt = `
+أنت مهندس استشاري وخبير ضبط جودة وسلامة مهنية. حلّل صور اليوميات الميدانية المرفقة بدقة وموضوعية طبقاً للكود المصري (ECP) واشتراطات السلامة (OSHA).
+${args.question ? `السؤال المطلوب الإجابة عليه من الصور: "${args.question}"` : 'استخرج لكل صورة: الأعمال المنفذة الظاهرة، الخامات والمعدات، جودة التنفيذ والملاحظات الفنية، وأي ملاحظات سلامة أو عيوب إن وجدت.'}
+اذكر رقم الصورة وتاريخ اليومية بوضوح ولا تفترض تفاصيل غير ظاهرة في الصور.`;
+                                    visionParts.push({ text: visionPrompt });
+                                    try {
+                                        const visionRes = await safeGenerateContent(MODEL_SMART, {
+                                            contents: [{ role: 'user', parts: visionParts }]
+                                        });
+                                        responseData = {
+                                            matchedLogsCount: logs.length,
+                                            analyzedPhotosCount: convertedLabels.length,
+                                            analyzedPhotoTags: convertedLabels,
+                                            visualAnalysis: visionRes.text
+                                        };
+                                    } catch (visionErr) {
+                                        responseData = {
+                                            matchedLogsCount: logs.length,
+                                            analyzedPhotosCount: 0,
+                                            error: "تعذر إتمام التحليل البصري لصور اليوميات حالياً."
+                                        };
+                                    }
+                                }
+                            }
                         } else if (call.name === "searchReports") {
                             let reports = [...(project.engineeringReports || [])].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
                             if (args.type) reports = reports.filter((r: any) => r.type === args.type);
@@ -654,8 +1122,7 @@ export const consultantService = {
             const finalSynthesis = await safeGenerateContent(currentModel, {
                 contents,
                 config: {
-                    systemInstruction,
-                    temperature: 0.1
+                    systemInstruction
                 }
             });
             let synthesizedText = (finalSynthesis.text || '').replace(/^```html/i, '').replace(/^```/i, '').replace(/```$/i, '');
@@ -742,8 +1209,7 @@ export const consultantService = {
             const result = await safeGenerateContent(MODEL_SMART, {
                 contents: [{ role: 'user', parts }],
                 config: { 
-                    systemInstruction,
-                    temperature: 0.3
+                    systemInstruction
                 }
             });
             return result.text + getAiFooter(result.usedModel);
@@ -769,7 +1235,7 @@ export const consultantService = {
                     </ul>
                 </div>
                 <div class="warning-box editable-box">
-                    <strong>ملاحظة هامة:</strong> لتفعيل التحليل المباشر بالذكاء الاصطناعي، يرجى التأكد من إضافة مفتاح Gemini الخاص بك من صندوق مفاتيح Gemini بأعلى التطبيق.
+                    <strong>ملاحظة هامة:</strong> تعذر الاتصال الفوري بالخدمة الذكية حالياً، يتم عرض الإرشادات الهندسية القياسية لحين استعادة الاتصال.
                 </div>
                 ${getAiFooter('ECP-Consultant-Offline')}
             `;

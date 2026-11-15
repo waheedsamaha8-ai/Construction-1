@@ -1,5 +1,5 @@
 
-// This file now aggregates specialized services from the 'ai' directory.
+// This file aggregates specialized services from the 'ai' directory.
 // This preserves backward compatibility for imports throughout the app.
 
 import { marketService } from './ai/market';
@@ -9,15 +9,12 @@ export type { StoredAiTip } from './ai/tips';
 import { consultantService } from './ai/consultant';
 import { analysisService } from './ai/analysis';
 
-import { safeGenerateStream, connectLiveApi, getSmartKeyStatus, rotateCustomApiKey, getCustomApiKeys } from './ai/core';
+import { safeGenerateStream, connectLiveApi } from './ai/core';
 
 export const aiHelper = {
     // --- Live API & Streaming ---
     stream: safeGenerateStream,
     connectLiveApi,
-    getSmartKeyStatus,
-    rotateCustomApiKey,
-    getCustomApiKeys,
 
     // --- Consultant & Agents ---
     ...consultantService,

@@ -5,12 +5,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { Readable } from 'stream';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Modality, type LiveServerMessage } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- LOAD .ENV IF PRESENT ---
+// --- LOAD .ENV IF PRESENT (NEVER OVERWRITING EXISTING PROCESS ENV) ---
 if (fs.existsSync('.env')) {
   try {
     const envContent = fs.readFileSync('.env', 'utf-8');
@@ -31,61 +31,47 @@ if (fs.existsSync('.env')) {
   }
 }
 
-const SYNCED_KEYS_FILE = path.resolve(__dirname, '.synced_gemini_keys.json');
+// --- SERVER-ONLY GEMINI API KEY MANAGEMENT ---
 const deadKeysSet = new Set<string>();
 
-const loadSyncedUserKeys = (): string[] => {
-  try {
-    if (fs.existsSync(SYNCED_KEYS_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(SYNCED_KEYS_FILE, 'utf-8'));
-      if (Array.isArray(parsed)) {
-        return parsed.map(k => String(k || '').trim()).filter(k => k.length > 10 && !deadKeysSet.has(k));
-      }
-    }
-  } catch (e) {}
-  return [];
-};
-
-const saveSyncedUserKeys = (keys: string[]) => {
-  try {
-    const existing = loadSyncedUserKeys();
-    const merged = [...new Set([...keys, ...existing])].filter(k => k && k.length > 10 && !deadKeysSet.has(k));
-    fs.writeFileSync(SYNCED_KEYS_FILE, JSON.stringify(merged, null, 2), 'utf-8');
-    return merged;
-  } catch (e) {
-    return keys;
-  }
-};
-
-// --- MULTI-KEY ROTATION & API KEY SETUP ---
-const collectEnvKeys = (): string[] => {
-  const envCandidates = [
+const collectServerEnvKeys = (): string[] => {
+  const candidates = [
     process.env.GEMINI_API_KEY,
-    process.env.VITE_GEMINI_API_KEY,
     process.env.GOOGLE_API_KEY,
     process.env.API_KEY,
-    process.env.VITE_API_KEY,
   ];
-  const keys: string[] = [...loadSyncedUserKeys()];
-  for (const cand of envCandidates) {
-    if (cand) {
-      const parts = cand.split(',').map(k => k.trim()).filter(k => k.length > 0 && !deadKeysSet.has(k));
-      keys.push(...parts);
-    }
+  const keys: string[] = [];
+  for (const cand of candidates) {
+    if (!cand) continue;
+    const parts = cand
+      .split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0 && !deadKeysSet.has(k));
+    keys.push(...parts);
   }
   return [...new Set(keys)];
 };
 
-let API_KEYS = collectEnvKeys();
-let currentKeyIndex = API_KEYS.length > 0 ? Math.floor(Math.random() * API_KEYS.length) : 0;
+let currentKeyIndex = 0;
 
-const getAiClient = (overrideKey?: string) => {
-  const customKey = overrideKey?.trim();
-  const key = customKey || (API_KEYS.length > 0 ? API_KEYS[currentKeyIndex % API_KEYS.length] : (process.env.GEMINI_API_KEY || process.env.API_KEY || ''));
+const getActiveServerKey = (): string => {
+  const keys = collectServerEnvKeys();
+  if (keys.length === 0) return '';
+  return keys[currentKeyIndex % keys.length];
+};
+
+const rotateServerKey = (): boolean => {
+  const keys = collectServerEnvKeys();
+  if (keys.length <= 1) return false;
+  currentKeyIndex = (currentKeyIndex + 1) % keys.length;
+  return true;
+};
+
+const getAiClient = (apiKeyOverride?: string) => {
+  const apiKey = apiKeyOverride || getActiveServerKey() || process.env.GEMINI_API_KEY || '';
   return new GoogleGenAI({
-    apiKey: key,
+    apiKey,
     httpOptions: {
-      apiVersion: 'v1beta',
       headers: {
         'User-Agent': 'aistudio-build',
       },
@@ -93,30 +79,87 @@ const getAiClient = (overrideKey?: string) => {
   });
 };
 
-const rotateKey = () => {
-  if (API_KEYS.length <= 1) return false;
-  currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-  console.warn(`Rotating to Gemini API Key #${(currentKeyIndex % API_KEYS.length) + 1}...`);
-  return true;
+// --- ACTIVE MODEL SELECTION & CONFIG SANITIZATION ---
+const PRIMARY_MODEL = 'gemini-4-hydrogen';
+const FALLBACK_MODELS = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+const DEFAULT_LIVE_MODEL = 'gemini-3.8-live';
+
+const normalizeModel = (model?: string): string => {
+  if (!model || typeof model !== 'string') return PRIMARY_MODEL;
+  const m = model.trim();
+  if (!m) return PRIMARY_MODEL;
+  if (
+    m.includes('1.5') ||
+    m.includes('2.0') ||
+    m.includes('gemini-pro') ||
+    m === 'gemini-3.8-flash' ||
+    m.includes('preview') ||
+    m.includes('latest')
+  ) {
+    return PRIMARY_MODEL;
+  }
+  return m;
 };
 
-// Supported standard Gemini models
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+const sanitizeConfigForModel = (model: string, config: any) => {
+  if (!config || typeof config !== 'object') return undefined;
+  const cleaned = { ...config };
+  if (cleaned.tools === undefined) delete cleaned.tools;
 
-const normalizeModel = (model: string | undefined): string => {
-  if (!model) return 'gemini-3.8-flash';
-  if (model.includes('2.') || model.includes('1.')) return 'gemini-3.8-flash';
-  return model;
+  // Gemini 4 models do not accept deprecated sampling parameters or thinkingBudget
+  if (model.startsWith('gemini-4-')) {
+    delete cleaned.temperature;
+    delete cleaned.topP;
+    delete cleaned.topK;
+    delete cleaned.candidateCount;
+    if (cleaned.thinkingConfig && typeof cleaned.thinkingConfig === 'object') {
+      const tc = { ...cleaned.thinkingConfig };
+      delete tc.thinkingBudget;
+      if (Object.keys(tc).length === 0) {
+        delete cleaned.thinkingConfig;
+      } else {
+        cleaned.thinkingConfig = tc;
+      }
+    }
+  }
+
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+};
+
+const extractErrorInfo = (error: any): { status: number; message: string } => {
+  const rawStatus = Number(error?.status || error?.statusCode || error?.code);
+  const msg = String(error?.message || error || 'Gemini API request failed');
+  const lower = msg.toLowerCase();
+
+  if (Number.isFinite(rawStatus) && rawStatus >= 400 && rawStatus < 600) {
+    return { status: rawStatus, message: msg };
+  }
+  if (lower.includes('permission_denied') || lower.includes('403')) {
+    return { status: 403, message: msg };
+  }
+  if (lower.includes('api_key_invalid') || lower.includes('api key not valid') || lower.includes('invalid argument')) {
+    return { status: 400, message: msg };
+  }
+  if (lower.includes('not_found') || lower.includes('not found') || lower.includes('404')) {
+    return { status: 404, message: msg };
+  }
+  if (lower.includes('resource_exhausted') || lower.includes('quota') || lower.includes('429')) {
+    return { status: 429, message: msg };
+  }
+  if (lower.includes('unavailable') || lower.includes('503')) {
+    return { status: 503, message: msg };
+  }
+  return { status: 500, message: msg };
 };
 
 const app = express();
 const server = createHttpServer(app);
 
-// Enable CORS for Mobile PWA & GitHub Pages cross-origin requests
+// Enable CORS for cross-origin requests
 app.use((req: Request, res: Response, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Gemini-Api-Key, Authorization, Range');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -204,201 +247,141 @@ app.get('/api/drive/stream/:fileId', async (req: Request, res: Response) => {
   }
 });
 
-// Cross-Device Gemini Key Sync Endpoint
-app.get('/api/gemini/keys', (_req: Request, res: Response) => {
-  const synced = loadSyncedUserKeys();
-  res.json({ keys: synced });
-});
-
-app.post('/api/gemini/keys', (req: Request, res: Response) => {
-  const incoming = Array.isArray(req.body?.keys) ? req.body.keys : [];
-  const cleaned = incoming.map((k: any) => String(k || '').trim()).filter((k: string) => k.length > 10);
-  if (cleaned.length === 0 && req.body?.clear === true) {
-    try {
-      if (fs.existsSync(SYNCED_KEYS_FILE)) fs.unlinkSync(SYNCED_KEYS_FILE);
-    } catch (e) {}
-    API_KEYS = collectEnvKeys();
-    return res.json({ keys: [] });
-  }
-  const merged = saveSyncedUserKeys(cleaned);
-  API_KEYS = collectEnvKeys();
-  res.json({ keys: merged });
-});
-
 // --- GEMINI GENERATE CONTENT ENDPOINT ---
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config, cachedContent, apiKey: bodyKey, apiKeys: bodyKeys } = req.body;
-  const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
-  const customUserKey = (headerKey || bodyKey || '').trim();
+  const { model: requestedModel, contents, config, cachedContent } = req.body || {};
 
-  const manualUserKeys: string[] = [];
-  if (customUserKey && !deadKeysSet.has(customUserKey)) manualUserKeys.push(customUserKey);
-  if (Array.isArray(bodyKeys)) {
-    for (const k of bodyKeys) {
-      const trimmed = String(k || '').trim();
-      if (trimmed && !deadKeysSet.has(trimmed) && !manualUserKeys.includes(trimmed)) {
-        manualUserKeys.push(trimmed);
-      }
-    }
+  if (!contents) {
+    return res.status(400).json({ error: 'Missing required field: contents' });
   }
 
-  // Persist any user-provided keys so mobile devices sharing this server automatically benefit
-  if (manualUserKeys.length > 0) {
-    saveSyncedUserKeys(manualUserKeys);
+  const serverKeys = collectServerEnvKeys();
+  if (serverKeys.length === 0) {
+    return res.status(500).json({ error: 'Gemini API key is not configured on the server.' });
   }
-
-  const syncedKeys = loadSyncedUserKeys();
-  for (const sk of syncedKeys) {
-    if (!manualUserKeys.includes(sk) && !deadKeysSet.has(sk)) {
-      manualUserKeys.push(sk);
-    }
-  }
-
-  API_KEYS = collectEnvKeys();
-  const activeEnvKeys = API_KEYS;
 
   const primaryModel = normalizeModel(requestedModel);
+  const modelSequence = [...new Set([primaryModel, ...FALLBACK_MODELS])];
 
-  // Build candidate keys: try all manually entered / synced user keys first, then fall back to server env keys
-  const keyCandidates: (string | undefined)[] = manualUserKeys.length > 0
-    ? [...manualUserKeys, ...(activeEnvKeys.length > 0 ? [undefined] : [])]
-    : (activeEnvKeys.length > 0 ? [undefined] : []);
+  let lastErrInfo = { status: 500, message: 'Failed to generate content' };
 
-  for (const candidateKey of keyCandidates) {
-    // When using a user's manually entered AI Studio key, include standard public Gemini model IDs first
-    const modelSequence = candidateKey
-      ? ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite']
-      : [primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
-    const uniqueSequence = [...new Set(modelSequence)];
+  for (const model of modelSequence) {
+    const activeKeys = collectServerEnvKeys();
+    const maxAttempts = Math.max(1, activeKeys.length);
 
-    for (const model of uniqueSequence) {
-      const maxAttempts = candidateKey ? 1 : Math.max(1, activeEnvKeys.length);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const currentKey = getActiveServerKey();
+      if (!currentKey) break;
 
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const activeKeyUsed = candidateKey || (activeEnvKeys.length > 0 ? activeEnvKeys[currentKeyIndex % activeEnvKeys.length] : '');
-        if (!activeKeyUsed || deadKeysSet.has(activeKeyUsed)) {
-          if (!candidateKey && activeEnvKeys.length > 1) {
-            rotateKey();
+      const hasSearchTool = Array.isArray(config?.tools) && config.tools.some((t: any) => t.googleSearch);
+      const configVariants = hasSearchTool
+        ? [config, { ...config, tools: undefined }]
+        : [config];
+
+      for (const activeConfig of configVariants) {
+        try {
+          const client = getAiClient(currentKey);
+          const requestParams: any = {
+            model,
+            contents,
+          };
+
+          const sanitized = sanitizeConfigForModel(model, activeConfig);
+          if (sanitized) {
+            requestParams.config = sanitized;
+          }
+          if (cachedContent && String(cachedContent).startsWith('cachedContents/')) {
+            requestParams.cachedContent = cachedContent;
+          }
+
+          const response = await client.models.generateContent(requestParams);
+          const hasText = typeof response?.text === 'string' && response.text.length > 0;
+          const hasFunctionCalls = Array.isArray(response?.functionCalls) && response.functionCalls.length > 0;
+
+          if (response && (hasText || hasFunctionCalls)) {
+            return res.json({
+              text: hasText ? response.text : '',
+              functionCalls: response.functionCalls || null,
+              modelContent: response.candidates?.[0]?.content || null,
+              usedModel: model,
+            });
+          }
+
+          return res.json({
+            text: response?.text || '',
+            functionCalls: null,
+            modelContent: response?.candidates?.[0]?.content || null,
+            usedModel: model,
+          });
+        } catch (error: any) {
+          lastErrInfo = extractErrorInfo(error);
+          const msgLower = lastErrInfo.message.toLowerCase();
+
+          // If googleSearch failed (e.g., combined with structured JSON schema), retry once without googleSearch
+          if (activeConfig?.tools && hasSearchTool) {
             continue;
           }
-          break;
-        }
 
-        // If config has tools (e.g., googleSearch), try with tools first, then retry once without tools if grounding quota is exhausted
-        const hasSearchTool = Array.isArray(config?.tools) && config.tools.some((t: any) => t.googleSearch);
-        const configVariants = hasSearchTool
-          ? [config, { ...config, tools: undefined }]
-          : [config];
+          if (lastErrInfo.status === 404) {
+            break;
+          }
 
-        for (const activeConfig of configVariants) {
-          try {
-            const client = getAiClient(activeKeyUsed);
-            const requestParams: any = {
-              model,
-              contents,
-            };
-
-            if (activeConfig) {
-              const cleanedConfig = { ...activeConfig };
-              if (cleanedConfig.tools === undefined) delete cleanedConfig.tools;
-              if (Object.keys(cleanedConfig).length > 0) {
-                requestParams.config = cleanedConfig;
-              }
-            }
-            if (cachedContent && String(cachedContent).startsWith('cachedContents/')) {
-              requestParams.cachedContent = cachedContent;
-            }
-
-            const response = await client.models.generateContent(requestParams);
-            const hasText = typeof response?.text === 'string' && response.text.length > 0;
-            const hasFunctionCalls = Array.isArray(response?.functionCalls) && response.functionCalls.length > 0;
-
-            if (response && (hasText || hasFunctionCalls)) {
-              return res.json({
-                text: hasText ? response.text : '',
-                functionCalls: response.functionCalls || null,
-                modelContent: response.candidates?.[0]?.content || null,
-                usedModel: model,
-              });
-            }
-          } catch (error: any) {
-            const status = error.status || 0;
-            const msg = (error.message || '').toLowerCase();
-
-            // If googleSearch tool failed, let the inner loop immediately try without googleSearch
-            if (activeConfig?.tools && hasSearchTool) {
+          if (
+            lastErrInfo.status === 400 ||
+            lastErrInfo.status === 403 ||
+            msgLower.includes('api_key_invalid') ||
+            msgLower.includes('api key not valid') ||
+            msgLower.includes('leaked')
+          ) {
+            if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
+              deadKeysSet.add(currentKey);
+              rotateServerKey();
               continue;
             }
-
-            if (status === 404 || msg.includes('404') || msg.includes('not found')) {
-              break;
-            }
-
-            if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('api key not valid') || msg.includes('permission_denied') || msg.includes('leaked')) {
-              if (msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('leaked')) {
-                deadKeysSet.add(activeKeyUsed);
-                API_KEYS = collectEnvKeys();
-              }
-              if (!candidateKey && API_KEYS.length > 0) {
-                rotateKey();
-              }
-              break;
-            }
-
-            if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
-              if (!candidateKey && activeEnvKeys.length > 1 && rotateKey()) {
-                await new Promise(r => setTimeout(r, 300));
-                continue;
-              }
-              break;
-            }
+            break;
           }
+
+          if (lastErrInfo.status === 429 || lastErrInfo.status === 503) {
+            if (rotateServerKey()) {
+              await new Promise(r => setTimeout(r, 250));
+              continue;
+            }
+            await new Promise(r => setTimeout(r, 350));
+            break;
+          }
+
+          break;
         }
       }
     }
   }
 
-  return res.json({
-    text: `
-        <div class="warning-box editable-box">
-            <strong><i class="fa-solid fa-brain-circuit"></i> وضع الاستمرارية الهندسية (Rate Limit Protection)</strong><br/>
-            تم تجاوز حصة طلبات الذكاء الاصطناعي المؤقتة. تم تفعيل الاستجابة التلقائية المعتمدة على الكود المصري.
-        </div>
-        <div class="info-box editable-box">
-            <strong>القواعد الهندسية الأساسية (ECP Standard):</strong><br>
-            1. يجب دائماً مطابقة التنفيذ مع المواصفات الفنية المعتمدة للمشروع.<br>
-            2. أي تأخير في التوريدات يجب معالجته فوراً بتوفير بدائل معتمدة.<br>
-            3. جودة التنفيذ هي الأولوية القصوى لتجنب أوامر الإصلاح (NCRs).<br>
-            4. التنسيق بين المكتب الفني والموقع هو مفتاح النجاح.
-        </div>
-        <!-- Generated by ConstructionPro AI (Emergency-Quota-Protection) -->
-    `,
-    functionCalls: null,
-    usedModel: 'Emergency-Quota-Protection',
+  return res.status(lastErrInfo.status).json({
+    error: lastErrInfo.message,
+    status: lastErrInfo.status,
   });
 });
 
 // --- GEMINI STREAMING ENDPOINT (Server-Sent Events) ---
 app.post('/api/gemini/stream', async (req: Request, res: Response) => {
-  const { model: requestedModel, contents, config, apiKey: bodyKey, apiKeys: bodyKeys } = req.body;
-  const headerKey = (req.headers['x-gemini-api-key'] as string) || '';
-  const customUserKey = (headerKey || bodyKey || '').trim();
+  const { model: requestedModel, contents, config } = req.body || {};
 
-  const manualUserKeys: string[] = [];
-  if (customUserKey) manualUserKeys.push(customUserKey);
-  if (Array.isArray(bodyKeys)) {
-    for (const k of bodyKeys) {
-      const trimmed = String(k || '').trim();
-      if (trimmed && !manualUserKeys.includes(trimmed)) {
-        manualUserKeys.push(trimmed);
-      }
-    }
+  if (!contents) {
+    return res.status(400).json({ error: 'Missing required field: contents' });
+  }
+
+  const serverKeys = collectServerEnvKeys();
+  if (serverKeys.length === 0) {
+    return res.status(500).json({ error: 'Gemini API key is not configured on the server.' });
   }
 
   const primaryModel = normalizeModel(requestedModel);
-  const keyCandidates: (string | undefined)[] = manualUserKeys.length > 0
-    ? [...manualUserKeys, undefined]
-    : [undefined];
+  const modelSequence = [...new Set([primaryModel, ...FALLBACK_MODELS])];
+
+  let clientDisconnected = false;
+  req.on('close', () => {
+    clientDisconnected = true;
+  });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -406,25 +389,29 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
   res.flushHeaders();
 
   let streamedSuccessfully = false;
-  let lastError: any = null;
+  let lastErrInfo = { status: 500, message: 'Streaming failed' };
 
-  for (const candidateKey of keyCandidates) {
-    if (streamedSuccessfully) break;
-    const sequence = candidateKey
-      ? ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', primaryModel, ...FALLBACK_MODELS]
-      : [primaryModel, ...FALLBACK_MODELS];
-    const uniqueSequence = [...new Set(sequence)];
+  for (const model of modelSequence) {
+    if (streamedSuccessfully || clientDisconnected) break;
+    const activeKeys = collectServerEnvKeys();
+    const maxAttempts = Math.max(1, activeKeys.length);
 
-    for (const model of uniqueSequence) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (streamedSuccessfully || clientDisconnected) break;
+      const currentKey = getActiveServerKey();
+      if (!currentKey) break;
+
       try {
-        const client = getAiClient(candidateKey);
+        const client = getAiClient(currentKey);
+        const sanitized = sanitizeConfigForModel(model, config);
         const responseStream = await client.models.generateContentStream({
           model,
           contents,
-          config,
+          ...(sanitized ? { config: sanitized } : {}),
         });
 
         for await (const chunk of responseStream) {
+          if (clientDisconnected || res.writableEnded) break;
           if (chunk.text) {
             res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
           }
@@ -432,25 +419,33 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
         streamedSuccessfully = true;
         break;
       } catch (error: any) {
-        lastError = error;
-        const status = error.status || 0;
-        const msg = (error.message || '').toLowerCase();
-        console.warn(`Streaming attempt with model ${model} failed:`, error.message || error);
-        if (status === 400 || status === 403 || msg.includes('api_key') || msg.includes('permission_denied') || msg.includes('leaked')) {
+        lastErrInfo = extractErrorInfo(error);
+        const msgLower = lastErrInfo.message.toLowerCase();
+        console.warn(`Streaming attempt with model ${model} failed:`, lastErrInfo.message);
+
+        if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
+          deadKeysSet.add(currentKey);
+          rotateServerKey();
+          continue;
+        }
+        if (lastErrInfo.status === 429 || lastErrInfo.status === 503) {
+          if (rotateServerKey()) continue;
+        }
+        if (lastErrInfo.status === 400 || lastErrInfo.status === 403) {
           break;
         }
-        if (!candidateKey) rotateKey();
+        rotateServerKey();
       }
     }
   }
 
-  if (!streamedSuccessfully && lastError) {
-    console.error('All streaming models failed:', lastError);
-    res.write(`data: ${JSON.stringify({ error: lastError.message || 'Streaming failed' })}\n\n`);
+  if (!clientDisconnected && !res.writableEnded) {
+    if (!streamedSuccessfully) {
+      res.write(`data: ${JSON.stringify({ error: lastErrInfo.message, status: lastErrInfo.status })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
   }
-
-  res.write(`data: [DONE]\n\n`);
-  res.end();
 });
 
 // --- LIVE API WEBSOCKET BRIDGE ---
@@ -459,84 +454,167 @@ wss.on('error', (err) => {
   console.error('Live WebSocketServer error:', err);
 });
 
-wss.on('connection', async (clientWs: WebSocket, req) => {
-  console.log('Client connected to Gemini Live WebSocket');
-  let session: any = null;
+wss.on('connection', (clientWs: WebSocket, req) => {
+  const serverKeys = collectServerEnvKeys();
+  if (serverKeys.length === 0) {
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({ error: 'Gemini API key is not configured on the server.' }));
+      clientWs.close();
+    }
+    return;
+  }
 
-  try {
-    const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '');
-    const customUserKey = urlParams.get('apiKey') || undefined;
-    const client = getAiClient(customUserKey);
-    session = await client.live.connect({
-      model: 'gemini-3.8-live',
-      config: {
-        responseModalities: ['AUDIO' as any],
+  const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '');
+  const requestedModel = (urlParams.get('model') || '').trim() || DEFAULT_LIVE_MODEL;
+  const voiceName = (urlParams.get('voiceName') || '').trim() || 'Zephyr';
+  const systemInstruction =
+    (urlParams.get('systemInstruction') || '').trim() ||
+    'أنت استشاري هندسي ومساعد صوتي ذكي لمشروعات التشييد والبناء.';
+
+  let clientClosed = false;
+  let activeSession: any = null;
+
+  const isTranscribeLive = requestedModel === 'gemini-3.5-transcribe-live';
+  const liveConfig: any = isTranscribeLive
+    ? {
+        responseModalities: [Modality.TEXT],
+        inputAudioTranscription: {},
+      }
+    : {
+        responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
+          voiceConfig: { prebuiltVoiceConfig: { voiceName } },
         },
-        systemInstruction: 'أنت استشاري هندسي ومساعد صوتي ذكي لمشروعات التشييد والبناء.',
-      },
-      callbacks: {
-        onmessage: (message: any) => {
-          if (clientWs.readyState !== WebSocket.OPEN) return;
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        systemInstruction,
+      };
 
-          for (const part of message.serverContent?.modelTurn?.parts ?? []) {
-            if (part.inlineData?.data) {
-              clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
-            }
-            if (part.text) {
-              clientWs.send(JSON.stringify({ text: part.text }));
-            }
+  const client = getAiClient();
+  const sessionPromise = client.live.connect({
+    model: requestedModel,
+    config: liveConfig,
+    callbacks: {
+      onmessage: (message: LiveServerMessage) => {
+        if (clientWs.readyState !== WebSocket.OPEN) return;
+
+        const content = message.serverContent;
+        for (const part of content?.modelTurn?.parts ?? []) {
+          if (part.inlineData?.data) {
+            clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
           }
-          if (message.serverContent?.interrupted) {
-            clientWs.send(JSON.stringify({ interrupted: true }));
+          if (part.text) {
+            clientWs.send(JSON.stringify({ text: part.text }));
           }
-        },
-        onclose: () => {
-          if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({ status: 'session_closed' }));
-          }
-        },
-        onerror: (err: any) => {
-          console.error('Gemini Live session error:', err);
-          if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({ error: err.message || 'Live error' }));
-          }
-        },
+        }
+        if (content?.inputTranscription?.text) {
+          clientWs.send(JSON.stringify({ inputTranscript: content.inputTranscription.text }));
+        }
+        if (content?.outputTranscription?.text) {
+          clientWs.send(JSON.stringify({ outputTranscript: content.outputTranscription.text }));
+        }
+        if (content?.interrupted) {
+          clientWs.send(JSON.stringify({ interrupted: true }));
+        }
+        if (content?.turnComplete) {
+          clientWs.send(JSON.stringify({ turnComplete: true }));
+        }
+        if (message.toolCall) {
+          clientWs.send(JSON.stringify({ toolCall: message.toolCall }));
+        }
       },
+      onclose: () => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ status: 'session_closed' }));
+        }
+      },
+      onerror: (err: any) => {
+        console.error('Gemini Live session error:', err);
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ error: err?.message || 'Live session error' }));
+        }
+      },
+    },
+  });
+
+  sessionPromise
+    .then((session) => {
+      activeSession = session;
+      if (clientClosed) {
+        try {
+          session.close();
+        } catch {}
+        return;
+      }
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ status: 'connected' }));
+      }
+    })
+    .catch((err: any) => {
+      console.error('Failed to initialize Gemini Live session:', err);
+      const { message } = extractErrorInfo(err);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ error: message || 'Failed to connect Live session' }));
+        clientWs.close();
+      }
     });
 
-    clientWs.on('message', (data: Buffer | string) => {
-      try {
-        const payload = JSON.parse(data.toString());
-        if (payload.audio && session) {
+  // Attach message/close handlers immediately and route via sessionPromise to prevent race drops
+  clientWs.on('message', (data: Buffer | string) => {
+    let payload: any;
+    try {
+      payload = JSON.parse(data.toString());
+    } catch (err) {
+      console.error('Failed to parse Live input:', err);
+      return;
+    }
+
+    sessionPromise
+      .then((session) => {
+        if (!session || clientClosed) return;
+        if (payload.audio) {
           session.sendRealtimeInput({
-            audio: { data: payload.audio, mimeType: 'audio/pcm;rate=16000' },
+            audio: {
+              data: payload.audio,
+              mimeType: payload.mimeType || 'audio/pcm;rate=16000',
+            },
           });
-        } else if (payload.text && session) {
+        } else if (payload.video) {
+          session.sendRealtimeInput({
+            video: {
+              data: payload.video,
+              mimeType: payload.mimeType || 'image/jpeg',
+            },
+          });
+        } else if (payload.text) {
           session.sendRealtimeInput({
             text: payload.text,
           });
+        } else if (payload.toolResponse) {
+          session.sendToolResponse(payload.toolResponse);
         }
-      } catch (err) {
-        console.error('Failed to parse Live input:', err);
-      }
-    });
+      })
+      .catch((err) => {
+        console.error('Failed to forward Live input:', err);
+      });
+  });
 
-    clientWs.on('close', () => {
-      if (session) {
-        try {
-          session.close();
-        } catch (e) {}
-      }
-    });
-  } catch (err: any) {
-    console.error('Failed to initialize Gemini Live session:', err);
-    if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(JSON.stringify({ error: err.message || 'Failed to connect Live session' }));
-      clientWs.close();
+  clientWs.on('close', () => {
+    clientClosed = true;
+    if (activeSession) {
+      try {
+        activeSession.close();
+      } catch {}
+    } else {
+      sessionPromise
+        .then((session) => {
+          try {
+            session.close();
+          } catch {}
+        })
+        .catch(() => {});
     }
-  }
+  });
 });
 
 const getCliPort = (): number | undefined => {

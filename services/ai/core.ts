@@ -1,6 +1,4 @@
 import { AI_REPORT_INSTRUCTION } from "../reportGenerator";
-import { db } from "../firebaseConfig";
-import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import mammoth from "mammoth";
 
@@ -26,13 +24,13 @@ export interface FunctionDeclaration {
     };
 }
 
-// --- MODEL CONFIGURATION (STANDARD ACTIVE GEMINI MODELS) ---
-export const MODEL_COMPLEX = 'gemini-3.8-flash'; 
-export const MODEL_SMART = 'gemini-3.8-flash'; 
+// --- MODEL CONFIGURATION (ACTIVE GEMINI MODELS) ---
+export const MODEL_COMPLEX = 'gemini-4-hydrogen';
+export const MODEL_SMART = 'gemini-4-hydrogen';
 export const MODEL_TRANSCRIBE = 'gemini-3.5-transcribe';
 export const MODEL_LIVE = 'gemini-3.8-live';
 
-// Cloud Run backend URLs for static hosts (e.g., GitHub Pages on Mobile)
+// Cloud Run backend URLs used only if hosted on an external static host (e.g., GitHub Pages)
 const CLOUD_RUN_BACKENDS = [
     'https://ais-pre-eyv5v6qgthqdiglobljv36-10480266653.europe-west2.run.app',
     'https://ais-dev-eyv5v6qgthqdiglobljv36-10480266653.europe-west2.run.app',
@@ -68,7 +66,7 @@ export const getStaticFallbackReport = (title: string, type: string) => {
     return `
         <div class="warning-box editable-box">
             <strong><i class="fa-solid fa-server"></i> وضع الطوارئ (Offline Mode)</strong><br/>
-            نظراً لضغط الخوادم الشديد، تم تفعيل وضع الطوارئ. إليك القواعد الهندسية الأساسية لهذا البند.
+            تعذر الاتصال بخدمة الذكاء الاصطناعي حالياً. إليك القواعد الهندسية الأساسية لهذا البند (${type}).
         </div>
         <h2>${title}</h2>
         <div class="highlight-box editable-box">
@@ -108,7 +106,7 @@ export const compressImageForAI = async (file: File): Promise<string> => {
         img.onload = () => {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            const MAX_WIDTH = 800; 
+            const MAX_WIDTH = 800;
             const width = Math.min(img.width, MAX_WIDTH);
             const height = img.height * (width / img.width);
             canvas.width = width;
@@ -116,7 +114,7 @@ export const compressImageForAI = async (file: File): Promise<string> => {
             ctx?.drawImage(img, 0, 0, width, height);
             const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
             const base64 = dataUrl.split(',')[1] || "";
-            resolve(base64); 
+            resolve(base64);
         };
         img.onerror = reject;
     });
@@ -206,7 +204,7 @@ export const fileToPart = async (file: Blob | File, useCompression = false): Pro
         mimeType ||
         (fileName.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
 
-    return new Promise<{inlineData: {data: string, mimeType: string}}>((resolve, reject) => {
+    return new Promise<{ inlineData: { data: string; mimeType: string } }>((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
             const result = reader.result as string;
@@ -221,167 +219,9 @@ export const fileToPart = async (file: Blob | File, useCompression = false): Pro
     });
 };
 
-// --- CONTEXT CACHING SYSTEM (SERVER PROXY) ---
-export const createContextCache = async (model: string, systemInstruction: string, contents: any[], ttlSeconds: number = 3600) => {
-    return null; // Handled directly on server if needed
-};
-
-let activeCustomKeyIndex = 0;
-
-export const getCustomApiKeys = (): string[] => {
-    if (typeof window === 'undefined') return [];
-    try {
-        const raw = localStorage.getItem('CUSTOM_GEMINI_API_KEYS');
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                return parsed.map(k => String(k).trim()).filter(Boolean);
-            }
-        }
-    } catch {}
-    const single = localStorage.getItem('CUSTOM_GEMINI_API_KEY');
-    if (single && single.trim()) {
-        return [single.trim()];
-    }
-    return [];
-};
-
-const writeLocalKeysQuietly = (keys: string[]) => {
-    if (typeof window === 'undefined') return;
-    const cleaned = [...new Set(keys.map(k => String(k || '').trim()).filter(k => k.length > 10))];
-    if (cleaned.length > 0) {
-        localStorage.setItem('CUSTOM_GEMINI_API_KEYS', JSON.stringify(cleaned));
-        localStorage.setItem('CUSTOM_GEMINI_API_KEY', cleaned[0]);
-        window.dispatchEvent(new CustomEvent('gemini_keys_updated'));
-    }
-};
-
-// --- AUTOMATIC CROSS-DEVICE CLOUD SYNC FOR GEMINI KEYS (PC <-> MOBILE) ---
-export const syncGeminiKeysToCloud = async (keys: string[], clearAll: boolean = false): Promise<void> => {
-    if (typeof window === 'undefined') return;
-    const cleaned = [...new Set(keys.map(k => String(k || '').trim()).filter(k => k.length > 10))];
-    try {
-        await setDoc(doc(db, 'market_data', 'gemini_keys_sync'), {
-            keys: cleaned,
-            updatedAt: new Date().toISOString(),
-        });
-    } catch (e) {
-        console.warn('Firestore key sync write failed:', e);
-    }
-
-    const endpoints = isStaticHost()
-        ? CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/keys`)
-        : ['/api/gemini/keys'];
-
-    for (const url of endpoints) {
-        try {
-            await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keys: cleaned, clear: clearAll }),
-            });
-            break;
-        } catch {}
-    }
-};
-
-export const syncGeminiKeysFromCloud = async (): Promise<string[]> => {
-    if (typeof window === 'undefined') return [];
-    const localKeys = getCustomApiKeys();
-
-    // 1. Try Firestore market_data/gemini_keys_sync
-    try {
-        const snap = await Promise.race([
-            getDoc(doc(db, 'market_data', 'gemini_keys_sync')),
-            new Promise<null>(resolve => setTimeout(() => resolve(null), 2500))
-        ]);
-        if (snap && snap.exists()) {
-            const data = snap.data();
-            const cloudKeys: string[] = Array.isArray(data?.keys)
-                ? data.keys.map((k: any) => String(k || '').trim()).filter((k: string) => k.length > 10)
-                : [];
-            if (cloudKeys.length > 0) {
-                const merged = [...new Set([...localKeys, ...cloudKeys])];
-                writeLocalKeysQuietly(merged);
-                if (localKeys.some(k => !cloudKeys.includes(k))) {
-                    syncGeminiKeysToCloud(merged).catch(() => {});
-                }
-                return merged;
-            } else if (localKeys.length > 0) {
-                syncGeminiKeysToCloud(localKeys).catch(() => {});
-                return localKeys;
-            }
-        } else if (localKeys.length > 0) {
-            syncGeminiKeysToCloud(localKeys).catch(() => {});
-            return localKeys;
-        }
-    } catch (e) {
-        console.warn('Firestore key sync read failed:', e);
-    }
-
-    // 2. Fallback: Try server /api/gemini/keys endpoint
-    const endpoints = isStaticHost()
-        ? CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/keys`)
-        : ['/api/gemini/keys', ...CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/keys`)];
-
-    for (const url of endpoints) {
-        try {
-            const res = await fetch(url);
-            if (res.ok) {
-                const data = await res.json();
-                const serverKeys: string[] = Array.isArray(data?.keys)
-                    ? data.keys.map((k: any) => String(k || '').trim()).filter((k: string) => k.length > 10)
-                    : [];
-                if (serverKeys.length > 0) {
-                    const merged = [...new Set([...localKeys, ...serverKeys])];
-                    writeLocalKeysQuietly(merged);
-                    return merged;
-                }
-            }
-        } catch {}
-    }
-
-    return localKeys;
-};
-
-// Initialize live cross-device key sync on load
-if (typeof window !== 'undefined') {
-    setTimeout(() => {
-        syncGeminiKeysFromCloud().catch(() => {});
-        try {
-            onSnapshot(doc(db, 'market_data', 'gemini_keys_sync'), (snap) => {
-                if (snap.exists()) {
-                    const data = snap.data();
-                    const cloudKeys: string[] = Array.isArray(data?.keys)
-                        ? data.keys.map((k: any) => String(k || '').trim()).filter((k: string) => k.length > 10)
-                        : [];
-                    if (cloudKeys.length > 0) {
-                        const local = getCustomApiKeys();
-                        const merged = [...new Set([...cloudKeys, ...local])];
-                        if (merged.length !== local.length || merged.some((k, i) => local[i] !== k)) {
-                            writeLocalKeysQuietly(merged);
-                        }
-                    }
-                }
-            }, () => {});
-        } catch {}
-    }, 300);
-}
-
-export const rotateCustomApiKey = (): number => {
-    const keys = getCustomApiKeys();
-    if (keys.length <= 1) return 0;
-    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % keys.length;
-    return activeCustomKeyIndex;
-};
-
-export const getSmartKeyStatus = () => {
-    const keys = getCustomApiKeys();
-    return {
-        hasCustomKeys: keys.length > 0,
-        totalKeys: keys.length,
-        activeIndex: keys.length > 0 ? (activeCustomKeyIndex % keys.length) : 0,
-    };
+// --- CONTEXT CACHING PLACEHOLDER ---
+export const createContextCache = async (_model: string, _systemInstruction: string, _contents: any[], _ttlSeconds: number = 3600) => {
+    return null;
 };
 
 export const isStaticHost = (): boolean => {
@@ -390,174 +230,68 @@ export const isStaticHost = (): boolean => {
     return host.endsWith('github.io') || host.endsWith('gitlab.io') || host.endsWith('pages.dev');
 };
 
-// Normalize `contents` into Gemini REST API format (`[{ role: 'user', parts: [...] }]`)
-const normalizeContentsForRest = (contents: any): any[] => {
-    if (typeof contents === 'string') {
-        return [{ role: 'user', parts: [{ text: contents }] }];
+const getApiBaseUrl = (): string => {
+    if (isStaticHost()) {
+        return CLOUD_RUN_BACKENDS[0];
     }
-    if (Array.isArray(contents)) {
-        return contents.map(item => {
-            if (typeof item === 'string') return { role: 'user', parts: [{ text: item }] };
-            if (item && item.parts) return { role: item.role || 'user', parts: item.parts };
-            return { role: 'user', parts: [item] };
-        });
-    }
-    if (contents && Array.isArray(contents.parts)) {
-        return [{ role: contents.role || 'user', parts: contents.parts }];
-    }
-    return [{ role: 'user', parts: [{ text: String(contents || '') }] }];
+    return '';
 };
 
-// Direct REST API fallback for Mobile / GitHub Pages when backend server is unreachable
-const directRestGenerate = async (
-    keys: string[],
+// --- SERVER-SIDE GENERATION CALL ---
+export const safeGenerateContent = async (
+    primaryModel: string,
     params: any
-): Promise<{ text: string; usedModel: string; functionCalls?: any[]; response?: any } | null> => {
-    if (!keys || keys.length === 0) return null;
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-2.0-flash'];
-    const formattedContents = normalizeContentsForRest(params.contents);
+): Promise<{ text: string; usedModel: string; functionCalls?: any[]; response?: any }> => {
+    const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest'))
+        ? MODEL_SMART
+        : primaryModel;
 
-    for (const apiKey of keys) {
-        for (const modelName of modelsToTry) {
-            try {
-                const payload: any = {
-                    contents: formattedContents,
-                };
-                if (params.config?.systemInstruction) {
-                    const sysText = typeof params.config.systemInstruction === 'string'
-                        ? params.config.systemInstruction
-                        : JSON.stringify(params.config.systemInstruction);
-                    payload.systemInstruction = { parts: [{ text: sysText }] };
-                }
-                if (params.config?.responseMimeType) {
-                    payload.generationConfig = {
-                        responseMimeType: params.config.responseMimeType,
-                        ...(params.config.responseSchema ? { responseSchema: params.config.responseSchema } : {}),
-                    };
-                }
-
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-
-                if (res.ok) {
-                    const data = await res.json();
-                    const candidate = data?.candidates?.[0];
-                    const parts = candidate?.content?.parts || [];
-                    const textOut = parts.map((p: any) => p.text || '').join('');
-                    const fnCalls = parts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
-                    if (textOut || fnCalls.length > 0) {
-                        return {
-                            text: textOut,
-                            functionCalls: fnCalls.length > 0 ? fnCalls : undefined,
-                            response: candidate?.content ? { candidates: [{ content: candidate.content }] } : undefined,
-                            usedModel: modelName,
-                        };
-                    }
-                }
-            } catch (err) {
-                console.warn(`Direct REST fallback failed for ${modelName}:`, err);
-            }
-        }
-    }
-    return null;
-};
-
-// --- SERVER-SIDE GENERATION CALL (WITH MOBILE / STATIC HOST FALLBACKS) ---
-export const safeGenerateContent = async (primaryModel: string, params: any): Promise<{ text: string, usedModel: string, functionCalls?: any[], response?: any }> => {
-    const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest')) ? MODEL_SMART : primaryModel;
-    let userKeys = getCustomApiKeys();
-    if (userKeys.length === 0) {
-        userKeys = await syncGeminiKeysFromCloud();
-    }
-
-    const rotatedKeys = userKeys.length > 0
-        ? userKeys.map((_, idx) => userKeys[(activeCustomKeyIndex + idx) % userKeys.length])
-        : [];
-    const customUserKey = rotatedKeys[0] || '';
-
-    const candidateEndpoints = isStaticHost()
+    const endpoints = isStaticHost()
         ? CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/generate`)
-        : ['/api/gemini/generate', ...CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/generate`)];
+        : ['/api/gemini/generate'];
 
-    for (const endpoint of candidateEndpoints) {
+    let lastError: Error | null = null;
+
+    for (const endpoint of endpoints) {
         try {
-            const headers: Record<string, string> = {
-                'Content-Type': 'application/json',
-            };
-            if (customUserKey) {
-                headers['X-Gemini-Api-Key'] = customUserKey;
-            }
-
             const res = await fetch(endpoint, {
                 method: 'POST',
-                headers,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({
                     model,
                     contents: params.contents,
                     config: params.config,
                     cachedContent: params.cachedContent,
-                    apiKey: customUserKey,
-                    apiKeys: rotatedKeys,
                 }),
             });
 
-            if (res.ok) {
-                const data = await res.json();
-                const isEmergency = data.usedModel === 'Emergency-Quota-Protection' || isEmergencyFallbackText(data.text);
-                if (!isEmergency && (data.text || data.functionCalls)) {
-                    return {
-                        text: data.text || '',
-                        functionCalls: data.functionCalls || undefined,
-                        response: data.modelContent ? { candidates: [{ content: data.modelContent }] } : undefined,
-                        usedModel: data.usedModel || model,
-                    };
-                }
-                if (userKeys.length > 1 && isEmergency) {
-                    activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-                }
+            const data = await res.json().catch(() => null);
+
+            if (!res.ok) {
+                const msg = data?.error || `Gemini server request failed (${res.status})`;
+                lastError = new Error(msg);
+                continue;
             }
+
+            if (data && (typeof data.text === 'string' || data.functionCalls)) {
+                return {
+                    text: data.text || '',
+                    functionCalls: data.functionCalls || undefined,
+                    response: data.modelContent ? { candidates: [{ content: data.modelContent }] } : undefined,
+                    usedModel: data.usedModel || model,
+                };
+            }
+
+            lastError = new Error('Empty response from Gemini server');
         } catch (error: any) {
-            console.warn(`safeGenerateContent endpoint ${endpoint} error:`, error?.message || error);
+            lastError = error instanceof Error ? error : new Error(String(error || 'Network error'));
+            console.warn(`safeGenerateContent endpoint ${endpoint} error:`, lastError.message);
         }
     }
 
-    // If server proxy failed or returned emergency fallback (e.g., on GitHub Pages mobile), try direct REST with synced keys
-    if (rotatedKeys.length > 0) {
-        const directResult = await directRestGenerate(rotatedKeys, params);
-        if (directResult) {
-            return directResult;
-        }
-    } else {
-        // Pull once more from cloud in case keys were just added
-        const freshlySynced = await syncGeminiKeysFromCloud();
-        if (freshlySynced.length > 0) {
-            const directResult = await directRestGenerate(freshlySynced, params);
-            if (directResult) {
-                return directResult;
-            }
-        }
-    }
-
-    // Static emergency fallback to ensure UX continuity
-    const fallbackText = `
-        <div class="warning-box editable-box">
-            <strong><i class="fa-solid fa-brain-circuit"></i> وضع الاستمرارية الهندسية (Engineering Continuity Mode)</strong><br/>
-            عذراً، لم يتم العثور على مفتاح ذكاء اصطناعي نشط على هذا الجهاز بعد. يرجى إضافة مفتاح Gemini من قائمة الإعدادات (أيقونة الترس ⚙️ &larr; مفاتيح Gemini الذكية) ليتزامن تلقائياً مع جميع أجهزتك.
-        </div>
-        <div class="info-box editable-box">
-            <strong>القواعد الهندسية الأساسية (ECP Standard):</strong><br>
-            1. يجب دائماً مطابقة التنفيذ مع المواصفات الفنية المعتمدة للمشروع.<br>
-            2. أي تأخير في التوريدات يجب معالجته فوراً بتوفير بدائل معتمدة.<br>
-            3. جودة التنفيذ هي الأولوية القصوى لتجنب أوامر الإصلاح (NCRs).<br>
-            4. التنسيق بين المكتب الفني والموقع هو مفتاح النجاح.
-        </div>
-        ${getAiFooter('Emergency-Static-Brain')}
-    `;
-    return { text: fallbackText, usedModel: 'Emergency-Static-Brain' };
+    throw lastError || new Error('Failed to generate content via server');
 };
 
 // --- SERVER-SIDE STREAMING CALL (SSE) ---
@@ -566,88 +300,77 @@ export const safeGenerateStream = async (
     params: any,
     onChunk: (text: string) => void
 ): Promise<string> => {
-    const model = primaryModel || MODEL_SMART;
-    let userKeys = getCustomApiKeys();
-    if (userKeys.length === 0) {
-        userKeys = await syncGeminiKeysFromCloud();
-    }
-    const rotatedKeys = userKeys.length > 0
-        ? userKeys.map((_, idx) => userKeys[(activeCustomKeyIndex + idx) % userKeys.length])
-        : [];
-    const customUserKey = rotatedKeys[0] || '';
+    const model = (!primaryModel || primaryModel.includes('preview') || primaryModel.includes('latest'))
+        ? MODEL_SMART
+        : primaryModel;
+
+    const streamEndpoint = `${getApiBaseUrl()}/api/gemini/stream`;
     let fullText = '';
 
-    const streamEndpoint = isStaticHost()
-        ? `${CLOUD_RUN_BACKENDS[0]}/api/gemini/stream`
-        : '/api/gemini/stream';
-
-    try {
-        const headers: Record<string, string> = {
+    const res = await fetch(streamEndpoint, {
+        method: 'POST',
+        headers: {
             'Content-Type': 'application/json',
-        };
-        if (customUserKey) {
-            headers['X-Gemini-Api-Key'] = customUserKey;
-        }
+        },
+        body: JSON.stringify({
+            model,
+            contents: params.contents,
+            config: params.config,
+        }),
+    });
 
-        const res = await fetch(streamEndpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-                model,
-                contents: params.contents,
-                config: params.config,
-                apiKey: customUserKey,
-                apiKeys: rotatedKeys,
-            }),
-        });
-
-        if (!res.ok || !res.body) {
-            if (userKeys.length > 1) {
-                activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-            }
-            throw new Error(`Streaming failed with status ${res.status}`);
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const rawData = line.slice(6).trim();
-                    if (rawData === '[DONE]') continue;
-                    try {
-                        const parsed = JSON.parse(rawData);
-                        if (parsed.text) {
-                            fullText += parsed.text;
-                            onChunk(parsed.text);
-                        }
-                    } catch (e) {}
-                }
-            }
-        }
-        if (fullText) return fullText;
-    } catch (e: any) {
-        if (userKeys.length > 1) {
-            activeCustomKeyIndex = (activeCustomKeyIndex + 1) % userKeys.length;
-        }
-        console.warn("Streaming fallback to non-streaming:", e);
+    if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.error || `Streaming failed with status ${res.status}`);
     }
 
-    // Fallback to safeGenerateContent if streaming failed (e.g. on mobile or static host)
-    const fallbackRes = await safeGenerateContent(model, params);
-    if (fallbackRes.text && !isEmergencyFallbackText(fallbackRes.text)) {
-        onChunk(fallbackRes.text);
-        return fallbackRes.text;
+    if (!res.body) {
+        throw new Error('Streaming response body is unavailable');
     }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const processEventBlock = (block: string) => {
+        const lines = block.split(/\r?\n/);
+        for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const rawData = line.slice(6).trim();
+            if (!rawData || rawData === '[DONE]') continue;
+            let parsed: any;
+            try {
+                parsed = JSON.parse(rawData);
+            } catch {
+                continue;
+            }
+            if (parsed.error) {
+                throw new Error(parsed.error);
+            }
+            if (parsed.text) {
+                fullText += parsed.text;
+                onChunk(parsed.text);
+            }
+        }
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() || '';
+
+        for (const evt of events) {
+            processEventBlock(evt);
+        }
+    }
+
+    if (buffer.trim()) {
+        processEventBlock(buffer);
+    }
+
     return fullText;
 };
 
@@ -655,22 +378,57 @@ export const safeGenerateStream = async (
 export interface LiveSessionCallbacks {
     onAudioChunk?: (base64Audio: string) => void;
     onTextChunk?: (text: string) => void;
+    onInputTranscript?: (text: string) => void;
+    onOutputTranscript?: (text: string) => void;
+    onToolCall?: (toolCall: any) => void;
+    onTurnComplete?: () => void;
     onInterrupted?: () => void;
+    onStatus?: (status: string) => void;
     onError?: (err: any) => void;
     onClose?: () => void;
 }
 
-export const connectLiveApi = (callbacks: LiveSessionCallbacks) => {
+export interface LiveConnectOptions {
+    model?: string;
+    systemInstruction?: string;
+    voiceName?: string;
+}
+
+export const connectLiveApi = (
+    callbacks: LiveSessionCallbacks,
+    options?: LiveConnectOptions
+) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const userKeys = getCustomApiKeys();
-    const customKey = userKeys.length > 0 ? userKeys[activeCustomKeyIndex % userKeys.length] : '';
-    const query = customKey ? `?apiKey=${encodeURIComponent(customKey)}` : '';
     const hostPart = isStaticHost()
         ? CLOUD_RUN_BACKENDS[0].replace(/^https?:\/\//, '')
         : window.location.host;
     const wsProtocol = isStaticHost() ? 'wss:' : protocol;
-    const wsUrl = `${wsProtocol}//${hostPart}/api/gemini/live${query}`;
+
+    const queryParams = new URLSearchParams();
+    if (options?.model) queryParams.set('model', options.model);
+    if (options?.voiceName) queryParams.set('voiceName', options.voiceName);
+    if (options?.systemInstruction) queryParams.set('systemInstruction', options.systemInstruction);
+    const qs = queryParams.toString();
+
+    const wsUrl = `${wsProtocol}//${hostPart}/api/gemini/live${qs ? `?${qs}` : ''}`;
     const ws = new WebSocket(wsUrl);
+    const pendingPayloads: string[] = [];
+
+    const sendJson = (payload: Record<string, any>) => {
+        const serialized = JSON.stringify(payload);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(serialized);
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+            pendingPayloads.push(serialized);
+        }
+    };
+
+    ws.onopen = () => {
+        while (pendingPayloads.length > 0 && ws.readyState === WebSocket.OPEN) {
+            const next = pendingPayloads.shift();
+            if (next) ws.send(next);
+        }
+    };
 
     ws.onmessage = (event) => {
         try {
@@ -681,8 +439,23 @@ export const connectLiveApi = (callbacks: LiveSessionCallbacks) => {
             if (data.text && callbacks.onTextChunk) {
                 callbacks.onTextChunk(data.text);
             }
+            if (data.inputTranscript && callbacks.onInputTranscript) {
+                callbacks.onInputTranscript(data.inputTranscript);
+            }
+            if (data.outputTranscript && callbacks.onOutputTranscript) {
+                callbacks.onOutputTranscript(data.outputTranscript);
+            }
+            if (data.toolCall && callbacks.onToolCall) {
+                callbacks.onToolCall(data.toolCall);
+            }
+            if (data.turnComplete && callbacks.onTurnComplete) {
+                callbacks.onTurnComplete();
+            }
             if (data.interrupted && callbacks.onInterrupted) {
                 callbacks.onInterrupted();
+            }
+            if (data.status && callbacks.onStatus) {
+                callbacks.onStatus(data.status);
             }
             if (data.error && callbacks.onError) {
                 callbacks.onError(data.error);
@@ -697,21 +470,25 @@ export const connectLiveApi = (callbacks: LiveSessionCallbacks) => {
     };
 
     ws.onclose = () => {
+        pendingPayloads.length = 0;
         if (callbacks.onClose) callbacks.onClose();
     };
 
     return {
-        sendAudio: (base64Pcm: string) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ audio: base64Pcm }));
-            }
+        sendAudio: (base64Pcm: string, mimeType: string = 'audio/pcm;rate=16000') => {
+            sendJson({ audio: base64Pcm, mimeType });
+        },
+        sendVideo: (base64Image: string, mimeType: string = 'image/jpeg') => {
+            sendJson({ video: base64Image, mimeType });
         },
         sendText: (text: string) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ text }));
-            }
+            sendJson({ text });
+        },
+        sendToolResponse: (toolResponse: any) => {
+            sendJson({ toolResponse });
         },
         close: () => {
+            pendingPayloads.length = 0;
             ws.close();
         },
     };

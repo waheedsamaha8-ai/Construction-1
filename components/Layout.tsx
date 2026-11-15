@@ -5,7 +5,6 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useMobileBack } from '../hooks/useMobileBack';
 import { GOOGLE_DRIVE_TARGET_ID, api } from '../services/api';
 import ConfirmModal from './ConfirmModal'; // Import the new modal
-import GeminiKeyModal, { loadStoredGeminiKeys } from './GeminiKeyModal';
 
 interface LayoutProps {
   children: ReactNode;
@@ -25,16 +24,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
   const [showSyncTroubleshoot, setShowSyncTroubleshoot] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(!!document.fullscreenElement);
   const [showConfirmClear, setShowConfirmClear] = useState(false); // State for confirm modal
-  const [showKeyModal, setShowKeyModal] = useState(false);
-  const [hasCustomKey, setHasCustomKey] = useState(false);
-  const [customKeysCount, setCustomKeysCount] = useState(0);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
-
-  const updateKeyStatus = () => {
-    const keys = loadStoredGeminiKeys();
-    setHasCustomKey(keys.length > 0);
-    setCustomKeysCount(keys.length);
-  };
   
   // PWA Install State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -53,7 +43,6 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
   const hasSecondaryHeader = !!(title || actions);
 
   useEffect(() => {
-      updateKeyStatus();
       const handleStatus = () => {
           setIsOnline(navigator.onLine);
           if (navigator.onLine) {
@@ -105,17 +94,10 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       };
       window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-      // Listener to open Gemini Key Modal from anywhere in the app
-      const handleOpenKeyModal = () => setShowKeyModal(true);
-      window.addEventListener('open_gemini_key_modal', handleOpenKeyModal);
-      window.addEventListener('gemini_keys_updated', updateKeyStatus);
-
       return () => {
           window.removeEventListener('online', handleStatus);
           window.removeEventListener('offline', handleStatus);
           window.removeEventListener('app_sync_event', handleAppSyncEvent);
-          window.removeEventListener('open_gemini_key_modal', handleOpenKeyModal);
-          window.removeEventListener('gemini_keys_updated', updateKeyStatus);
           document.removeEventListener('fullscreenchange', checkFullScreen);
           document.removeEventListener('webkitfullscreenchange', checkFullScreen);
           window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -199,8 +181,6 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                 <i className="fa-solid fa-gear text-sm"></i>
                 {(!isOnline || pendingSyncs > 0) ? (
                   <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border border-slate-900 ${!isOnline ? 'bg-red-500' : 'bg-yellow-400 animate-pulse'}`}></span>
-                ) : hasCustomKey ? (
-                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-purple-400 border border-slate-900"></span>
                 ) : null}
               </button>
 
@@ -215,32 +195,6 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                       <span className="text-[11px] font-bold text-slate-400">إعدادات النظام والأدوات</span>
                       <i className="fa-solid fa-sliders text-[10px] text-slate-500"></i>
                     </div>
-
-                    {/* Gemini Custom Key Toggle */}
-                    <button
-                      onClick={() => {
-                        setShowSettingsMenu(false);
-                        setShowKeyModal(true);
-                      }}
-                      className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${hasCustomKey ? 'bg-purple-600 text-white' : 'bg-slate-800 text-purple-400'}`}>
-                          <i className="fa-solid fa-key text-xs"></i>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs font-bold text-white">مفاتيح Gemini الذكية</div>
-                          <div className="text-[10px] text-slate-400">
-                            {hasCustomKey ? `${customKeysCount} مفتاح نشط للتدوير` : 'إضافة مفاتيح يدوياً'}
-                          </div>
-                        </div>
-                      </div>
-                      {hasCustomKey && (
-                        <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                          {customKeysCount}
-                        </span>
-                      )}
-                    </button>
 
                     {/* Full Screen Toggle */}
                     <button
@@ -401,15 +355,6 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
         onCancel={() => setShowConfirmClear(false)}
         type="warning"
         confirmText="نعم، نظف القائمة"
-      />
-
-      {/* Gemini API Key Modal */}
-      <GeminiKeyModal
-        isOpen={showKeyModal}
-        onClose={() => {
-          setShowKeyModal(false);
-          updateKeyStatus();
-        }}
       />
     </div>
   );

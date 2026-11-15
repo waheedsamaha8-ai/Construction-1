@@ -1,6 +1,7 @@
 
 import { safeGenerateContent, MODEL_SMART, MODEL_COMPLEX, cleanNumber, fileToPart, getAiFooter, Type } from './core';
 import { Project, ProjectLog, BOQItem, ProjectPayment, BOQItemReportType } from '../../types';
+import { computeLogsAnalytics, formatEnrichedLogLine, normalizeDateYMD } from './consultant';
 
 export const analysisService = {
     async parsePaymentDocument(file: File, projectBoq: BOQItem[] = []): Promise<any> {
@@ -437,15 +438,25 @@ export const analysisService = {
     },
 
     async analyzeProjectMasterData(data: any): Promise<string> {
-        const context = JSON.stringify(data);
+        const rawLogs = Array.isArray(data?.executionLogs) ? data.executionLogs : (Array.isArray(data?.logs) ? data.logs : []);
+        const logsAnalytics = computeLogsAnalytics(rawLogs, data?.boqItems || []);
+        const safeLogs = rawLogs.slice(0, 120).map((l: any, idx: number) => formatEnrichedLogLine(l, idx, data?.boqItems || []));
+        const sanitizedData = {
+            ...(data || {}),
+            executionLogs: undefined,
+            logs: undefined,
+            logsAnalytics,
+            logsSummaryLines: safeLogs
+        };
+        const context = JSON.stringify(sanitizedData);
         const prompt = `
             **IDENTITY:** Project Director (30+ Years Experience).
-            **TASK:** Generate a High-Level Executive Dashboard Summary (Arabic HTML).
+            **TASK:** Generate a High-Level Executive Dashboard Summary (Arabic HTML) including insights extracted from Daily Logs, BOQ, and Payments.
             
             **REQUIREMENTS:**
             1. **Mobile Optimization:** The dashboard MUST be 100% width on mobile screens. No side margins.
             2. **Financial Table:** Summarize Contract Value vs. Executed vs. Paid using \`width="100%"\`.
-            3. **Status Assessment:** Clear statement on project health (Time/Cost/Quality).
+            3. **Status Assessment:** Clear statement on project health (Time/Cost/Quality) grounded in daily logs and progress data.
             4. **Strategic Recommendation:** One key advice for the owner.
 
             **STRUCTURE:**
@@ -461,9 +472,9 @@ export const analysisService = {
                 </table>
             </div>
 
-            <h3>2. تقييم الأداء (Performance Evaluation)</h3>
+            <h3>2. تقييم الأداء وتحليل اليوميات (Performance & Daily Logs Evaluation)</h3>
             <div class="info-box editable-box">
-                <p>تقييم عام لسير العمل بناءً على البيانات المتاحة.</p>
+                <p>تقييم عام لسير العمل وتوزيع الأعمال باليوميات بناءً على البيانات المتاحة.</p>
             </div>
 
             <h3>3. التوصية الاستراتيجية (Strategic Recommendation)</h3>
@@ -478,8 +489,12 @@ export const analysisService = {
     },
 
     async generateDailyReport(projectName: string, logs: ProjectLog[], projectContext: string = ''): Promise<string> {
-        // Use more logs for better context, but limit to avoid token limits if too many
-        const recentLogs = logs.slice(0, 30).map(l => `[${l.date}] ${l.content}`).join('\n');
+        const sortedLogs = [...(logs || [])].sort((a, b) => normalizeDateYMD(a.date).localeCompare(normalizeDateYMD(b.date)));
+        const logsAnalytics = computeLogsAnalytics(sortedLogs);
+        const formattedLogs = sortedLogs.slice(0, 150).map((l, idx) => formatEnrichedLogLine(l, idx)).join('\n');
+        const analyticsSummary = sortedLogs.length > 0
+            ? `إجمالي السجلات: ${logsAnalytics.totalLogs} | أيام العمل النشطة: ${logsAnalytics.uniqueActiveDays} | الفترة: ${logsAnalytics.firstDate} إلى ${logsAnalytics.lastDate} | الصور المرفقة: ${logsAnalytics.totalPhotos} | توزيع الأعمال: ${logsAnalytics.byWorkCategory.map(c => `${c.category} (${c.count})`).join('، ')} | فترات الانقطاع >= 3 أيام: ${logsAnalytics.gaps.length > 0 ? logsAnalytics.gaps.map(g => `${g.fromDate} إلى ${g.toDate} (${g.gapDays} يوم)`).join('، ') : 'لا يوجد'}`
+            : 'لا توجد يوميات مسجلة.';
         
         const prompt = `
             **IDENTITY:** Site Supervision Consultant Engineer (مهندس استشاري مشرف على التنفيذ).
@@ -488,13 +503,14 @@ export const analysisService = {
             
             **INPUT DATA (SOURCE OF TRUTH):**
             1. **Project Context:** ${projectContext}
-            2. **Site Diaries (Logs):** 
-            ${recentLogs}
+            2. **Daily Logs Analytics Summary:** ${analyticsSummary}
+            3. **Site Diaries (Logs - Full Details):** 
+            ${formattedLogs || 'لا توجد يوميات مسجلة.'}
 
             **STRICT INSTRUCTIONS:**
             1. **Mobile Optimization:** The report MUST be 100% width on mobile screens. No side margins.
             2. **FACT-BASED ONLY:** You must ONLY use the provided "Site Diaries" and "Project Context". DO NOT invent dates, events, or completion percentages not mentioned.
-            3. **ANALYSIS:** Analyze the sequence of logs to determine the *actual* current status.
+            3. **DEEP LOG ANALYSIS:** Extract work categories, linked BOQ items, execution rates, delays/gaps, resources/manpower/materials mentioned in the logs, and timeline trends.
             4. **LANGUAGE:** Professional Arabic Engineering Report.
             5. **Tables:** Use \`width="100%"\` for all tables and ensure they are responsive.
 
@@ -555,8 +571,23 @@ export const analysisService = {
         const payments = (project.payments || []) as any[];
         const paymentsTotal = payments.reduce((acc, p) => acc + (Number(p.netAmount) || Number(p.amount) || 0), 0);
         
-        const logsContext = logs.length > 0 
-            ? logs.map(l => `• [${l.date}] ${l.content} ${l.boqItemId ? `(مرتبط ببند المقايسة: ${l.boqItemId})` : ''}`).join('\n')
+        const sortedPeriodLogs = [...(logs || [])].sort((a, b) => normalizeDateYMD(a.date).localeCompare(normalizeDateYMD(b.date)));
+        const logsAnalytics = computeLogsAnalytics(sortedPeriodLogs, boqItems);
+        const logsStatsText = sortedPeriodLogs.length > 0
+            ? [
+                `• عدد السجلات بالفترة: ${logsAnalytics.totalLogs} سجل (${logsAnalytics.uniqueActiveDays} يوم عمل فعلي) | الصور المرفقة: ${logsAnalytics.totalPhotos}`,
+                `• توزيع تصنيفات الأعمال: ${logsAnalytics.byWorkCategory.map(c => `${c.category}: ${c.count} (${c.percentage}%)`).join(' | ')}`,
+                logsAnalytics.byBoqItem.length > 0
+                    ? `• البنود المرتبطة بالمقايسة: ${logsAnalytics.byBoqItem.map(b => `${b.boqItemCode ? `بند ${b.boqItemCode}` : ''} ${b.boqItemDescription.slice(0, 40)} (${b.count})`).join(' | ')}`
+                    : '',
+                logsAnalytics.gaps.length > 0
+                    ? `• فترات توقف/انقطاع (>= 3 أيام): ${logsAnalytics.gaps.map(g => `من ${g.fromDate} إلى ${g.toDate} (${g.gapDays} يوم)`).join(' | ')}`
+                    : '• فترات التوقف: لا توجد فترات انقطاع >= 3 أيام'
+            ].filter(Boolean).join('\n')
+            : "لا توجد إحصائيات يوميات خلال الفترة.";
+
+        const logsContext = sortedPeriodLogs.length > 0 
+            ? sortedPeriodLogs.map((l, idx) => formatEnrichedLogLine(l, idx, boqItems)).join('\n')
             : "لا توجد يوميات مسجلة خلال هذه الفترة المحددة.";
 
         const boqContext = boqItems.length > 0
@@ -564,11 +595,11 @@ export const analysisService = {
             : "لا توجد بنود مقايسة مسجلة.";
 
         const paymentsContext = payments.length > 0
-            ? payments.map((p, i) => `• [مستخلص ${p.invoiceNumber || p.number || i+1}] بتاريخ: ${p.date} | إجمالي أعمال: ${(p.grossAmount || p.currentWorkValue || 0).toLocaleString()} ج.م | خصم ضمان: ${(p.retentionDeduction || p.retention || 0).toLocaleString()} | خصم دفعة مقدمة: ${(p.advanceDeduction || p.advancePayment || 0).toLocaleString()} | استقطاعات وضرائب: ${(p.taxDeduction || p.taxes || 0).toLocaleString()} | صافي مستحق: ${(p.netAmount || p.amount || 0).toLocaleString()} ج.م | تراكمي: ${(p.cumulativeAmount || p.netAmount || 0).toLocaleString()} ج.م | بيان: ${p.note || ''}`).join('\n')
+            ? payments.map((p, i) => `• [مستخلص ${p.invoiceNumber || p.number || i+1}] بتاريخ: ${p.date} | إجمالي أعمال: ${(p.grossAmount || p.currentWorkValue || p.grossCurrentWork || 0).toLocaleString()} ج.م | خصم ضمان: ${(p.retentionDeduction || p.retentionAmount || p.retention || 0).toLocaleString()} | خصم دفعة مقدمة: ${(p.advanceDeduction || p.advanceDeductionAmount || p.advancePayment || 0).toLocaleString()} | استقطاعات وضرائب: ${(p.taxDeduction || p.taxesAndOtherAmount || p.taxes || 0).toLocaleString()} | صافي مستحق: ${(p.netAmount || p.amount || 0).toLocaleString()} ج.م | تراكمي: ${(p.cumulativeAmount || p.netAmount || 0).toLocaleString()} ج.م | بيان: ${p.note || ''}`).join('\n')
             : "لا توجد مستخلصات مسجلة.";
             
-        const soilContext = projAny.soilReport && String(projAny.soilReport).trim().length > 0 
-            ? String(projAny.soilReport) 
+        const soilContext = (projAny.soilReport || projAny.soilReportAnalysis) && String(projAny.soilReport || projAny.soilReportAnalysis).trim().length > 0 
+            ? String(projAny.soilReport || projAny.soilReportAnalysis) 
             : "لم يتم إدخال تقرير فحص تربة وتوصيات جسات مفصل.";
 
         const reportsContext = (project.engineeringReports || []).length > 0
@@ -602,7 +633,10 @@ export const analysisService = {
             **تقرير فحص التربة والجسات:**
             ${soilContext}
 
-            **سجل اليوميات الميدانية خلال فترة التقرير:**
+            **ملخص وتحليل إحصائي لليوميات خلال الفترة:**
+            ${logsStatsText}
+
+            **سجل اليوميات الميدانية خلال فترة التقرير (شامل التصنيفات والبنود المرتبطة والصور):**
             ${logsContext}
             
             **سجل التقارير الهندسية والأرشيف:**

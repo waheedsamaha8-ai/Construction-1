@@ -667,10 +667,10 @@ export const ReportGenerator = {
         reportPeriod: { start: string, end: string },
         metadata: ReportMetadata = {}
     ) => {
-        const logRows = logs.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()).map(log => `
+        const logRows = [...logs].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()).map(log => `
             <tr>
                 <td style="width: 120px; text-align: center; font-weight: bold;">${log.date}</td>
-                <td>${log.content}</td>
+                <td>${log.workCategory ? `<span style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e0e7ff;color:#1e3a8a;font-size:10px;font-weight:800;">${log.workCategory}</span>` : ''}${log.content}</td>
             </tr>
         `).join('');
 
