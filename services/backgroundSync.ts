@@ -7,9 +7,17 @@ class BackgroundSyncEngine {
     private activeCount = 0;
     private maxConcurrent = 3;
     private processedSet = new Set<string>();
+    private activeStreamingFileId: string | null = null;
 
     constructor() {
         window.addEventListener('online', () => this.processQueue());
+    }
+
+    public setActiveStreamingFile(fileId: string | null) {
+        this.activeStreamingFileId = fileId;
+        if (!fileId && this.queue.length > 0 && navigator.onLine) {
+            this.processQueue();
+        }
     }
 
     private isVideoFile(f: FileItem): boolean {
@@ -25,13 +33,14 @@ class BackgroundSyncEngine {
         if (mime.includes('pdf') || name.endsWith('.pdf')) return 1;
         if (mime.includes('html') || mime.startsWith('text/') || name.endsWith('.html')) return 2;
         if (/\.(dwg|dxf)$/i.test(name)) return 3;
-        return 4;
+        if (this.isVideoFile(f)) return 4;
+        return 5;
     }
 
     /**
      * Called when a folder is opened.
-     * Pre-caches images, PDFs, letters, and drawings concurrently in the background
-     * so opening any file is instantaneous (0ms).
+     * Pre-caches images, PDFs, letters, drawings, and medium videos concurrently
+     * in the background so opening any file is instantaneous (0ms).
      */
     public async prioritizeFolder(files: FileItem[]) {
         if (!navigator.onLine || !files || files.length === 0) return;
@@ -39,9 +48,10 @@ class BackgroundSyncEngine {
         const downloadCandidates = files
             .filter(f => {
                 if (!f || f.type !== ItemType.FILE || this.processedSet.has(f.id)) return false;
-                if (this.isVideoFile(f)) return false;
-                // Allow up to 12MB for PDFs/CAD/High-res photos
-                if (f.size && f.size > 12 * 1024 * 1024) return false;
+                const isVid = this.isVideoFile(f);
+                // Cache images/PDFs up to 15MB and videos up to 45MB
+                const maxBytes = isVid ? 45 * 1024 * 1024 : 15 * 1024 * 1024;
+                if (f.size && f.size > maxBytes) return false;
                 // Skip if already hot in memory cache
                 if (api.getCachedBlobSync(f.id)) {
                     this.processedSet.add(f.id);
@@ -74,14 +84,14 @@ class BackgroundSyncEngine {
     }
 
     private processQueue() {
-        if (!navigator.onLine) return;
-        while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
+        if (!navigator.onLine || this.activeStreamingFileId) return;
+        while (this.activeCount < this.maxConcurrent && this.queue.length > 0 && !this.activeStreamingFileId) {
             const fileId = this.queue.shift();
             if (!fileId) continue;
             this.activeCount++;
             this.downloadFile(fileId).finally(() => {
                 this.activeCount--;
-                if (this.queue.length > 0 && navigator.onLine) {
+                if (this.queue.length > 0 && navigator.onLine && !this.activeStreamingFileId) {
                     this.processQueue();
                 }
             });

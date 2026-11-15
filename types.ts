@@ -41,11 +41,14 @@ export interface Task {
   relatedProjectId?: string;
 }
 
+export type LogImageAspectMode = '1:1' | '3:4' | 'original';
+
 export interface ProjectLog {
   id: string;
   date: string;
   content: string;
   images?: string[]; // Array of Base64 strings or URLs
+  imageModes?: LogImageAspectMode[]; // Per-image aspect mode (default: '1:1')
   boqItemId?: string;
   boqItemCode?: string;
   boqItemDescription?: string;
@@ -106,6 +109,14 @@ export interface BOQItemSavedReport {
   updatedAt: string;
 }
 
+export interface BOQBreakdownEntry {
+  id: string;
+  workDescription: string;
+  executedQuantity: number;
+  executedValue: number;
+  isCustomValue?: boolean;
+}
+
 export interface BOQItem {
   id: string;
   itemCode: string;
@@ -115,6 +126,7 @@ export interface BOQItem {
   unitPrice: number;
   total: number;
   executedQuantity: number;
+  executionBreakdown?: BOQBreakdownEntry[];
   batchId?: string;
   batchName?: string;
   savedReports?: Partial<Record<BOQItemReportType, BOQItemSavedReport>>;

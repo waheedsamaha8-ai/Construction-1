@@ -273,7 +273,7 @@ const LetterEditor: React.FC = () => {
   const [showCatalogTools, setShowCatalogTools] = useState(false);
   const [catalogCols, setCatalogCols] = useState<1 | 2 | 3 | 4>(2);
   const [catalogHeight, setCatalogHeight] = useState<number>(195);
-  const [catalogAspect, setCatalogAspect] = useState<'landscape' | 'square' | 'wide'>('landscape');
+  const [catalogAspect, setCatalogAspect] = useState<'portrait' | 'landscape' | 'square' | 'wide' | 'original'>('landscape');
   const [showBoxTools, setShowBoxTools] = useState(false);
   const [showQuoteTools, setShowQuoteTools] = useState(false); 
   const [showSpacingTools, setShowSpacingTools] = useState(false); 
@@ -777,10 +777,12 @@ const LetterEditor: React.FC = () => {
   const triggerBoxImageUpload = () => boxImageInputRef.current?.click();
   const handleBoxImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file && activeElement && activeElement.classList.contains('editable-box')) { const reader = new FileReader(); reader.onload = (event) => { if (event.target?.result) { const img = document.createElement('img'); img.src = event.target.result as string; img.style.maxWidth = '100%'; img.style.height = 'auto'; img.style.display = 'block'; img.style.margin = '5px auto'; activeElement.appendChild(img); } }; reader.readAsDataURL(file); } if (boxImageInputRef.current) boxImageInputRef.current.value = ''; };
   // --- PHOTO CATALOG HELPERS (كتالوج الصور) ---
-  const CATALOG_BASE_HEIGHT: Record<'landscape' | 'square' | 'wide', Record<1 | 2 | 3 | 4, number>> = {
+  const CATALOG_BASE_HEIGHT: Record<'portrait' | 'landscape' | 'square' | 'wide' | 'original', Record<1 | 2 | 3 | 4, number>> = {
+      portrait:  { 1: 340, 2: 320, 3: 255, 4: 195 },
       landscape: { 1: 290, 2: 195, 3: 145, 4: 115 },
-      square:    { 1: 340, 2: 260, 3: 195, 4: 150 },
-      wide:      { 1: 240, 2: 160, 3: 120, 4: 95 }
+      square:    { 1: 300, 2: 260, 3: 195, 4: 150 },
+      wide:      { 1: 240, 2: 160, 3: 120, 4: 95 },
+      original:  { 1: 340, 2: 280, 3: 220, 4: 170 }
   };
 
   const fileToCompressedDataUrl = async (file: File): Promise<string> => {
@@ -803,11 +805,13 @@ const LetterEditor: React.FC = () => {
   };
 
   const buildPhotoCatalogRowsHtml = (
-      entries: { src: string; caption?: string }[],
+      entries: { src: string; caption?: string; ratioMode?: '1:1' | '3:4' | 'original' }[],
       cols: 1 | 2 | 3 | 4,
-      heightPx: number
+      heightPx: number,
+      aspect: 'portrait' | 'landscape' | 'square' | 'wide' | 'original' = 'landscape'
   ): string => {
       const colPercent = (100 / cols).toFixed(2);
+      const scaleFactor = heightPx / (CATALOG_BASE_HEIGHT[aspect]?.[cols] || 200);
       const rows: string[] = [];
       for (let i = 0; i < entries.length; i += cols) {
           const chunk = entries.slice(i, i + cols);
@@ -817,9 +821,35 @@ const LetterEditor: React.FC = () => {
               if (entry) {
                   const idx = i + c + 1;
                   const cap = entry.caption || `صورة رقم (${idx})`;
+                  const effectiveMode = entry.ratioMode || (aspect === 'original' ? 'original' : aspect === 'portrait' ? '3:4' : aspect === 'square' ? '1:1' : undefined);
+
+                  let imgStyle = '';
+                  let ratioAttr = '';
+                  if (effectiveMode === 'original') {
+                      const maxOrigH = Math.max(110, Math.round((CATALOG_BASE_HEIGHT.original[cols] || 260) * scaleFactor));
+                      imgStyle = `width: 100% !important; height: auto !important; max-height: ${maxOrigH}px !important; object-fit: contain !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                      ratioAttr = 'data-ratio-mode="original"';
+                  } else if (effectiveMode === '3:4') {
+                      const targetH = entry.ratioMode
+                          ? Math.max(80, Math.round((CATALOG_BASE_HEIGHT.portrait[cols] || 260) * scaleFactor))
+                          : heightPx;
+                      const imgW = cols === 1 ? `${Math.round(targetH * 0.75)}px !important; max-width: 100% !important;` : `100% !important;`;
+                      imgStyle = `width: ${imgW} height: ${targetH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                      ratioAttr = 'data-ratio-mode="3:4"';
+                  } else if (effectiveMode === '1:1') {
+                      const targetH = entry.ratioMode
+                          ? Math.max(80, Math.round((CATALOG_BASE_HEIGHT.square[cols] || 220) * scaleFactor))
+                          : heightPx;
+                      const imgW = cols === 1 ? `${targetH}px !important; max-width: 100% !important;` : `100% !important;`;
+                      imgStyle = `width: ${imgW} height: ${targetH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                      ratioAttr = 'data-ratio-mode="1:1"';
+                  } else {
+                      imgStyle = `width: 100% !important; height: ${heightPx}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                  }
+
                   cells.push(`
                       <td style="width: ${colPercent}%; padding: 5px !important; border: 1px solid #cbd5e1 !important; background-color: #ffffff !important; text-align: center !important; vertical-align: middle !important;">
-                          <img src="${entry.src}" alt="${cap}" style="width: 100% !important; height: ${heightPx}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;" />
+                          <img ${ratioAttr} src="${entry.src}" alt="${cap}" style="${imgStyle}" />
                           <div class="photo-catalog-caption" style="font-size: 9.5px !important; color: #475569 !important; font-weight: 800 !important; margin-top: 4px !important; text-align: center !important; line-height: 1.2 !important;">${cap}</div>
                       </td>
                   `);
@@ -834,15 +864,17 @@ const LetterEditor: React.FC = () => {
       return rows.join('');
   };
 
-  const extractCatalogEntriesFromTable = (table: HTMLTableElement): { src: string; caption?: string }[] => {
-      const entries: { src: string; caption?: string }[] = [];
+  const extractCatalogEntriesFromTable = (table: HTMLTableElement): { src: string; caption?: string; ratioMode?: '1:1' | '3:4' | 'original' }[] => {
+      const entries: { src: string; caption?: string; ratioMode?: '1:1' | '3:4' | 'original' }[] = [];
       const cells = Array.from(table.querySelectorAll('td'));
       cells.forEach((cell) => {
           const img = cell.querySelector('img') as HTMLImageElement | null;
           if (!img || !img.src) return;
           const capEl = cell.querySelector('.photo-catalog-caption, div') as HTMLElement | null;
           const capText = capEl?.textContent?.trim();
-          entries.push({ src: img.src, caption: capText || undefined });
+          const rm = img.dataset.ratioMode;
+          const ratioMode = rm === '1:1' || rm === '3:4' || rm === 'original' ? rm : undefined;
+          entries.push({ src: img.src, caption: capText || undefined, ratioMode });
       });
       return entries;
   };
@@ -852,8 +884,8 @@ const LetterEditor: React.FC = () => {
       const detectedCols = Number(table.dataset.cols || (firstRow ? firstRow.cells.length : 2));
       const safeCols: 1 | 2 | 3 | 4 = (detectedCols >= 1 && detectedCols <= 4 ? detectedCols : 2) as 1 | 2 | 3 | 4;
       const rawAspect = table.dataset.aspect;
-      const safeAspect: 'landscape' | 'square' | 'wide' =
-          rawAspect === 'square' || rawAspect === 'wide' ? rawAspect : 'landscape';
+      const safeAspect: 'portrait' | 'landscape' | 'square' | 'wide' | 'original' =
+          rawAspect === 'portrait' || rawAspect === 'square' || rawAspect === 'wide' || rawAspect === 'original' ? rawAspect : 'landscape';
       const firstImg = table.querySelector('img') as HTMLImageElement | null;
       const parsedH = Number(table.dataset.photoHeight || parseInt(firstImg?.style?.height || '', 10));
       const safeHeight = !isNaN(parsedH) && parsedH >= 60 ? parsedH : CATALOG_BASE_HEIGHT[safeAspect][safeCols];
@@ -876,9 +908,10 @@ const LetterEditor: React.FC = () => {
   const updateActiveCatalogTable = (
       nextCols: 1 | 2 | 3 | 4,
       nextHeight: number,
-      nextAspect: 'landscape' | 'square' | 'wide',
-      extraEntries?: { src: string; caption?: string }[],
-      removeImg?: HTMLImageElement | null
+      nextAspect: 'portrait' | 'landscape' | 'square' | 'wide' | 'original',
+      extraEntries?: { src: string; caption?: string; ratioMode?: '1:1' | '3:4' | 'original' }[],
+      removeImg?: HTMLImageElement | null,
+      clearPerImageRatios: boolean = false
   ) => {
       const table = activeCatalogTableRef.current;
       if (!table || !editorRef.current?.contains(table)) return;
@@ -925,9 +958,10 @@ const LetterEditor: React.FC = () => {
       // Normalize auto captions like "صورة رقم (X)" cleanly in order
       const normalized = entries.map((en, i) => ({
           src: en.src,
-          caption: !en.caption || /^صورة رقم \(\d+\)$/.test(en.caption) ? `صورة رقم (${i + 1})` : en.caption
+          caption: !en.caption || /^صورة رقم \(\d+\)$/.test(en.caption) ? `صورة رقم (${i + 1})` : en.caption,
+          ratioMode: clearPerImageRatios ? undefined : en.ratioMode
       }));
-      tbody.innerHTML = buildPhotoCatalogRowsHtml(normalized, nextCols, nextHeight);
+      tbody.innerHTML = buildPhotoCatalogRowsHtml(normalized, nextCols, nextHeight, nextAspect);
 
       setCatalogCols(nextCols);
       setCatalogHeight(nextHeight);
@@ -940,13 +974,13 @@ const LetterEditor: React.FC = () => {
       const standaloneImgs = Array.from(editorRef.current.querySelectorAll('img')).filter(
           (img) => !img.closest('table.qc-photos-table, table.photo-catalog-table, table.qc-signatures-table')
       ) as HTMLImageElement[];
-      if (standaloneImgs.length < 2) return;
+      if (standaloneImgs.length < 1) return;
 
       const entries = standaloneImgs.map((img, idx) => ({
           src: img.src,
           caption: `صورة رقم (${idx + 1})`
       }));
-      const cols: 1 | 2 | 3 | 4 = preferredCols || (entries.length >= 4 ? 4 : entries.length === 3 ? 3 : 2);
+      const cols: 1 | 2 | 3 | 4 = preferredCols || (entries.length >= 4 ? 4 : entries.length === 3 ? 3 : entries.length === 2 ? 2 : 1);
       const heightPx = CATALOG_BASE_HEIGHT.landscape[cols];
 
       const wrapper = document.createElement('div');
@@ -955,7 +989,7 @@ const LetterEditor: React.FC = () => {
       wrapper.innerHTML = `
           <table class="qc-photos-table photo-catalog-table active-editing-element" data-cols="${cols}" data-photo-height="${heightPx}" data-aspect="landscape" style="width: 100% !important; min-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; margin: 8px 0 !important;">
               <tbody>
-                  ${buildPhotoCatalogRowsHtml(entries, cols, heightPx)}
+                  ${buildPhotoCatalogRowsHtml(entries, cols, heightPx, 'landscape')}
               </tbody>
           </table>
       `;
@@ -2244,12 +2278,29 @@ const LetterEditor: React.FC = () => {
                 vertical-align: middle !important;
                 background-color: #ffffff !important;
             }
-            #letter-content-area table.qc-photos-table img,
-            #letter-content-area table.photo-catalog-table img {
+            #letter-content-area table.qc-photos-table:not([data-cols="1"][data-aspect="portrait"]):not([data-cols="1"][data-aspect="square"]) img:not([data-ratio-mode="original"]):not([data-ratio-mode="1:1"]):not([data-ratio-mode="3:4"]),
+            #letter-content-area table.photo-catalog-table:not([data-cols="1"][data-aspect="portrait"]):not([data-cols="1"][data-aspect="square"]) img:not([data-ratio-mode="original"]):not([data-ratio-mode="1:1"]):not([data-ratio-mode="3:4"]) {
                 width: 100% !important;
                 max-width: 100% !important;
                 object-fit: cover !important;
                 object-position: center !important;
+                margin: 0 auto !important;
+                display: block !important;
+            }
+            #letter-content-area table.photo-catalog-table img[data-ratio-mode="1:1"],
+            #letter-content-area table.photo-catalog-table img[data-ratio-mode="3:4"],
+            #letter-content-area table.photo-catalog-table[data-cols="1"][data-aspect="portrait"] img:not([data-ratio-mode="original"]),
+            #letter-content-area table.photo-catalog-table[data-cols="1"][data-aspect="square"] img:not([data-ratio-mode="original"]) {
+                max-width: 100% !important;
+                object-fit: cover !important;
+                object-position: center !important;
+                margin: 0 auto !important;
+                display: block !important;
+            }
+            #letter-content-area table.photo-catalog-table img[data-ratio-mode="original"] {
+                width: 100% !important;
+                height: auto !important;
+                object-fit: contain !important;
                 margin: 0 auto !important;
                 display: block !important;
             }
@@ -3043,8 +3094,10 @@ const LetterEditor: React.FC = () => {
                             <div className="flex gap-1 items-center border-l border-yellow-300 pl-2 ml-1 shrink-0">
                                 <span className="text-[9px] text-slate-500 font-bold hidden sm:inline">النسبة:</span>
                                 {([
-                                    { key: 'landscape', label: '4:3' },
                                     { key: 'square', label: '1:1' },
+                                    { key: 'portrait', label: '3:4' },
+                                    { key: 'original', label: 'أصلي' },
+                                    { key: 'landscape', label: '4:3' },
                                     { key: 'wide', label: '16:9' }
                                 ] as const).map((asp) => (
                                     <button
@@ -3053,7 +3106,7 @@ const LetterEditor: React.FC = () => {
                                         onMouseDown={(e) => {
                                             e.preventDefault();
                                             const nextHeight = CATALOG_BASE_HEIGHT[asp.key][catalogCols];
-                                            updateActiveCatalogTable(catalogCols, nextHeight, asp.key);
+                                            updateActiveCatalogTable(catalogCols, nextHeight, asp.key, undefined, undefined, true);
                                         }}
                                         className={`px-1.5 py-0.5 rounded font-mono font-bold border transition ${
                                             catalogAspect === asp.key

@@ -29,11 +29,7 @@ const isSyntheticId = (id?: string | null): boolean => {
 const emitThumbLocal = (id: string, thumb: string) => {
   if (!id || !thumb || !thumb.startsWith('data:image')) return;
   memoryThumbCache.set(id, thumb);
-  try {
-    if (thumb.length < 120000) {
-      localStorage.setItem(`vthumb_${id}`, thumb);
-    }
-  } catch {}
+  // Thumbnails stay in RAM + IndexedDB to avoid exhausting 5MB localStorage quota
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('thumb_updated', { detail: { id, thumb } }));
   }
@@ -58,9 +54,7 @@ export const thumbnailSync = {
 
     if (previewUrl && previewUrl.startsWith('data:image')) {
       memoryThumbCache.set(id, previewUrl);
-      try {
-        if (previewUrl.length < 120000) localStorage.setItem(`vthumb_${id}`, previewUrl);
-      } catch {}
+      // Cached in memoryThumbCache; persistent copy stored in IndexedDB
       return previewUrl;
     }
 

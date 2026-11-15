@@ -768,7 +768,7 @@ const Dashboard: React.FC = () => {
                     )}
                 </div>
                 
-                {searchQuery && (<div className="animate-fade-in space-y-2"><h3 className="text-sm font-black text-black mb-2 pt-4 border-t border-slate-200 flex items-center gap-2">المستندات المتطابقة ({foundFiles.length})</h3>{foundFiles.length > 0 ? foundFiles.map(file => <FileItemRow key={file.id} item={file} onClick={() => handleFileClick(file)} onDelete={() => {}} />) : <div className="p-10 text-center text-slate-400 bg-white rounded-3xl border border-dashed border-slate-200">لا توجد مستندات تطابق بحثك</div>}</div>)}
+                {searchQuery && (<div className="animate-fade-in space-y-2"><h3 className="text-sm font-black text-black mb-2 pt-4 border-t border-slate-200 flex items-center gap-2">المستندات المتطابقة ({foundFiles.length})</h3>{foundFiles.length > 0 ? foundFiles.map(file => <div key={file.id} onPointerDown={() => api.warmMediaItem(file)} onMouseEnter={() => api.warmMediaItem(file)}><FileItemRow item={file} onClick={() => handleFileClick(file)} onDelete={() => {}} /></div>) : <div className="p-10 text-center text-slate-400 bg-white rounded-3xl border border-dashed border-slate-200">لا توجد مستندات تطابق بحثك</div>}</div>)}
             </div>
 
             {!searchQuery && (
@@ -1030,8 +1030,20 @@ const Dashboard: React.FC = () => {
       {showProfessionalPricing && <ProfessionalPricingModal onClose={() => setShowProfessionalPricing(false)} />}
       {showInstantExpert && <InstantExpert onClose={() => setShowInstantExpert(false)} />} {/* RENDER INSTANT EXPERT */}
 
-      {previewItem && <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} />
-      }
+      {previewItem && (
+          <FileViewer
+              item={previewItem}
+              siblings={(() => {
+                  const isPreviewMedia = (f: FileItem) => {
+                      const m = (f.mimeType || '').toLowerCase();
+                      const n = (f.name || '').toLowerCase();
+                      return m.startsWith('image/') || m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp|jpg|jpeg|png|webp|gif)$/i.test(n);
+                  };
+                  return isPreviewMedia(previewItem) ? foundFiles.filter(isPreviewMedia) : [];
+              })()}
+              onClose={() => setPreviewItem(null)}
+          />
+      )}
     </Layout>
   );
 };

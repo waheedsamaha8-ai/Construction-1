@@ -6,6 +6,8 @@ import { FileItem } from '../types';
 import { aiHelper } from '../services/aiHelper';
 import { api } from '../services/api';
 import { dbService } from '../services/db';
+import { thumbnailSync } from '../services/thumbnailSync';
+import { autoSync } from '../services/backgroundSync';
 import { printService } from '../services/printService';
 import * as pdfjsLib from 'pdfjs-dist';
 import ImageEditor from './ImageEditor';
@@ -107,8 +109,60 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const [isAnalysisMenuOpen, setIsAnalysisMenuOpen] = useState(false);
   const [isDirectEditingAnalysis, setIsDirectEditingAnalysis] = useState(false);
   
-  const [displayUrl, setDisplayUrl] = useState<string | null>(null);
-  const [isHighResLoaded, setIsHighResLoaded] = useState(false);
+  const isMediaImageItem = (f: Partial<FileItem>) => {
+      const m = (f.mimeType || '').toLowerCase();
+      const n = (f.name || '').toLowerCase();
+      return m.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(n);
+  };
+
+  const isMediaVideoItem = (f: Partial<FileItem>) => {
+      const m = (f.mimeType || '').toLowerCase();
+      const n = (f.name || '').toLowerCase();
+      return m.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(n);
+  };
+
+  const getSyncThumbFallback = (f: Partial<FileItem>): string | null => {
+      const cached = thumbnailSync.getSyncCachedThumb(f);
+      if (cached) return cached;
+      if (f.previewUrl) return f.previewUrl;
+      if (f.thumbnailLink) return f.thumbnailLink;
+      return null;
+  };
+
+  const ensureTypedMediaBlob = (rawBlob: Blob, f: Partial<FileItem>): Blob => {
+      const fMime = (f.mimeType || '').toLowerCase();
+      const fName = (f.name || '').toLowerCase();
+      if (rawBlob.type && (rawBlob.type.startsWith('video/') || rawBlob.type.startsWith('audio/'))) {
+          return rawBlob;
+      }
+      let inferredType = fMime.startsWith('audio/') ? 'audio/mp3' : 'video/mp4';
+      if (fMime.startsWith('video/') || fMime.startsWith('audio/')) inferredType = fMime;
+      else if (fName.endsWith('.webm')) inferredType = 'video/webm';
+      else if (fName.endsWith('.mov')) inferredType = 'video/quicktime';
+      return new Blob([rawBlob], { type: inferredType });
+  };
+
+  const getInstantSyncMediaState = (f: FileItem): { url: string | null; highRes: boolean } => {
+      const img = isMediaImageItem(f);
+      const vid = isMediaVideoItem(f);
+      const memBlob = api.getCachedBlobSync(f.id);
+      if (memBlob && memBlob.size > 0) {
+          if (vid) {
+              const typed = ensureTypedMediaBlob(memBlob, f);
+              return { url: api.getOrCreateBlobUrl(f.id, typed), highRes: true };
+          }
+          return { url: api.getOrCreateBlobUrl(f.id, memBlob), highRes: true };
+      }
+      if (img) {
+          const thumb = getSyncThumbFallback(f);
+          if (thumb) return { url: thumb, highRes: false };
+      }
+      return { url: null, highRes: false };
+  };
+
+  const initialMediaState = getInstantSyncMediaState(currentItem);
+  const [displayUrl, setDisplayUrl] = useState<string | null>(initialMediaState.url);
+  const [isHighResLoaded, setIsHighResLoaded] = useState(initialMediaState.highRes);
   const [loadError, setLoadError] = useState(false);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -126,6 +180,13 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const imgStageRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef<HTMLDivElement>(null);
   const imgZoomRef = useRef({ scale: 1, x: 0, y: 0 });
+
+  // Refs for video instant playback & smooth buffering
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isVideoBuffering, setIsVideoBuffering] = useState(false);
+  const [isVideoMutedAutoplay, setIsVideoMutedAutoplay] = useState(false);
+  const triedDirectStreamRef = useRef(false);
+  const videoCachedStartedRef = useRef(false);
 
   // Refs for jump-free focal-point PDF zoom & native momentum scroll
   const pdfViewportRef = useRef<HTMLDivElement>(null);
@@ -154,7 +215,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const [useCloudVideoPlayer, setUseCloudVideoPlayer] = useState(false);
   const [isFallbackDownloading, setIsFallbackDownloading] = useState(false);
 
-  const isImage = mime.startsWith('image/'); 
+  const isImage = mime.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name); 
   const isVideo = mime.startsWith('video/') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi') || name.endsWith('.webm') || name.endsWith('.mkv') || name.endsWith('.3gp');
   const isAudio = mime.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav') || name.endsWith('.m4a') || name.endsWith('.ogg');
   const isPdf = mime.includes('pdf');
@@ -201,50 +262,32 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       setShowActionsMenu(false);
       setUseCloudVideoPlayer(false);
       setIsFallbackDownloading(false);
+      setIsVideoMutedAutoplay(false);
+      triedDirectStreamRef.current = false;
+      videoCachedStartedRef.current = false;
 
-      // Instant 0ms memory hit for cached images/media
-      const hotUrl = isImage ? api.getBlobUrlSync(currentItem.id) : null;
-      if (hotUrl) {
-          setDisplayUrl(hotUrl);
-          setIsHighResLoaded(true);
-      } else {
-          setDisplayUrl(null);
-          setIsHighResLoaded(false);
-      }
-  }, [currentItem.id, isImage]);
+      // Instant 0ms memory or preview hit for images AND videos
+      const syncState = getInstantSyncMediaState(currentItem);
+      setDisplayUrl(syncState.url);
+      setIsHighResLoaded(syncState.highRes);
+      setIsVideoBuffering(isVideo && !syncState.url);
+  }, [currentItem.id, isImage, isVideo]);
 
   // Background pre-warming for adjacent sibling files (next / prev) for 0ms switching
   useEffect(() => {
-      if (!siblings || siblings.length <= 1 || !navigator.onLine) return;
+      if (!siblings || siblings.length <= 1) return;
+      if (isVideo && isVideoBuffering) return;
       const candidateIndices = [currentIndex + 1, currentIndex - 1, currentIndex + 2];
       const timer = setTimeout(() => {
           candidateIndices.forEach((idx) => {
               if (idx < 0 || idx >= siblings.length) return;
               const sib = siblings[idx];
               if (!sib || sib.type === 'folder') return;
-              const sMime = (sib.mimeType || '').toLowerCase();
-              const sName = (sib.name || '').toLowerCase();
-              const isVid = sMime.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(sName);
-              if (isVid) return;
-              if (sib.size && sib.size > 15 * 1024 * 1024) return;
-              api.prefetchFileBlob(sib.id);
-              if (sMime.startsWith('image/')) {
-                  let imgUrl = sib.previewUrl || sib.thumbnailLink;
-                  if (imgUrl && imgUrl.includes('googleusercontent.com')) {
-                      imgUrl = imgUrl.replace(/=s\d+/, '=s1600');
-                  } else if (!imgUrl && sib.id && !sib.id.startsWith('temp_')) {
-                      imgUrl = `https://drive.google.com/thumbnail?id=${sib.id}&sz=w1600`;
-                  }
-                  if (imgUrl && !api.getCachedBlobSync(sib.id)) {
-                      const preImg = new Image();
-                      preImg.referrerPolicy = 'no-referrer';
-                      preImg.src = imgUrl;
-                  }
-              }
+              api.warmMediaItem(sib);
           });
-      }, 60);
+      }, isVideo ? 250 : 30);
       return () => clearTimeout(timer);
-  }, [currentIndex, siblings]);
+  }, [currentIndex, siblings, isVideo, isVideoBuffering]);
 
   useEffect(() => {
     let active = true;
@@ -264,38 +307,74 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                 return;
             }
 
-            // 1. Check local IndexedDB cache first (~1ms)
+            // Show cached preview synchronously on frame 0 while upgrading cleanly
+            const thumbUrl = getSyncThumbFallback(currentItem);
+            if (thumbUrl && active) {
+                setDisplayUrl(prev => prev || thumbUrl);
+            }
+
+            // 1. Check local IndexedDB cache first (~1-2ms)
             try {
                 const cachedBlob = await dbService.getBlob(currentItem.id);
-                if (cachedBlob && active) {
+                if (cachedBlob && cachedBlob.size > 0 && active) {
                     setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, cachedBlob));
                     setIsHighResLoaded(true);
                     return;
                 }
             } catch (e) {}
 
-            // 2. Show high-res Google Drive preview immediately (<100ms, crisp)
-            let instantUrl = currentItem.previewUrl || currentItem.thumbnailLink;
-            if (instantUrl && instantUrl.includes('googleusercontent.com')) {
-                instantUrl = instantUrl.replace(/=s\d+/, '=s1600'); 
-            } else if (!instantUrl && currentItem.id && !currentItem.id.startsWith('temp_')) {
-                instantUrl = `https://drive.google.com/thumbnail?id=${currentItem.id}&sz=w1600`;
-            }
-            if (instantUrl && active) {
-                setDisplayUrl(instantUrl);
-                setIsHighResLoaded(true);
+            // 2. Decode high-res Drive preview offscreen before swapping (zero flicker)
+            let hiResUrl = currentItem.previewUrl || currentItem.thumbnailLink || '';
+            if (hiResUrl && hiResUrl.includes('googleusercontent.com')) {
+                hiResUrl = hiResUrl.replace(/=s\d+/, '=s1600').replace(/=w\d+(-h\d+)?/i, '=s1600');
+            } else if (hiResUrl && hiResUrl.includes('drive.google.com/thumbnail')) {
+                hiResUrl = hiResUrl.replace(/([?&]sz=)w\d+/i, '$1w1600');
+            } else if ((!hiResUrl || hiResUrl.startsWith('data:')) && currentItem.id && !currentItem.id.startsWith('temp_') && !currentItem.id.startsWith('file_')) {
+                hiResUrl = `https://drive.google.com/thumbnail?id=${currentItem.id}&sz=w1600`;
             }
 
-            // 3. Silently cache full blob in background for offline/zoom
+            if (hiResUrl && hiResUrl !== thumbUrl && navigator.onLine) {
+                const offscreen = new Image();
+                offscreen.referrerPolicy = 'no-referrer';
+                offscreen.src = hiResUrl;
+                offscreen.decode?.().then(() => {
+                    if (active) {
+                        setDisplayUrl(prev => (prev && prev.startsWith('blob:')) ? prev : hiResUrl);
+                        setIsHighResLoaded(true);
+                    }
+                }).catch(() => {
+                    offscreen.onload = () => {
+                        if (active) {
+                            setDisplayUrl(prev => (prev && prev.startsWith('blob:')) ? prev : hiResUrl);
+                            setIsHighResLoaded(true);
+                        }
+                    };
+                });
+            }
+
+            // 3. Silently cache full raw blob in background for offline & crisp pinch-zoom
             try {
-                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active && !instantUrl) setDownloadProgress(p); }, !!instantUrl);
-                if (active && blob) {
+                const hasPreview = Boolean(thumbUrl || hiResUrl);
+                const blob = await api.downloadFileBlob(currentItem.id, (p) => { if (active && !hasPreview) setDownloadProgress(p); }, hasPreview);
+                if (active && blob && blob.size > 0) {
                     const blobUrl = api.getOrCreateBlobUrl(currentItem.id, blob);
-                    setDisplayUrl(blobUrl);
-                    setIsHighResLoaded(true);
+                    const applyBlob = () => {
+                        if (active) {
+                            setDisplayUrl(blobUrl);
+                            setIsHighResLoaded(true);
+                        }
+                    };
+                    const preloader = new Image();
+                    preloader.src = blobUrl;
+                    if (typeof preloader.decode === 'function') {
+                        preloader.decode().then(applyBlob).catch(applyBlob);
+                    } else {
+                        preloader.onload = applyBlob;
+                        preloader.onerror = applyBlob;
+                    }
                 }
             } catch (e) {
-                if (!instantUrl && active) setLoadError(true);
+                if (!thumbUrl && !hiResUrl && active) setLoadError(true);
             }
         } 
         else if (isPdf) {
@@ -329,59 +408,42 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
             }
         }
         else if (isVideo || isAudio) {
-             const ensureTypedMediaBlob = (rawBlob: Blob) => {
-                 if (rawBlob.type && (rawBlob.type.startsWith('video/') || rawBlob.type.startsWith('audio/'))) {
-                     return rawBlob;
-                 }
-                 let inferredType = isAudio ? 'audio/mp3' : 'video/mp4';
-                 if (mime.startsWith('video/') || mime.startsWith('audio/')) inferredType = mime;
-                 else if (name.endsWith('.webm')) inferredType = 'video/webm';
-                 else if (name.endsWith('.mov')) inferredType = 'video/quicktime';
-                 return new Blob([rawBlob], { type: inferredType });
-             };
-
              // 0. Check RAM cache first (0ms)
              const memMediaBlob = api.getCachedBlobSync(currentItem.id);
              if (memMediaBlob && memMediaBlob.size > 0 && active) {
-                 const typedBlob = ensureTypedMediaBlob(memMediaBlob);
+                 const typedBlob = ensureTypedMediaBlob(memMediaBlob, currentItem);
                  setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, typedBlob));
+                 setIsVideoBuffering(false);
                  return;
              }
 
-             // 1. Check local IndexedDB blob first (~1ms for locally recorded or cached media)
+             // 1. Check local IndexedDB blob (~1ms for locally recorded or pre-cached media)
              try {
                  const localBlob = await dbService.getBlob(currentItem.id);
                  if (localBlob && localBlob.size > 0 && active) {
-                     const typedBlob = ensureTypedMediaBlob(localBlob);
+                     const typedBlob = ensureTypedMediaBlob(localBlob, currentItem);
                      setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, typedBlob));
+                     setIsVideoBuffering(false);
                      return;
                  }
              } catch (e) {}
 
-             // 2. Set direct stream URL immediately (NEVER use previewUrl because previewUrl is an image thumbnail!)
-             const token = api.getAccessToken ? api.getAccessToken() : '';
-             const streamUrl = token && currentItem.id && !currentItem.id.startsWith('temp_')
-                 ? `https://www.googleapis.com/drive/v3/files/${currentItem.id}?alt=media&access_token=${token}` 
-                 : (currentItem.webContentLink || '');
-             
+             // 2. Stream via high-speed HTTP Range Proxy (or direct Drive URL) with zero bandwidth contention
+             const streamUrl = api.getVideoStreamUrl(currentItem.id, currentItem.webContentLink);
              if (streamUrl && active) {
+                 if (isVideo) {
+                     autoSync.setActiveStreamingFile(currentItem.id);
+                     setIsVideoBuffering(true);
+                 }
                  setDisplayUrl(streamUrl);
-                 // Pre-cache blob in background so mobile browsers that reject direct range streams can switch to local Blob seamlessly
-                 api.downloadFileBlob(currentItem.id, (p) => { if (active) setDownloadProgress(p); }, true)
-                    .then((blob) => {
-                        if (active && blob && blob.size > 0) {
-                            const typed = ensureTypedMediaBlob(blob);
-                            setDisplayUrl((prev) => (!prev ? api.getOrCreateBlobUrl(currentItem.id, typed) : prev));
-                        }
-                    })
-                    .catch(() => {});
              } else {
                  try {
-                     const blob = await api.downloadFileBlob(currentItem.id, (p) => { if(active) setDownloadProgress(p) });
+                     const blob = await api.downloadFileBlob(currentItem.id, (p) => { if (active) setDownloadProgress(p); });
                      if (active && blob) {
-                         setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, ensureTypedMediaBlob(blob)));
+                         setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, ensureTypedMediaBlob(blob, currentItem)));
+                         setIsVideoBuffering(false);
                      }
-                 } catch(e) {
+                 } catch (e) {
                      if (active) {
                          if (isVideo && !api.isGuest() && currentItem.id && !currentItem.id.startsWith('temp_')) {
                              setUseCloudVideoPlayer(true);
@@ -401,7 +463,10 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
     };
 
     load();
-    return () => { active = false; };
+    return () => {
+        active = false;
+        autoSync.setActiveStreamingFile(null);
+    };
   }, [currentItem.id, isImage, isVideo, isText, isPdf, isOffice, isAudio, isDwg, currentItem.previewUrl, embedUrl]);
 
   const handleAnalyze = async () => {
@@ -908,7 +973,9 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                     <img
                         src={displayUrl}
                         alt={currentItem.name}
-                        className={`max-w-full max-h-full object-contain shadow-2xl z-10 transition-opacity duration-300 ${!isHighResLoaded ? 'blur-sm opacity-80' : 'blur-0 opacity-100'} m-auto block`}
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-contain z-10 block"
                         style={{ objectPosition: 'center center' }}
                         draggable={false}
                     />
@@ -923,14 +990,9 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
         </div>
       );
       
-      // FIX: Ensure Video is perfectly centered & 100% mobile compatible with automatic fallbacks
+      // FIX: Instant video playback with RAM/IndexedDB 0ms hit, HTTP Range stream proxy & automatic fallbacks
       if (isVideo) {
-          let videoPoster: string | undefined = undefined;
-          try {
-              const savedThumb = localStorage.getItem(`vthumb_${currentItem.id}`);
-              if (savedThumb && savedThumb.startsWith('data:image')) videoPoster = savedThumb;
-              else if (currentItem.previewUrl && currentItem.previewUrl.startsWith('data:image')) videoPoster = currentItem.previewUrl;
-          } catch (e) {}
+          const videoPoster = getSyncThumbFallback(currentItem) || undefined;
 
           if (useCloudVideoPlayer && embedUrl && !api.isGuest()) {
               return (
@@ -949,59 +1011,125 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
           return (
               <div className="w-full h-full flex items-center justify-center bg-black relative"> 
                   {displayUrl && !isFallbackDownloading ? (
-                      <video 
-                          key={displayUrl}
-                          controls 
-                          autoPlay 
-                          playsInline 
-                          webkit-playsinline="true"
-                          preload="auto" 
-                          poster={videoPoster}
-                          className="max-w-full max-h-full w-full h-full shadow-2xl m-auto block object-contain" 
-                          src={displayUrl}
-                          onLoadedMetadata={(e) => {
-                              const vid = e.currentTarget;
-                              vid.play().catch(() => {
-                                  // If mobile browser blocks unmuted autoplay, user can tap play or we play muted first
-                              });
-                          }}
-                          onError={async () => {
-                              // Stage 1 Fallback: If direct stream URL failed on mobile, download as typed local Blob
-                              if (displayUrl && !displayUrl.startsWith('blob:')) {
-                                  setIsFallbackDownloading(true);
-                                  try {
-                                      const blob = await api.downloadFileBlob(currentItem.id, (p) => setDownloadProgress(p));
-                                      if (blob && blob.size > 0) {
-                                          let inferredType = 'video/mp4';
-                                          if (mime.startsWith('video/')) inferredType = mime;
-                                          else if (name.endsWith('.webm')) inferredType = 'video/webm';
-                                          const typedBlob = new Blob([blob], { type: inferredType });
-                                          setDisplayUrl(URL.createObjectURL(typedBlob));
-                                          setIsFallbackDownloading(false);
+                      <>
+                          <video 
+                              ref={videoRef}
+                              key={displayUrl}
+                              controls 
+                              autoPlay 
+                              playsInline 
+                              webkit-playsinline="true"
+                              preload="auto" 
+                              poster={videoPoster}
+                              className="max-w-full max-h-full w-full h-full shadow-2xl m-auto block object-contain" 
+                              src={displayUrl}
+                              onLoadedData={(e) => {
+                                  setIsVideoBuffering(false);
+                                  autoSync.setActiveStreamingFile(null);
+                                  const vid = e.currentTarget;
+                                  if (vid.paused) {
+                                      vid.play().catch(() => {
+                                          // Mobile/desktop autoplay policy may block unmuted playback; start muted instantly + show unmute tap button
+                                          vid.muted = true;
+                                          setIsVideoMutedAutoplay(true);
+                                          vid.play().catch(() => {});
+                                      });
+                                  }
+                              }}
+                              onCanPlay={() => {
+                                  setIsVideoBuffering(false);
+                                  autoSync.setActiveStreamingFile(null);
+                              }}
+                              onPlaying={() => {
+                                  setIsVideoBuffering(false);
+                                  autoSync.setActiveStreamingFile(null);
+                              }}
+                              onWaiting={() => {
+                                  if (displayUrl && !displayUrl.startsWith('blob:')) {
+                                      setIsVideoBuffering(true);
+                                  }
+                              }}
+                              onCanPlayThrough={() => {
+                                  setIsVideoBuffering(false);
+                                  autoSync.setActiveStreamingFile(null);
+                                  if (!videoCachedStartedRef.current && displayUrl && !displayUrl.startsWith('blob:') && (!currentItem.size || currentItem.size <= 35 * 1024 * 1024)) {
+                                      videoCachedStartedRef.current = true;
+                                      api.prefetchFileBlob(currentItem.id);
+                                  }
+                              }}
+                              onVolumeChange={(e) => {
+                                  if (!e.currentTarget.muted && isVideoMutedAutoplay) {
+                                      setIsVideoMutedAutoplay(false);
+                                  }
+                              }}
+                              onError={async () => {
+                                  autoSync.setActiveStreamingFile(null);
+                                  // Stage 1 Fallback: If same-origin stream proxy failed, try direct Google Drive media URL
+                                  if (displayUrl.startsWith('/api/drive/stream/') && !triedDirectStreamRef.current) {
+                                      triedDirectStreamRef.current = true;
+                                      const directUrl = api.getDirectDriveStreamUrl(currentItem.id, currentItem.webContentLink);
+                                      if (directUrl) {
+                                          setDisplayUrl(directUrl);
                                           return;
                                       }
-                                  } catch (err) {}
-                                  setIsFallbackDownloading(false);
-                              }
-                              // Stage 2 Fallback: Use Google Drive's universal mobile transcoded player
-                              if (!api.isGuest() && currentItem.id && !currentItem.id.startsWith('temp_')) {
-                                  setUseCloudVideoPlayer(true);
-                              } else {
-                                  setLoadError(true);
-                              }
-                          }}
-                      />
+                                  }
+                                  // Stage 2 Fallback: If stream URL failed, download as typed local Blob
+                                  if (displayUrl && !displayUrl.startsWith('blob:')) {
+                                      setIsFallbackDownloading(true);
+                                      try {
+                                          const blob = await api.downloadFileBlob(currentItem.id, (p) => setDownloadProgress(p));
+                                          if (blob && blob.size > 0) {
+                                              const typedBlob = ensureTypedMediaBlob(blob, currentItem);
+                                              setDisplayUrl(api.getOrCreateBlobUrl(currentItem.id, typedBlob));
+                                              setIsFallbackDownloading(false);
+                                              setIsVideoBuffering(false);
+                                              return;
+                                          }
+                                      } catch (err) {}
+                                      setIsFallbackDownloading(false);
+                                  }
+                                  // Stage 3 Fallback: Use Google Drive's universal cloud video player
+                                  if (!api.isGuest() && currentItem.id && !currentItem.id.startsWith('temp_')) {
+                                      setUseCloudVideoPlayer(true);
+                                  } else {
+                                      setLoadError(true);
+                                  }
+                              }}
+                          />
+                          {isVideoBuffering && (
+                              <div className="absolute top-3 right-3 bg-black/70 backdrop-blur-md text-white px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-2 border border-white/15 pointer-events-none z-20">
+                                  <span className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
+                                  <span>جاري التحميل الفوري...</span>
+                              </div>
+                          )}
+                          {isVideoMutedAutoplay && (
+                              <button
+                                  type="button"
+                                  onClick={() => {
+                                      if (videoRef.current) {
+                                          videoRef.current.muted = false;
+                                          videoRef.current.volume = 1;
+                                          setIsVideoMutedAutoplay(false);
+                                      }
+                                  }}
+                                  className="absolute top-3 left-3 bg-black/75 hover:bg-black/90 text-white px-3 py-1.5 rounded-full text-[11px] font-bold flex items-center gap-1.5 border border-white/20 backdrop-blur-md shadow-lg z-30 transition active:scale-95"
+                              >
+                                  <i className="fa-solid fa-volume-xmark text-amber-400"></i>
+                                  <span>تشغيل الصوت</span>
+                              </button>
+                          )}
+                      </>
                   ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black/90 z-20">
                           {videoPoster && (
-                              <img src={videoPoster} alt="" className="absolute inset-0 w-full h-full object-contain opacity-35 blur-xs pointer-events-none" />
+                              <img src={videoPoster} alt="" className="absolute inset-0 w-full h-full object-contain opacity-45 pointer-events-none" />
                           )}
                           <div className="relative w-16 h-16 flex items-center justify-center mb-3 z-10">
                               <div className="absolute inset-0 border-4 border-white/30 rounded-full"></div>
                               <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                               <span className="text-xs font-bold text-white relative z-10">{downloadProgress > 0 ? `${downloadProgress}%` : ''}</span>
                           </div>
-                          <p className="font-bold text-sm z-10">جاري فتح الفيديو...</p>
+                          <p className="font-bold text-sm z-10">جاري تشغيل الفيديو...</p>
                       </div>
                   )}
                   {siblings.length > 1 && (<> {currentIndex > 0 && <button onClick={(e) => { e.stopPropagation(); handlePrev(); }} className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-left text-lg sm:text-2xl"></i></button>} {currentIndex < siblings.length - 1 && <button onClick={(e) => { e.stopPropagation(); handleNext(); }} className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-sm z-30 transition hover:scale-110"><i className="fa-solid fa-chevron-right text-lg sm:text-2xl"></i></button>} </>)}
@@ -1183,7 +1311,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                 )}
         </div>
       </div>
-      <div className="flex-1 w-full h-full bg-slate-900 relative flex flex-col items-center justify-center overflow-hidden">{renderContent()}</div>
+      <div className="flex-1 min-h-0 w-full h-full bg-slate-900 relative flex flex-col items-center justify-center overflow-hidden">{renderContent()}</div>
       
       {/* Analysis Modal - UPDATED FOR FULL WIDTH */}
       {isAnalysisOpen && (

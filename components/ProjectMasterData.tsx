@@ -6,10 +6,12 @@ import { api, HIDDEN_LOGS_FOLDER } from '../services/api';
 import { aiHelper } from '../services/aiHelper';
 import { imageUtils } from '../services/imageUtils';
 import { printService } from '../services/printService';
+import { exportBoqBatchToExcel, exportPaymentToExcel, exportLogsToExcel } from '../services/excelExport';
+import { triggerLoadingStart, triggerLoadingStop } from './GlobalLoadingBar';
 import ConfirmModal from './ConfirmModal'; 
 import ProjectReportModal from './ProjectReportModal';
 import { ReportGenerator } from '../services/reportGenerator';
-import { Project, ProjectLog, ProjectPayment, BOQItem, BOQItemReportType, BOQItemSavedReport, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
+import { Project, ProjectLog, LogImageAspectMode, ProjectPayment, BOQItem, BOQBreakdownEntry, BOQItemReportType, BOQItemSavedReport, PaymentItem, FileItem, ItemType, EngineeringReportItem, RFI, Submittal, Correspondence, Checklist, NCR } from '../types';
 import html2canvas from 'html2canvas';
 import InteractiveReportViewer, { formatInteractiveReportHtml, applyTableColumnWidthToHtml } from './InteractiveReportViewer';
 import ProjectAI from './ProjectAI';
@@ -39,7 +41,16 @@ const normalizeBoqList = (items: any[] = []): BOQItem[] => {
             quantity: qty,
             unitPrice: price,
             total: b.total !== undefined && !isNaN(Number(b.total)) && Number(b.total) > 0 ? Number(b.total) : (qty * price),
-            executedQuantity: execQty
+            executedQuantity: execQty,
+            executionBreakdown: Array.isArray(b.executionBreakdown)
+                ? b.executionBreakdown.filter(Boolean).map((row: any, rIdx: number) => ({
+                    id: row.id || `bk_${idx}_${rIdx}`,
+                    workDescription: String(row.workDescription || ''),
+                    executedQuantity: Number(row.executedQuantity) || 0,
+                    executedValue: Number(row.executedValue) || 0,
+                    isCustomValue: Boolean(row.isCustomValue)
+                }))
+                : undefined
         };
     });
 };
@@ -87,6 +98,63 @@ const DEFAULT_WORK_CATEGORIES: { name: string; icon: string; stage: string }[] =
     { name: 'أعمال اللاندسكيب', icon: 'fa-tree', stage: 'الموقع العام' },
     { name: 'أعمال الاستلامات', icon: 'fa-clipboard-check', stage: 'ضبط الجودة' }
 ];
+
+const toEnglishDigits = (val: string): string =>
+  String(val || '')
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/٫/g, '.');
+
+const WesternNumberInput: React.FC<{
+  value: number;
+  onChangeValue: (val: number) => void;
+  className?: string;
+  placeholder?: string;
+}> = ({ value, onChangeValue, className = '', placeholder = '0' }) => {
+  const safeVal = isNaN(Number(value)) ? 0 : Number(value);
+  const [text, setText] = useState<string>(() => toEnglishDigits(String(safeVal)));
+
+  useEffect(() => {
+    const parsed = text === '' || text === '.' ? 0 : Number(toEnglishDigits(text));
+    if (isNaN(parsed) || parsed !== safeVal) {
+      setText(toEnglishDigits(String(safeVal)));
+    }
+  }, [safeVal]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      lang="en"
+      dir="ltr"
+      placeholder={placeholder}
+      className={className}
+      value={text}
+      onFocus={(e) => e.target.select()}
+      onBlur={() => {
+        const parsed = text === '' || text === '.' ? 0 : Number(toEnglishDigits(text));
+        const finalNum = isNaN(parsed) ? 0 : parsed;
+        setText(String(finalNum));
+      }}
+      onChange={(e) => {
+        const normalized = toEnglishDigits(e.target.value);
+        // Keep digits and at most one decimal point
+        let cleaned = normalized.replace(/[^0-9.]/g, '');
+        const dotIdx = cleaned.indexOf('.');
+        if (dotIdx !== -1) {
+          cleaned = cleaned.slice(0, dotIdx + 1) + cleaned.slice(dotIdx + 1).replace(/./g, '');
+        }
+        setText(cleaned);
+        if (cleaned === '' || cleaned === '.') {
+          onChangeValue(0);
+        } else {
+          const num = Number(cleaned);
+          if (!isNaN(num)) onChangeValue(num);
+        }
+      }}
+    />
+  );
+};
 
 export default function ProjectMasterData({ projectId, isOpen, onClose, onReportGenerated, initialProjectData, onProjectUpdated, onOpenAI }: ProjectMasterDataProps) {
     const navigate = useNavigate();
@@ -255,12 +323,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     // Specific States (Logs)
     const [logImages, setLogImages] = useState<string[]>([]);
+    const [logImageModes, setLogImageModes] = useState<LogImageAspectMode[]>([]);
     const [selectedFullScreenImage, setSelectedFullScreenImage] = useState<string | null>(null);
     const [isUploadingImages, setIsUploadingImages] = useState(false); // Used for "Processing" state now
     const [editingLogId, setEditingLogId] = useState<string | null>(null);
     const [tempEditLogContent, setTempEditLogContent] = useState('');
     const [tempEditLogDate, setTempEditLogDate] = useState('');
     const [tempEditLogImages, setTempEditLogImages] = useState<string[]>([]);
+    const [tempEditLogImageModes, setTempEditLogImageModes] = useState<LogImageAspectMode[]>([]);
     const [tempEditLogBoqItemId, setTempEditLogBoqItemId] = useState<string>('');
     const [tempEditLogWorkCategory, setTempEditLogWorkCategory] = useState<string>('');
     const [selectedLogBoqItemId, setSelectedLogBoqItemId] = useState<string>('');
@@ -607,7 +677,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             const incomingBoq = proj.boqItems !== undefined
                 ? normalizeBoqList(proj.boqItems).map(b => {
                     const old = b?.id ? prevBoqMap.get(b.id) : undefined;
-                    if (old?.savedReports && !b.savedReports) return { ...b, savedReports: old.savedReports };
+                    if (old) {
+                        const merged = { ...b };
+                        if (old.savedReports && !merged.savedReports) merged.savedReports = old.savedReports;
+                        if (old.executionBreakdown && !merged.executionBreakdown) merged.executionBreakdown = old.executionBreakdown;
+                        return merged;
+                    }
                     return b;
                 })
                 : prev.boqItems;
@@ -825,7 +900,46 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     
     const stopRecording = () => { if (mediaRecorderRef.current && isRecording) { mediaRecorderRef.current.stop(); setIsRecording(false); } };
 
-    // --- LOGS IMAGE HANDLING (STRICT 250KB LIMIT & 4 IMAGES MAX) ---
+    const showLogImageToast = (msg: string) => {
+        setExportErrorToast(msg);
+        setTimeout(() => setExportErrorToast(prev => (prev === msg ? null : prev)), 4000);
+    };
+
+    const getNextImageAspectMode = (mode?: LogImageAspectMode): LogImageAspectMode => {
+        if (!mode || mode === '1:1') return '3:4';
+        if (mode === '3:4') return 'original';
+        return '1:1';
+    };
+
+    const getAspectModeBadge = (mode?: LogImageAspectMode) => {
+        const m: LogImageAspectMode = mode || '1:1';
+        if (m === '3:4') return { label: '3:4', cls: 'bg-indigo-600/90 text-white border-indigo-300/60', title: 'نسبة 3:4 (اضغط للتبديل إلى الوضع الأصلي)' };
+        if (m === 'original') return { label: 'أصلي', cls: 'bg-emerald-600/90 text-white border-emerald-300/60', title: 'الوضع الأصلي للصورة (اضغط للتبديل إلى 1:1)' };
+        return { label: '1:1', cls: 'bg-slate-900/80 text-white border-white/40', title: 'نسبة 1:1 الافتراضية (اضغط للتبديل إلى 3:4)' };
+    };
+
+    const toggleLogCardImageMode = async (logId: string, imgIndex: number) => {
+        let updatedLog: ProjectLog | undefined;
+        const updatedLogs = masterData.logs.map((l) => {
+            if (l.id !== logId) return l;
+            const total = l.images?.length || 0;
+            const nextModes: LogImageAspectMode[] = Array.from({ length: total }, (_, idx) => l.imageModes?.[idx] || '1:1');
+            nextModes[imgIndex] = getNextImageAspectMode(nextModes[imgIndex]);
+            updatedLog = { ...l, imageModes: nextModes };
+            return updatedLog;
+        });
+        if (!updatedLog) return;
+        const newData = { ...masterData, logs: updatedLogs };
+        setMasterData(newData);
+        try {
+            await api.updateProjectLog(projectId, updatedLog);
+            triggerAutoSave(newData);
+        } catch (err) {
+            console.warn('Failed to persist image mode toggle', err);
+        }
+    };
+
+    // --- LOGS IMAGE HANDLING (PRESERVES NATURAL ASPECT, DEFAULT DISPLAY 1:1, STRICT 250KB LIMIT & 4 IMAGES MAX) ---
     const handleLogImageSelect = async (e: React.ChangeEvent<HTMLInputElement>, isEdit: boolean = false) => { 
         const files = Array.from(e.target.files || []); 
         if (files.length === 0) return; 
@@ -835,8 +949,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const currentCount = isEdit ? tempEditLogImages.length : logImages.length;
         
         if (files.length + currentCount > MAX_IMAGES) {
-            alert(`تنبيه: لا يمكن إضافة أكثر من 4 صور لليومية الواحدة. لديك حالياً ${currentCount} صور.`);
-            // Reset input
+            showLogImageToast(`تنبيه: لا يمكن إضافة أكثر من 4 صور لليومية الواحدة. لديك حالياً ${currentCount} صور.`);
             if (e.target) e.target.value = '';
             return;
         }
@@ -846,8 +959,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
         try {
             for (const file of files) {
-                // 2. COMPRESS: Resize to max 500px width, 0.3 quality (VERY AGGRESSIVE for Data Storage)
-                const compressedFile = await imageUtils.compressImage(file, 0.3, 500);
+                // 2. COMPRESS PRESERVING NATURAL ASPECT RATIO (so '1:1', '3:4', and 'original' all remain crisp)
+                const compressedFile = await imageUtils.compressImagePreservingAspect(file, {
+                    maxDim: 800,
+                    quality: 0.72,
+                    maxBytes: 240 * 1024
+                });
                 
                 // 3. CONVERT TO BASE64
                 const reader = new FileReader();
@@ -859,41 +976,43 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 
                 // 4. STRICT SIZE CHECK (Base64 string length)
                 // 250KB file ~= 341,333 chars in Base64. We use 350,000 as safe limit.
-                // If larger, we REJECT the entire operation to prevent partial data/corruption
                 if (base64String.length > 350000) {
-                    alert(`خطأ: حجم الصورة "${file.name}" كبير جداً (${Math.round(base64String.length/1024)}KB) حتى بعد الضغط.\nالحد الأقصى 250KB للصورة. يرجى اختيار صورة أصغر.`);
+                    showLogImageToast(`خطأ: حجم الصورة "${file.name}" كبير جداً (${Math.round(base64String.length / 1024)}KB) حتى بعد الضغط.`);
                     setIsUploadingImages(false);
                     if (e.target) e.target.value = '';
-                    return; // ABORT EVERYTHING
+                    return;
                 }
                 
                 processedImages.push(base64String);
             }
 
-            // 5. UPDATE STATE (Only if all validations passed)
+            // 5. UPDATE STATE (Default mode for newly added photos is '1:1')
+            const newModes: LogImageAspectMode[] = processedImages.map(() => '1:1');
             if (isEdit) { 
                 setTempEditLogImages(prev => {
                     const combined = [...prev, ...processedImages];
                     if (combined.length > 4) {
-                        alert("الحد الأقصى 4 صور لكل يومية.");
+                        showLogImageToast("الحد الأقصى 4 صور لكل يومية.");
                         return combined.slice(0, 4);
                     }
                     return combined;
-                }); 
+                });
+                setTempEditLogImageModes(prev => [...prev, ...newModes].slice(0, 4));
             } else { 
                 setLogImages(prev => {
                     const combined = [...prev, ...processedImages];
                     if (combined.length > 4) {
-                        alert("الحد الأقصى 4 صور لكل يومية.");
+                        showLogImageToast("الحد الأقصى 4 صور لكل يومية.");
                         return combined.slice(0, 4);
                     }
                     return combined;
-                }); 
+                });
+                setLogImageModes(prev => [...prev, ...newModes].slice(0, 4));
             }
 
         } catch (error) {
             console.error("Image Processing Failed", error);
-            alert("حدث خطأ أثناء معالجة الصور.");
+            showLogImageToast("حدث خطأ أثناء معالجة الصور.");
         } finally {
             setIsUploadingImages(false);
             if (logImageInputRef.current) logImageInputRef.current.value = ''; 
@@ -911,11 +1030,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             : undefined;
 
         // --- OPTIMISTIC UPDATE: UPDATE UI IMMEDIATELY ---
+        const normalizedModes: LogImageAspectMode[] = logImages.map((_, idx) => logImageModes[idx] || '1:1');
         const newLogItem: ProjectLog = { 
             id: `log_${Date.now()}`, 
             date: masterData.logDate || new Date().toISOString().split('T')[0], 
             content: masterData.newLog,
             images: logImages,
+            ...(normalizedModes.length > 0 ? { imageModes: normalizedModes } : {}),
             workCategory: selectedWorkCategory || undefined,
             ...(linkedBoq ? {
                 boqItemId: linkedBoq.id,
@@ -931,6 +1052,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const newData = { ...masterData, logs: updatedLogs, newLog: '' };
         setMasterData(newData);
         setLogImages([]); 
+        setLogImageModes([]);
         setSelectedLogBoqItemId('');
         setSelectedWorkCategory('');
         setShowAddLogModal(false);
@@ -1288,11 +1410,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             ? masterData.boqItems.find(b => b.id === tempEditLogBoqItemId)
             : undefined;
 
+        const normalizedModes: LogImageAspectMode[] = tempEditLogImages.map((_, idx) => tempEditLogImageModes[idx] || '1:1');
         const updatedLogItem: ProjectLog = {
             id,
             content: tempEditLogContent,
             date: tempEditLogDate,
             images: tempEditLogImages,
+            ...(normalizedModes.length > 0 ? { imageModes: normalizedModes } : {}),
             workCategory: tempEditLogWorkCategory || undefined,
             boqItemId: linkedBoq ? linkedBoq.id : undefined,
             boqItemCode: linkedBoq ? linkedBoq.itemCode : undefined,
@@ -2244,12 +2368,25 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         if (!editingBoqItem) return;
         const qty = Number(editingBoqItem.quantity) || 0;
         const price = Number(editingBoqItem.unitPrice) || 0;
-        const execQty = Number(editingBoqItem.executedQuantity) || 0;
+        const cleanedBreakdown = Array.isArray(editingBoqItem.executionBreakdown)
+            ? editingBoqItem.executionBreakdown
+                .filter(row => row && (row.workDescription.trim() !== '' || Number(row.executedQuantity) > 0 || Number(row.executedValue) > 0))
+                .map(row => ({
+                    ...row,
+                    workDescription: row.workDescription || '',
+                    executedQuantity: Number(row.executedQuantity) || 0,
+                    executedValue: Number(row.executedValue) || 0
+                }))
+            : undefined;
+        const execQty = cleanedBreakdown && cleanedBreakdown.length > 0
+            ? Math.round(cleanedBreakdown.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000
+            : (Number(editingBoqItem.executedQuantity) || 0);
         const updatedItem: BOQItem = {
             ...editingBoqItem,
             quantity: qty,
             unitPrice: price,
             executedQuantity: execQty,
+            executionBreakdown: cleanedBreakdown && cleanedBreakdown.length > 0 ? cleanedBreakdown : undefined,
             total: qty * price
         };
         const newData = {
@@ -2258,29 +2395,6 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         };
         setMasterData(newData);
         setEditingBoqItem(null);
-        triggerAutoSave(newData);
-    };
-    const addItemBelow = () => {
-        if (!editingBoqItem) return;
-        const currentIndex = masterData.boqItems.findIndex(i => i.id === editingBoqItem.id);
-        if (currentIndex === -1) return;
-        const newItem: BOQItem = {
-            id: `boq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-            itemCode: String(currentIndex + 2),
-            description: 'بند جديد',
-            unit: editingBoqItem.unit || 'عدد',
-            quantity: 1,
-            unitPrice: 0,
-            total: 0,
-            executedQuantity: 0,
-            batchId: editingBoqItem.batchId,
-            batchName: editingBoqItem.batchName
-        };
-        const newItems = [...masterData.boqItems];
-        newItems.splice(currentIndex + 1, 0, newItem);
-        const newData = { ...masterData, boqItems: newItems };
-        setMasterData(newData);
-        setEditingBoqItem(newItem);
         triggerAutoSave(newData);
     };
 
@@ -2652,17 +2766,59 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
     
     const handleDeleteBatchClick = (batchId: string) => { setBatchToDeleteId(batchId); };
-    const confirmDeleteBatch = () => { if (!batchToDeleteId) return; const newData = { ...masterData, boqItems: masterData.boqItems.filter(item => (item.batchId || 'default') !== batchToDeleteId) }; setMasterData(newData); setBatchToDeleteId(null); triggerAutoSave(newData, { _allowEmptyBoq: true }); };
+    const confirmDeleteBatch = () => {
+        if (!batchToDeleteId) return;
+        const deletedId = batchToDeleteId;
+        const newData = {
+            ...masterData,
+            boqItems: masterData.boqItems.filter(item => (item.batchId || 'default') !== deletedId)
+        };
+        setMasterData(newData);
+        setBatchToDeleteId(null);
+        if (renamingBatchId === deletedId) setRenamingBatchId(null);
+        if (editingBoqItem && (editingBoqItem.batchId || 'default') === deletedId) setEditingBoqItem(null);
+        setCollapsedBatches(prev => {
+            const next = new Set(prev);
+            next.delete(deletedId);
+            return next;
+        });
+        triggerAutoSave(newData, { _allowEmptyBoq: true });
+    };
     const saveBatchRename = (batchId: string) => { if (!newBatchName.trim()) return; const newData = { ...masterData, boqItems: masterData.boqItems.map(item => (item.batchId || 'default') === batchId ? { ...item, batchName: newBatchName } : item) }; setMasterData(newData); setRenamingBatchId(null); triggerAutoSave(newData); };
-    
+
+    const [exportErrorToast, setExportErrorToast] = useState<string | null>(null);
     const [docActionModal, setDocActionModal] = useState<{
         title: string;
         subtitle?: string;
         printLabel: string;
         editLabel: string;
+        exportExcelLabel?: string;
         onPrint: () => void;
         onEdit: () => void;
+        onExportExcel?: () => void;
     } | null>(null);
+
+    const handleExportBatchExcel = (batchItems: BOQItem[], batchName: string) => {
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+        exportBoqBatchToExcel({
+            projectName: projName,
+            contractorName,
+            batchName,
+            items: batchItems
+        });
+    };
+
+    const handleExportPaymentExcel = (pay: ProjectPayment) => {
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+        exportPaymentToExcel({
+            projectName: projName,
+            contractorName,
+            payment: pay,
+            boqItems: masterData.boqItems
+        });
+    };
 
     const handleEditBatchAsLetter = (batchItems: BOQItem[], batchName: string, mode: 'print' | 'edit' = 'edit') => {
         const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'مشروع هندسي';
@@ -3388,8 +3544,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                         const compressedFile = await imageUtils.compressImage(file, 0.4, 600); 
                         const reader = new FileReader(); 
                         const base64 = await new Promise<string>((resolve) => { reader.onloadend = () => resolve(reader.result as string); reader.readAsDataURL(compressedFile); }); 
-                        if (pickerContext === 'editLog' || editingLogId) { setTempEditLogImages(prev => [...prev, base64]); } 
-                        else { setLogImages(prev => [...prev, base64]); } 
+                        if (pickerContext === 'editLog' || editingLogId) {
+                            setTempEditLogImages(prev => [...prev, base64].slice(0, 4));
+                            setTempEditLogImageModes(prev => [...prev, '1:1'].slice(0, 4));
+                        } else {
+                            setLogImages(prev => [...prev, base64].slice(0, 4));
+                            setLogImageModes(prev => [...prev, '1:1'].slice(0, 4));
+                        } 
                     } 
                 } else if (pickerContext === 'payment') { await analyzePaymentFile(file); } 
                 else if (pickerContext === 'boq') { await analyzeBoqFile(file, file.name); } 
@@ -3608,7 +3769,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     }, [masterData.logs, logFilterCategory, logFilterDate]);
 
     // توليد تقرير مجمع PDF لليوميات المعروضة / المفلترة
-    const handleExportCombinedLogsPdf = () => {
+    const handleExportCombinedLogsPdf = (mode: 'print' | 'edit' = 'print') => {
         if (visibleLogs.length === 0) return;
         const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'المشروع';
         const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
@@ -3626,15 +3787,50 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                    </div>`
                 : '';
 
-            const imagesHtml = (log.images && log.images.length > 0)
-                ? `<div style="display:grid; grid-template-columns: repeat(${Math.min(log.images.length, 2)}, 1fr); gap:8px; margin-top:8px; page-break-inside:avoid;">
-                     ${log.images.slice(0, 4).map(img => `
-                         <div style="border:1px solid #cbd5e1; border-radius:6px; overflow:hidden; background:#f8fafc; text-align:center;">
-                             <img src="${img}" style="width:100%; max-height:210px; object-fit:cover; margin:0 !important;" />
-                         </div>
-                     `).join('')}
-                   </div>`
-                : '';
+            const logImgs = (log.images || []).filter(Boolean).slice(0, 4);
+            let imagesHtml = '';
+            if (logImgs.length > 0) {
+                const photoCols: 1 | 2 | 3 | 4 =
+                    logImgs.length >= 4 ? 4 : logImgs.length === 3 ? 3 : logImgs.length === 2 ? 2 : 1;
+                const modes: LogImageAspectMode[] = logImgs.map((_, idx) => log.imageModes?.[idx] || '1:1');
+                const primaryMode: LogImageAspectMode = modes.every(m => m === modes[0]) ? modes[0] : '1:1';
+                const tableAspect = primaryMode === '3:4' ? 'portrait' : primaryMode === 'original' ? 'original' : 'square';
+                const squareH = photoCols === 1 ? 300 : photoCols === 2 ? 260 : photoCols === 3 ? 195 : 150;
+                const portraitH = photoCols === 1 ? 340 : photoCols === 2 ? 320 : photoCols === 3 ? 255 : 195;
+                const origMaxH = photoCols === 1 ? 340 : photoCols === 2 ? 280 : photoCols === 3 ? 220 : 170;
+                const photoHeightPx = tableAspect === 'portrait' ? portraitH : tableAspect === 'original' ? origMaxH : squareH;
+                const photoColPercent = (100 / photoCols).toFixed(2);
+
+                const photoCells = logImgs.map((img, imgIdx) => {
+                    const m = modes[imgIdx] || '1:1';
+                    let imgStyle = '';
+                    if (m === 'original') {
+                        imgStyle = `width: 100% !important; height: auto !important; max-height: ${origMaxH}px !important; object-fit: contain !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                    } else if (m === '3:4') {
+                        const wStyle = photoCols === 1 ? `width: ${Math.round(portraitH * 0.75)}px !important; max-width: 100% !important;` : `width: 100% !important;`;
+                        imgStyle = `${wStyle} height: ${portraitH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                    } else {
+                        const wStyle = photoCols === 1 ? `width: ${squareH}px !important; max-width: 100% !important;` : `width: 100% !important;`;
+                        imgStyle = `${wStyle} height: ${squareH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                    }
+                    return `
+                        <td style="width: ${photoColPercent}%; padding: 5px !important; border: 1px solid #cbd5e1 !important; background-color: #ffffff !important; text-align: center !important; vertical-align: middle !important;">
+                            <img data-ratio-mode="${m}" src="${img}" alt="صورة رقم (${imgIdx + 1})" style="${imgStyle}" />
+                            <div class="photo-catalog-caption" style="font-size: 9.5px !important; color: #475569 !important; font-weight: 800 !important; margin-top: 4px !important; text-align: center !important; line-height: 1.2 !important;">صورة رقم (${imgIdx + 1})</div>
+                        </td>
+                    `;
+                }).join('');
+
+                imagesHtml = `
+                    <div class="table-responsive-wrapper" style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 8px 0 0 0; display: block; page-break-inside: avoid;">
+                        <table class="qc-photos-table photo-catalog-table" data-cols="${photoCols}" data-photo-height="${photoHeightPx}" data-aspect="${tableAspect}" style="width: 100% !important; min-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; margin: 0 !important;">
+                            <tbody>
+                                <tr>${photoCells}</tr>
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
 
             return `
                 <div style="border:2px solid #0f172a; border-radius:8px; padding:10px 12px; margin-bottom:12px; page-break-inside:avoid; background:#ffffff !important;">
@@ -3668,19 +3864,67 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             </div>
         `;
 
+        const reportTitle = `تقرير مجمع لليوميات والأعمال المنفذة`;
+        const reportSubtitle = `مشروع: ${projName} | المقاول: ${contractorName}`;
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        if (mode === 'edit') {
+            const fullReport = ReportGenerator.buildReport(reportTitle, bodyHtml, {
+                subtitle: reportSubtitle,
+                date: todayStr,
+                ref: `LOGS-${todayStr}`
+            });
+            onClose();
+            navigate(`/editor/${projectId}/${projectId}`, {
+                state: {
+                    initialContent: fullReport,
+                    filename: `تقرير_اليوميات_${todayStr}`,
+                    returnToMasterData: true
+                }
+            });
+            return;
+        }
+
         printService.printReport(
             bodyHtml,
-            `تقرير مجمع لليوميات والأعمال المنفذة`,
-            `LOGS-${new Date().toISOString().split('T')[0]}`,
-            { subtitle: `مشروع: ${projName} | المقاول: ${contractorName}` }
+            reportTitle,
+            `LOGS-${todayStr}`,
+            { subtitle: reportSubtitle }
         );
+    };
+
+    const handleExportLogsExcel = async () => {
+        if (visibleLogs.length === 0) return;
+        const projName = masterData.projectName || seedProject?.name || initialProjectData?.name || 'المشروع';
+        const contractorName = masterData.projectContractor || seedProject?.contractor || initialProjectData?.contractor || 'المقاول العام';
+        const filterNotes: string[] = [];
+        if (logFilterCategory) filterNotes.push(`نوع العمل: ${logFilterCategory}`);
+        if (logFilterDate) filterNotes.push(`التاريخ: ${logFilterDate}`);
+        const filterSummary = filterNotes.length > 0 ? filterNotes.join(' | ') : 'جميع اليوميات المسجلة';
+
+        try {
+            triggerLoadingStart();
+            await exportLogsToExcel({
+                projectName: projName,
+                contractorName,
+                filterSummary,
+                logs: visibleLogs,
+                boqItems: masterData.boqItems
+            });
+        } catch (err) {
+            console.error('Excel logs export failed:', err);
+            setExportErrorToast('تعذر تصدير ملف الإكسل بالصور، يرجى المحاولة مرة أخرى.');
+            setTimeout(() => setExportErrorToast(null), 4000);
+        } finally {
+            triggerLoadingStop();
+        }
     };
 
     const renderBoqTable = () => { 
         const { groupedItems, batchOrder, grandTotalValue, grandExecutedValue } = boqDerivedData;
         return ( 
           <> 
-          {batchOrder.map(bId => { 
+          {batchOrder.map((bId, batchIdx) => { 
               const groupItems = groupedItems[bId]; 
               const groupName = groupItems[0].batchName || 'بنود إضافية'; 
               const isDefault = bId === 'default'; 
@@ -3690,7 +3934,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
               const batchExecutedTotal = groupItems.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0); 
               
               return ( 
-              <React.Fragment key={bId}> 
+              <React.Fragment key={bId}>
+                  {batchIdx > 0 && (
+                      <tr>
+                          <td colSpan={6} className="p-0 bg-slate-100">
+                              <div className="h-3 bg-slate-200/80 border-y-2 border-indigo-300"></div>
+                          </td>
+                      </tr>
+                  )}
                   <tr className="bg-indigo-50 border-b border-indigo-200"> 
                       <td colSpan={6} className="p-2 text-right"> 
                           <div className="flex flex-col gap-2 w-full">
@@ -3726,8 +3977,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                   subtitle: `إجمالي البنود: ${groupItems.length} بند`,
                                                   printLabel: 'طباعة المقايسة PDF',
                                                   editLabel: 'تعديل المستند',
+                                                  exportExcelLabel: 'تصدير بصيغة إكسل (Excel)',
                                                   onPrint: () => handleEditBatchAsLetter(groupItems, groupName, 'print'),
-                                                  onEdit: () => handleEditBatchAsLetter(groupItems, groupName, 'edit')
+                                                  onEdit: () => handleEditBatchAsLetter(groupItems, groupName, 'edit'),
+                                                  onExportExcel: () => handleExportBatchExcel(groupItems, groupName)
                                               });
                                           }}
                                           className="text-indigo-700 text-xs bg-indigo-100/80 border border-indigo-300 hover:bg-indigo-200 px-2.5 py-1 rounded-lg transition flex items-center justify-center font-bold shadow-sm"
@@ -3792,9 +4045,17 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                           رقم البند: {item.itemCode || '-'}
                                       </div>
                                       {!isNote && (
-                                          <div className="flex items-center gap-1.5 bg-white px-3 py-1 rounded-lg border border-green-200 shadow-sm text-sm">
-                                              <span className="text-green-600 font-bold">المنفذ:</span>
-                                              <span className="font-mono font-bold text-green-700 text-base">{isNaN(Number(item.executedQuantity)) ? 0 : item.executedQuantity}</span>
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                              {item.executionBreakdown && item.executionBreakdown.length > 0 && (
+                                                  <div className="flex items-center gap-1 bg-indigo-100 px-2 py-1 rounded-lg border border-indigo-200 text-[11px] font-bold text-indigo-800">
+                                                      <i className="fa-solid fa-list-check text-[10px]"></i>
+                                                      <span>حصر ({item.executionBreakdown.length})</span>
+                                                  </div>
+                                              )}
+                                              <div className="flex items-center gap-1.5 bg-white px-3 py-1 rounded-lg border border-green-200 shadow-sm text-sm">
+                                                  <span className="text-green-600 font-bold">المنفذ:</span>
+                                                  <span className="font-mono font-bold text-green-700 text-base">{isNaN(Number(item.executedQuantity)) ? 0 : item.executedQuantity}</span>
+                                              </div>
                                           </div>
                                       )}
                                   </div>
@@ -4074,10 +4335,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     </div>
                                     <button
                                         type="button"
-                                        onClick={handleExportCombinedLogsPdf}
+                                        onClick={() => {
+                                            const filterParts: string[] = [];
+                                            if (logFilterCategory) filterParts.push(logFilterCategory);
+                                            if (logFilterDate) filterParts.push(logFilterDate);
+                                            setDocActionModal({
+                                                title: 'تقرير اليوميات والأعمال المنفذة',
+                                                subtitle: `${visibleLogs.length} يومية${filterParts.length ? ' • ' + filterParts.join(' • ') : ''}`,
+                                                printLabel: 'طباعة PDF',
+                                                editLabel: 'تعديل المستند',
+                                                exportExcelLabel: 'تصدير بصيغة إكسل (Excel)',
+                                                onPrint: () => handleExportCombinedLogsPdf('print'),
+                                                onEdit: () => handleExportCombinedLogsPdf('edit'),
+                                                onExportExcel: () => handleExportLogsExcel()
+                                            });
+                                        }}
                                         disabled={visibleLogs.length === 0}
                                         className="w-8 h-8 !min-h-0 rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition flex items-center justify-center active:scale-95 shrink-0 disabled:opacity-40 disabled:pointer-events-none"
-                                        title="توليد تقرير مجمع PDF لليوميات"
+                                        title="طباعة PDF أو تعديل المستند أو تصدير إكسل"
                                     >
                                         <i className="fa-solid fa-file-pdf text-xs"></i>
                                     </button>
@@ -4138,7 +4413,39 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </select>
                                                 )}
                                                 <textarea className="w-full p-2 text-xs bg-white border border-blue-200 rounded-lg mb-2 min-h-[80px]" value={tempEditLogContent} onChange={(e) => setTempEditLogContent(e.target.value)} />
-                                                <div className="flex gap-2 flex-wrap mb-2">{tempEditLogImages.map((img, i) => <div key={i} className="relative w-16 h-16"><img src={img} alt="" className="w-full h-full object-cover rounded-lg" /><button onClick={() => setTempEditLogImages(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px]"><i className="fa-solid fa-times"></i></button></div>)}</div>
+                                                <div className="flex gap-2 flex-wrap mb-2 items-start">
+                                                    {tempEditLogImages.map((img, i) => {
+                                                        const mode: LogImageAspectMode = tempEditLogImageModes[i] || '1:1';
+                                                        const badge = getAspectModeBadge(mode);
+                                                        return (
+                                                            <div key={i} className={`relative w-16 shrink-0 ${mode === '3:4' ? 'aspect-[3/4]' : mode === '1:1' ? 'aspect-square' : ''}`}>
+                                                                <img src={img} alt="" className={`w-full ${mode === 'original' ? 'h-auto' : 'h-full object-cover'} rounded-xl border-2 border-blue-500 shadow-sm`} />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setTempEditLogImageModes(prev => {
+                                                                        const next = tempEditLogImages.map((_, idx) => prev[idx] || '1:1');
+                                                                        next[i] = getNextImageAspectMode(next[i]);
+                                                                        return next;
+                                                                    })}
+                                                                    className={`!min-h-0 !min-w-0 !h-auto leading-none absolute bottom-1 left-1 px-1 py-0.5 rounded text-[8px] font-black border shadow ${badge.cls}`}
+                                                                    title={badge.title}
+                                                                >
+                                                                    {badge.label}
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setTempEditLogImages(prev => prev.filter((_, idx) => idx !== i));
+                                                                        setTempEditLogImageModes(prev => prev.filter((_, idx) => idx !== i));
+                                                                    }}
+                                                                    className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px]"
+                                                                >
+                                                                    <i className="fa-solid fa-times"></i>
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
                                                 <div className="flex justify-between"><button onClick={() => setSourceModal({ type: 'editLog', title: 'إضافة صورة' })} className="text-[10px] text-blue-600 bg-blue-100 px-2 py-1 rounded">إضافة صورة</button><div className="flex gap-2"><button onClick={() => saveEditLog(log.id)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">حفظ</button><button onClick={() => setEditingLogId(null)} className="text-xs bg-white border px-3 py-1 rounded">إلغاء</button></div></div>
                                             </div>
                                         ) : (
@@ -4178,7 +4485,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </div>
                                                     <div className="flex gap-1 log-actions-container">
                                                         <button onClick={() => shareLogToWhatsApp(log)} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-green-600 transition flex items-center justify-center shadow-xs" title="مشاركة واتساب"><i className="fa-brands fa-whatsapp text-[12px]"></i></button>
-                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogBoqItemId(log.boqItemId || ''); setTempEditLogWorkCategory(log.workCategory || ''); }} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-blue-600 transition flex items-center justify-center shadow-xs" title="تعديل"><i className="fa-solid fa-pen text-[10px]"></i></button>
+                                                        <button onClick={() => { setEditingLogId(log.id); setTempEditLogContent(log.content); setTempEditLogDate(log.date); setTempEditLogImages(log.images || []); setTempEditLogImageModes((log.images || []).map((_, idx) => log.imageModes?.[idx] || '1:1')); setTempEditLogBoqItemId(log.boqItemId || ''); setTempEditLogWorkCategory(log.workCategory || ''); }} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-blue-600 transition flex items-center justify-center shadow-xs" title="تعديل"><i className="fa-solid fa-pen text-[10px]"></i></button>
                                                         <button onClick={() => setLogToDeleteId(log.id)} className="w-7 h-7 rounded-full bg-white/80 text-slate-700 hover:text-red-600 transition flex items-center justify-center shadow-xs" title="حذف"><i className="fa-solid fa-trash text-[10px]"></i></button>
                                                     </div>
                                                 </div>
@@ -4206,33 +4513,56 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </div>
                                                 )}
                                                 <p className="share-text-lift text-slate-950 text-lg leading-relaxed font-black whitespace-pre-wrap mb-0.5">{log.content}</p>
-                                                {/* OPTIMIZED IMAGES: Loading Eager for top 2 logs for instant feel */}
-                                                {log.images && log.images.length > 0 && (
-                                                    <div className={`grid gap-1 mt-1 ${
-                                                        log.images.length === 1 ? 'grid-cols-1' : 
-                                                        log.images.length === 2 ? 'grid-cols-2' : 
-                                                        log.images.length === 3 ? 'grid-cols-3' : 
-                                                        'grid-cols-2'
-                                                    }`}>
-                                                        {log.images.slice(0, 4).map((img, i) => (
-                                                            <div 
-                                                                key={i} 
-                                                                className="rounded-lg overflow-hidden border border-black/10 bg-white cursor-pointer relative"
-                                                                style={{ paddingTop: log.images?.length === 1 ? '56.25%' : '100%' }}
-                                                                onClick={() => setSelectedFullScreenImage(img)}
-                                                            >
-                                                                <div 
-                                                                    className="absolute inset-0 w-full h-full"
-                                                                    style={{
-                                                                        backgroundImage: `url(${img})`,
-                                                                        backgroundSize: 'cover',
-                                                                        backgroundPosition: 'center'
-                                                                    }}
-                                                                />
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                )}
+                                                {/* OPTIMIZED IMAGES: Switchable 1:1 (Default), 3:4, or Original with Matching Card Frame */}
+                                                {log.images && log.images.length > 0 && (() => {
+                                                    const photoBorderClass = logTheme.card.split(' ').find(c => c.startsWith('border-') && !c.startsWith('border-[')) || 'border-slate-600';
+                                                    return (
+                                                        <div className={`grid gap-2 mt-1 items-start ${
+                                                            log.images.length === 1 ? 'grid-cols-1 max-w-[260px] mx-auto w-full' : 
+                                                            log.images.length === 2 ? 'grid-cols-2' : 
+                                                            log.images.length === 3 ? 'grid-cols-3' : 
+                                                            'grid-cols-2 sm:grid-cols-4'
+                                                        }`}>
+                                                            {log.images.slice(0, 4).map((img, i) => {
+                                                                const mode: LogImageAspectMode = log.imageModes?.[i] || '1:1';
+                                                                const badge = getAspectModeBadge(mode);
+                                                                return (
+                                                                    <div 
+                                                                        key={i} 
+                                                                        className={`rounded-2xl overflow-hidden border-[3px] ${photoBorderClass} bg-white cursor-pointer relative shadow-md hover:shadow-lg transition`}
+                                                                        style={mode === 'original' ? undefined : { paddingTop: mode === '3:4' ? '133.3333%' : '100%' }}
+                                                                        onClick={() => setSelectedFullScreenImage(img)}
+                                                                    >
+                                                                        {mode === 'original' ? (
+                                                                            <img src={img} alt="" className="w-full h-auto block" />
+                                                                        ) : (
+                                                                            <div 
+                                                                                className="absolute inset-0 w-full h-full"
+                                                                                style={{
+                                                                                    backgroundImage: `url(${img})`,
+                                                                                    backgroundSize: 'cover',
+                                                                                    backgroundPosition: 'center'
+                                                                                }}
+                                                                            />
+                                                                        )}
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                toggleLogCardImageMode(log.id, i);
+                                                                            }}
+                                                                            className={`share-hide-icon !min-h-0 !min-w-0 !h-auto !w-auto leading-none absolute top-1.5 left-1.5 z-10 px-1.5 py-1 rounded-md text-[9px] font-black border backdrop-blur-xs shadow-sm flex items-center gap-0.5 transition active:scale-95 hover:opacity-95 ${badge.cls}`}
+                                                                            title={badge.title}
+                                                                        >
+                                                                            <i className="fa-solid fa-crop-simple text-[8px]"></i>
+                                                                            <span>{badge.label}</span>
+                                                                        </button>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         )}
                                     </div>
@@ -4346,8 +4676,10 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 subtitle: `التاريخ: ${pay.date} | الصافي: ${(pay.netPayableAfterDeductions ?? pay.netAmount ?? 0).toLocaleString()} ج.م`,
                                                                 printLabel: 'طباعة PDF',
                                                                 editLabel: 'تعديل المستند',
+                                                                exportExcelLabel: 'تصدير بصيغة إكسل (Excel)',
                                                                 onPrint: () => handlePrintPaymentIPC(pay, 'print'),
-                                                                onEdit: () => handlePrintPaymentIPC(pay, 'edit')
+                                                                onEdit: () => handlePrintPaymentIPC(pay, 'edit'),
+                                                                onExportExcel: () => handleExportPaymentExcel(pay)
                                                             })}
                                                             title="طباعة PDF أو تعديل المستند"
                                                             className="w-7 h-7 rounded-full bg-white/70 text-emerald-700 hover:bg-emerald-600 hover:text-white transition flex items-center justify-center shadow-xs"
@@ -4564,8 +4896,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                                                                     إرجاع ({editSourceTotalQ.toLocaleString()})
                                                                                                                 </button>
                                                                                                             )}
-                                                                                                            <span className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-[9px] text-rose-800">
-                                                                                                                125%
+                                                                                                            <span
+                                                                                                                className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-[9px] text-rose-800"
+                                                                                                                title="نسبة الكمية المنفذة من الكمية التعاقدية"
+                                                                                                            >
+                                                                                                                {editContractQ > 0 ? Math.round((editSourceTotalQ / editContractQ) * 1000) / 10 : 0}%
                                                                                                             </span>
                                                                                                         </div>
                                                                                                     </div>
@@ -4843,22 +5178,42 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             </div>
                                         )}
 
-                                        {/* Modal Header - Compact & Clean */}
-                                        <div className="bg-slate-900 text-white px-3 py-2 flex justify-between items-center shrink-0 border-b border-slate-800 shadow-xs">
-                                            <div className="flex items-center gap-2">
-                                                <div className="w-7 h-7 rounded-lg bg-indigo-600/80 flex items-center justify-center text-white text-xs shadow-xs">
+                                        {/* Modal Sticky Header - Title on right, Save + Delete + Close on left */}
+                                        <div className="bg-slate-900 text-white px-3 py-2 flex justify-between items-center shrink-0 border-b border-slate-800 shadow-xs sticky top-0 z-20">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <div className="w-7 h-7 rounded-lg bg-indigo-600/80 flex items-center justify-center text-white text-xs shadow-xs shrink-0">
                                                     <i className="fa-solid fa-pen-to-square"></i>
                                                 </div>
-                                                <h3 className="font-bold text-xs sm:text-sm text-white">تعديل البند ({editingBoqItem.itemCode || '-'})</h3>
+                                                <h3 className="font-bold text-xs sm:text-sm text-white truncate">
+                                                    تعديل البند (<span lang="en" dir="ltr">{editingBoqItem.itemCode || '-'}</span>)
+                                                </h3>
                                             </div>
-                                            <button 
-                                                type="button"
-                                                onClick={() => { setViewingBoqReport(null); setEditingBoqItem(null); }} 
-                                                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition active:scale-90"
-                                                title="إغلاق النافذة"
-                                            >
-                                                <i className="fa-solid fa-times text-xs"></i>
-                                            </button>
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    onClick={saveBOQItemEdit}
+                                                    className="w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center shadow-xs transition active:scale-90"
+                                                    title="حفظ التعديلات"
+                                                >
+                                                    <i className="fa-solid fa-floppy-disk text-xs"></i>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowBoqDeleteConfirm(true)}
+                                                    className="w-8 h-8 rounded-lg bg-red-500/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 flex items-center justify-center transition active:scale-90"
+                                                    title="حذف البند"
+                                                >
+                                                    <i className="fa-solid fa-trash-can text-xs"></i>
+                                                </button>
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => { setViewingBoqReport(null); setEditingBoqItem(null); }} 
+                                                    className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition active:scale-90"
+                                                    title="إغلاق النافذة"
+                                                >
+                                                    <i className="fa-solid fa-times text-xs"></i>
+                                                </button>
+                                            </div>
                                         </div>
 
                                         {/* Modal Content - Minimized Margins & Paddings */}
@@ -4868,10 +5223,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 <div className="col-span-4 sm:col-span-3">
                                                     <label className="block text-[11px] font-bold text-slate-600 mb-0.5">رقم البند</label>
                                                     <input 
-                                                        type="text" 
-                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
+                                                        type="text"
+                                                        lang="en"
+                                                        dir="ltr"
+                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-center focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
                                                         value={editingBoqItem.itemCode} 
-                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, itemCode: e.target.value})} 
+                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, itemCode: toEnglishDigits(e.target.value)})} 
                                                     />
                                                 </div>
                                                 <div className="col-span-4 sm:col-span-3">
@@ -4885,11 +5242,21 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 </div>
                                                 <div className="col-span-4 sm:col-span-6">
                                                     <label className="block text-[11px] font-bold text-slate-600 mb-0.5">الفئة (ج.م)</label>
-                                                    <input 
-                                                        type="number" 
-                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-left focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition" 
-                                                        value={editingBoqItem.unitPrice} 
-                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, unitPrice: Number(e.target.value)})} 
+                                                    <WesternNumberInput
+                                                        className="w-full p-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-center focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none transition"
+                                                        value={editingBoqItem.unitPrice}
+                                                        onChangeValue={(nextPrice) => {
+                                                            const nextBreakdown = editingBoqItem.executionBreakdown?.map(row =>
+                                                                row.isCustomValue
+                                                                    ? row
+                                                                    : { ...row, executedValue: Math.round(((Number(row.executedQuantity) || 0) * nextPrice) * 100) / 100 }
+                                                            );
+                                                            setEditingBoqItem({
+                                                                ...editingBoqItem,
+                                                                unitPrice: nextPrice,
+                                                                ...(nextBreakdown ? { executionBreakdown: nextBreakdown } : {})
+                                                            });
+                                                        }}
                                                     />
                                                 </div>
                                             </div>
@@ -4912,60 +5279,178 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             <div className="grid grid-cols-2 gap-2 bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
                                                 <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
                                                     <label className="block text-[11px] font-bold text-slate-600 text-center mb-0.5">الكمية التعاقدية</label>
-                                                    <input 
-                                                        type="number" 
-                                                        className="w-full p-1.5 bg-white border border-slate-200 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-indigo-500 outline-none" 
-                                                        value={editingBoqItem.quantity} 
-                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, quantity: Number(e.target.value)})} 
+                                                    <WesternNumberInput
+                                                        className="w-full p-1.5 bg-white border border-slate-200 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-indigo-500 outline-none"
+                                                        value={editingBoqItem.quantity}
+                                                        onChangeValue={(val) => setEditingBoqItem({...editingBoqItem, quantity: val})}
                                                     />
                                                 </div>
                                                 <div className="bg-emerald-50/70 p-2 rounded-lg border border-emerald-100">
                                                     <label className="block text-[11px] font-bold text-emerald-800 text-center mb-0.5">الكمية المنفذة</label>
-                                                    <input 
-                                                        type="number" 
-                                                        className="w-full p-1.5 bg-white border border-emerald-200 text-emerald-800 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-emerald-500 outline-none" 
-                                                        value={isNaN(Number(editingBoqItem.executedQuantity)) ? 0 : editingBoqItem.executedQuantity} 
-                                                        onChange={(e) => setEditingBoqItem({...editingBoqItem, executedQuantity: Number(e.target.value)})} 
+                                                    <WesternNumberInput
+                                                        className="w-full p-1.5 bg-white border border-emerald-200 text-emerald-800 rounded-md text-sm font-bold font-mono text-center focus:ring-1 focus:ring-emerald-500 outline-none"
+                                                        value={isNaN(Number(editingBoqItem.executedQuantity)) ? 0 : editingBoqItem.executedQuantity}
+                                                        onChangeValue={(val) => setEditingBoqItem({...editingBoqItem, executedQuantity: val})}
                                                     />
                                                 </div>
                                             </div>
-                                        </div>
 
-                                        {/* Modal Footer with 3 ICON-ONLY Buttons: Save, Add Below, Delete */}
-                                        <div className="p-2 sm:p-2.5 bg-white border-t border-slate-200 shrink-0 shadow-md">
-                                            <div className="max-w-xl mx-auto w-full flex items-center justify-between gap-2">
-                                                <div className="flex items-center gap-2">
-                                                    {/* زر حفظ التعديلات - أيقونة فقط */}
-                                                    <button 
-                                                        type="button" 
-                                                        onClick={saveBOQItemEdit} 
-                                                        className="w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-xs transition transform active:scale-90"
-                                                        title="حفظ التعديلات"
-                                                    >
-                                                        <i className="fa-solid fa-floppy-disk text-base"></i>
-                                                    </button>
+                                            {/* بيان حصر أعمال البند (صفوف متعددة + الإجماليات) */}
+                                            {(() => {
+                                                const rows: BOQBreakdownEntry[] = Array.isArray(editingBoqItem.executionBreakdown) ? editingBoqItem.executionBreakdown : [];
+                                                const unitPriceVal = Number(editingBoqItem.unitPrice) || 0;
+                                                const totalBreakdownQty = Math.round(rows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000;
+                                                const totalBreakdownValue = Math.round(rows.reduce((sum, r) => sum + (Number(r.executedValue) || 0), 0) * 100) / 100;
 
-                                                    {/* زر إضافة أسفل - أيقونة فقط */}
-                                                    <button 
-                                                        type="button" 
-                                                        onClick={addItemBelow} 
-                                                        className="w-10 h-10 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 flex items-center justify-center shadow-2xs transition transform active:scale-90"
-                                                        title="إضافة بند جديد أسفل"
-                                                    >
-                                                        <i className="fa-solid fa-plus text-base"></i>
-                                                    </button>
-                                                </div>
+                                                const updateRows = (nextRows: BOQBreakdownEntry[], syncExecQty: boolean = true) => {
+                                                    const sumQty = Math.round(nextRows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000;
+                                                    setEditingBoqItem({
+                                                        ...editingBoqItem,
+                                                        executionBreakdown: nextRows,
+                                                        ...(syncExecQty ? { executedQuantity: sumQty } : {})
+                                                    });
+                                                };
 
-                                                {/* زر حذف - أيقونة فقط */}
-                                                <button 
-                                                    type="button" 
-                                                    onClick={() => setShowBoqDeleteConfirm(true)} 
-                                                    className="w-10 h-10 rounded-xl bg-red-100 hover:bg-red-200 text-red-600 border border-red-200 flex items-center justify-center shadow-2xs transition transform active:scale-90"
-                                                    title="حذف البند"
-                                                >
-                                                    <i className="fa-solid fa-trash-can text-base"></i>
-                                                </button>
-                                            </div>
+                                                const addBreakdownRow = () => {
+                                                    const newRow: BOQBreakdownEntry = {
+                                                        id: `bk_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                                                        workDescription: '',
+                                                        executedQuantity: 0,
+                                                        executedValue: 0,
+                                                        isCustomValue: false
+                                                    };
+                                                    updateRows([...rows, newRow], false);
+                                                };
+
+                                                const removeBreakdownRow = (rowId: string) => {
+                                                    const nextRows = rows.filter(r => r.id !== rowId);
+                                                    updateRows(nextRows, nextRows.length > 0);
+                                                };
+
+                                                return (
+                                                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+                                                        <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="w-6 h-6 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs border border-indigo-100">
+                                                                    <i className="fa-solid fa-list-check"></i>
+                                                                </span>
+                                                                <div>
+                                                                    <h4 className="text-xs font-bold text-slate-800">بيان حصر أعمال البند</h4>
+                                                                    {rows.length > 0 && (
+                                                                        <span className="text-[10px] text-slate-400 font-semibold">{rows.length} صفوف مسجلة</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={addBreakdownRow}
+                                                                className="w-8 h-8 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-2xs transition active:scale-90"
+                                                                title="إضافة صف حصر جديد"
+                                                            >
+                                                                <i className="fa-solid fa-plus text-xs"></i>
+                                                            </button>
+                                                        </div>
+
+                                                        {rows.length === 0 ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={addBreakdownRow}
+                                                                className="w-full py-5 px-3 rounded-lg border-2 border-dashed border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/40 text-slate-400 hover:text-indigo-600 transition flex flex-col items-center justify-center gap-1.5"
+                                                            >
+                                                                <i className="fa-solid fa-table-list text-lg opacity-70"></i>
+                                                                <span className="text-xs font-bold">اضغط لإضافة بيان حصر أعمال البند (وصف الأعمال والكمية والقيمة)</span>
+                                                            </button>
+                                                        ) : (
+                                                            <div className="space-y-1.5">
+                                                                {/* Column Headers */}
+                                                                <div className="grid grid-cols-12 gap-1.5 px-1.5 py-1.5 bg-slate-100 rounded-lg text-[10px] sm:text-[11px] font-bold text-slate-700 items-center">
+                                                                    <div className="col-span-5">وصف الأعمال</div>
+                                                                    <div className="col-span-3 text-center">الكمية المنفذة</div>
+                                                                    <div className="col-span-3 text-center">قيمة الأعمال المنفذة</div>
+                                                                    <div className="col-span-1 text-center"></div>
+                                                                </div>
+
+                                                                {/* Breakdown Rows */}
+                                                                <div className="space-y-1.5 max-h-[240px] overflow-y-auto pr-0.5">
+                                                                    {rows.map((row, rIdx) => (
+                                                                        <div key={row.id} className="grid grid-cols-12 gap-1.5 items-center bg-slate-50/80 p-1.5 rounded-lg border border-slate-200">
+                                                                            <div className="col-span-5">
+                                                                                <input
+                                                                                    type="text"
+                                                                                    placeholder={`بيان ${rIdx + 1}...`}
+                                                                                    value={row.workDescription}
+                                                                                    title={row.workDescription}
+                                                                                    onChange={(e) => {
+                                                                                        const val = e.target.value;
+                                                                                        updateRows(rows.map(r => r.id === row.id ? { ...r, workDescription: val } : r), false);
+                                                                                    }}
+                                                                                    className="w-full p-1.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-800 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                                                                />
+                                                                            </div>
+                                                                            <div className="col-span-3">
+                                                                                <WesternNumberInput
+                                                                                    value={isNaN(Number(row.executedQuantity)) ? 0 : row.executedQuantity}
+                                                                                    onChangeValue={(nextQty) => {
+                                                                                        const nextRows = rows.map(r => {
+                                                                                            if (r.id !== row.id) return r;
+                                                                                            const nextVal = r.isCustomValue
+                                                                                                ? r.executedValue
+                                                                                                : Math.round((nextQty * unitPriceVal) * 100) / 100;
+                                                                                            return { ...r, executedQuantity: nextQty, executedValue: nextVal };
+                                                                                        });
+                                                                                        updateRows(nextRows, true);
+                                                                                    }}
+                                                                                    className="w-full p-1.5 bg-white border border-emerald-200 text-emerald-800 rounded-md text-[11px] font-bold font-mono text-center focus:ring-1 focus:ring-emerald-500 outline-none"
+                                                                                />
+                                                                            </div>
+                                                                            <div className="col-span-3">
+                                                                                <WesternNumberInput
+                                                                                    value={isNaN(Number(row.executedValue)) ? 0 : row.executedValue}
+                                                                                    onChangeValue={(nextVal) => {
+                                                                                        const nextRows = rows.map(r =>
+                                                                                            r.id === row.id
+                                                                                                ? { ...r, executedValue: nextVal, isCustomValue: nextVal > 0 }
+                                                                                                : r
+                                                                                        );
+                                                                                        updateRows(nextRows, false);
+                                                                                    }}
+                                                                                    className="w-full p-1.5 bg-white border border-blue-200 text-blue-800 rounded-md text-[11px] font-bold font-mono text-center focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                                />
+                                                                            </div>
+                                                                            <div className="col-span-1 flex justify-center">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => removeBreakdownRow(row.id)}
+                                                                                    className="w-6 h-6 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition"
+                                                                                    title="حذف الصف"
+                                                                                >
+                                                                                    <i className="fa-solid fa-trash-can text-[11px]"></i>
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+
+                                                                {/* Totals Row */}
+                                                                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200">
+                                                                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5 flex flex-col items-center justify-center text-center gap-0.5">
+                                                                        <span className="text-[9.5px] font-bold text-emerald-700 leading-tight">إجمالي الكمية المنفذة</span>
+                                                                        <span className="font-mono font-extrabold text-xs sm:text-sm text-emerald-800 leading-tight">
+                                                                            <span lang="en" dir="ltr">{totalBreakdownQty.toLocaleString('en-US')}</span> {editingBoqItem.unit || ''}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="bg-blue-50 border border-blue-200 rounded-lg px-2 py-1.5 flex flex-col items-center justify-center text-center gap-0.5">
+                                                                        <span className="text-[9.5px] font-bold text-blue-700 leading-tight">إجمالي قيمة الأعمال</span>
+                                                                        <span className="font-mono font-extrabold text-xs sm:text-sm text-blue-800 leading-tight">
+                                                                            <span lang="en" dir="ltr">{totalBreakdownValue.toLocaleString('en-US')}</span> ج.م
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 </div>
@@ -5850,6 +6335,16 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     type="danger"
                 />
 
+                {/* Confirm Delete BOQ Batch Modal */}
+                <ConfirmModal
+                    isOpen={!!batchToDeleteId}
+                    title="حذف المقايسة بالكامل"
+                    message={`هل أنت متأكد من حذف المقايسة "${(batchToDeleteId && boqDerivedData.groupedItems[batchToDeleteId]?.[0]?.batchName) || 'بنود المقايسة'}" وجميع بنودها نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`}
+                    onConfirm={confirmDeleteBatch}
+                    onCancel={() => setBatchToDeleteId(null)}
+                    type="danger"
+                />
+
                 {/* Report Modal */}
                 <ProjectReportModal
                     isOpen={showReportModal}
@@ -5858,6 +6353,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                     onGenerate={handleGenerateReport}
                     isGenerating={isGeneratingReport}
                 />
+
+                {exportErrorToast && (
+                    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[2100] bg-red-600 text-white px-4 py-2.5 rounded-xl shadow-xl font-bold text-xs flex items-center gap-2">
+                        <i className="fa-solid fa-triangle-exclamation"></i>
+                        <span>{exportErrorToast}</span>
+                    </div>
+                )}
 
                 {/* Small Action Modal for Print PDF vs Edit Document (Payments & BOQ) */}
                 {docActionModal && (
@@ -5909,6 +6411,20 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <i className="fa-solid fa-file-pen text-sm text-indigo-600"></i>
                                     <span>{docActionModal.editLabel}</span>
                                 </button>
+                                {docActionModal.onExportExcel && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const fn = docActionModal.onExportExcel!;
+                                            setDocActionModal(null);
+                                            fn();
+                                        }}
+                                        className="w-full bg-teal-600 hover:bg-teal-700 text-white p-3 rounded-xl transition flex items-center justify-center gap-2 font-black text-xs shadow-sm active:scale-95"
+                                    >
+                                        <i className="fa-solid fa-file-excel text-sm"></i>
+                                        <span>{docActionModal.exportExcelLabel || 'تصدير بصيغة إكسل (Excel)'}</span>
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -6513,15 +7029,18 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             <p className="text-slate-800 text-sm font-bold leading-relaxed whitespace-pre-wrap">{log.content}</p>
                                             {log.images && log.images.length > 0 && (
                                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-                                                    {log.images.map((img, imgIdx) => (
-                                                        <div
-                                                            key={imgIdx}
-                                                            onClick={() => setSelectedFullScreenImage(img)}
-                                                            className="aspect-square rounded-xl overflow-hidden border border-slate-200 cursor-pointer hover:opacity-90 transition"
-                                                        >
-                                                            <img src={img} alt="" className="w-full h-full object-cover" />
-                                                        </div>
-                                                    ))}
+                                                    {log.images.map((img, imgIdx) => {
+                                                        const mode: LogImageAspectMode = log.imageModes?.[imgIdx] || '1:1';
+                                                        return (
+                                                            <div
+                                                                key={imgIdx}
+                                                                onClick={() => setSelectedFullScreenImage(img)}
+                                                                className={`${mode === '3:4' ? 'aspect-[3/4]' : mode === '1:1' ? 'aspect-square' : ''} rounded-2xl overflow-hidden border-[3px] border-indigo-400 shadow-sm cursor-pointer hover:opacity-90 transition`}
+                                                            >
+                                                                <img src={img} alt="" className={`w-full ${mode === 'original' ? 'h-auto block' : 'h-full object-cover'}`} />
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -6649,20 +7168,39 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                                     {/* Selected Images Preview */}
                                     {logImages.length > 0 && (
-                                        <div className="flex gap-2.5 overflow-x-auto py-1.5 px-1 bg-slate-50 rounded-xl border border-slate-200">
-                                            {logImages.map((img, idx) => (
-                                                <div key={idx} className="relative w-20 h-20 shrink-0">
-                                                    <img src={img} alt="" className="w-full h-full object-cover rounded-xl border border-blue-200 shadow-xs" />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setLogImages(prev => prev.filter((_, i) => i !== idx))}
-                                                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow"
-                                                        title="حذف الصورة"
-                                                    >
-                                                        <i className="fa-solid fa-times"></i>
-                                                    </button>
-                                                </div>
-                                            ))}
+                                        <div className="flex gap-2.5 overflow-x-auto py-1.5 px-1 bg-slate-50 rounded-xl border border-slate-200 items-start">
+                                            {logImages.map((img, idx) => {
+                                                const mode: LogImageAspectMode = logImageModes[idx] || '1:1';
+                                                const badge = getAspectModeBadge(mode);
+                                                return (
+                                                    <div key={idx} className={`relative w-20 shrink-0 ${mode === '3:4' ? 'aspect-[3/4]' : mode === '1:1' ? 'aspect-square' : ''}`}>
+                                                        <img src={img} alt="" className={`w-full ${mode === 'original' ? 'h-auto block' : 'h-full object-cover'} rounded-xl border-2 border-blue-500 shadow-sm`} />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setLogImageModes(prev => {
+                                                                const next = logImages.map((_, i) => prev[i] || '1:1');
+                                                                next[idx] = getNextImageAspectMode(next[idx]);
+                                                                return next;
+                                                            })}
+                                                            className={`!min-h-0 !min-w-0 !h-auto leading-none absolute bottom-1 left-1 px-1 py-0.5 rounded text-[8px] font-black border shadow ${badge.cls}`}
+                                                            title={badge.title}
+                                                        >
+                                                            {badge.label}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setLogImages(prev => prev.filter((_, i) => i !== idx));
+                                                                setLogImageModes(prev => prev.filter((_, i) => i !== idx));
+                                                            }}
+                                                            className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow"
+                                                            title="حذف الصورة"
+                                                        >
+                                                            <i className="fa-solid fa-times"></i>
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
                                     )}
 

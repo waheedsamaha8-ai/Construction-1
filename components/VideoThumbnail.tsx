@@ -96,11 +96,9 @@ export const VideoThumbnail: React.FC<VideoThumbnailProps> = ({
           setIsImgError(false);
           return;
         }
-        const token = api.getAccessToken ? api.getAccessToken() : '';
-        if (token && item.id && !item.id.startsWith('temp_')) {
-          setVideoStreamUrl(`https://www.googleapis.com/drive/v3/files/${item.id}?alt=media&access_token=${token}`);
-        } else if (item.webContentLink) {
-          setVideoStreamUrl(item.webContentLink);
+        const streamUrl = api.getVideoStreamUrl(item.id, item.webContentLink);
+        if (streamUrl) {
+          setVideoStreamUrl(streamUrl);
         }
       })
       .catch(() => {});

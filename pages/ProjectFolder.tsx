@@ -8,6 +8,7 @@ import FileViewer from '../components/FileViewer';
 import ProjectAI from '../components/ProjectAI';
 import ConfirmModal from '../components/ConfirmModal'; 
 import { api, ARCHIVE_SECTIONS, ARCHIVE_FOLDER_NAME } from '../services/api';
+import { collectFolderFilesRecursive, downloadItemsAsFiles, createZipFromDownloaded, formatShareBytes, inferShareMimeType, sanitizeShareName } from '../services/shareHelper';
 import { aiHelper } from '../services/aiHelper'; 
 import { geoUtils, GeoData } from '../services/geoUtils';
 import { imageUtils } from '../services/imageUtils';
@@ -461,7 +462,27 @@ export default function ProjectFolder() {
   const isAudioFolder = currentFolderName === 'تسجيلات صوتية';
   const isMediaFolder = currentFolderName === 'صور الموقع' || items.some(i => i.mimeType?.startsWith('image/') || i.mimeType?.startsWith('video/'));
   // Removed effectiveViewMode to allow manual toggle
-  const [shareState, setShareState] = useState<{ isOpen: boolean; item: FileItem | null; file: File | null; status: 'idle' | 'downloading' | 'ready' | 'error' | 'choice'; progress: number; }>({ isOpen: false, item: null, file: null, status: 'idle', progress: 0 });
+  const [shareState, setShareState] = useState<{
+    isOpen: boolean;
+    item: FileItem | null;
+    file: File | null;
+    files: File[];
+    status: 'idle' | 'folder_choice' | 'multi_select' | 'downloading' | 'ready' | 'downloaded_notice' | 'empty_folder' | 'error' | 'choice';
+    progress: number;
+    progressText?: string;
+    isZip?: boolean;
+    selectedIds: string[];
+    shareTitle?: string;
+    errorMessage?: string;
+  }>({
+    isOpen: false,
+    item: null,
+    file: null,
+    files: [],
+    status: 'idle',
+    progress: 0,
+    selectedIds: []
+  });
 
   // --- NEW COMMENT STATES ---
   const [commentModalOpen, setCommentModalOpen] = useState(false);
@@ -580,6 +601,7 @@ export default function ProjectFolder() {
           }
 
           startTransition(() => { setItems(folderData); setLoading(false); }); 
+          api.warmLocalBlobsToMemory(folderData).catch(() => {});
           
           api.enrichItemCounts(folderData, currentFolderId).then(enrichedItems => { 
               if (currentFolderId === (folderId || projectId || '')) startTransition(() => setItems(enrichedItems)); 
@@ -590,6 +612,11 @@ export default function ProjectFolder() {
   };
   
   useEffect(() => { if (currentFolderId) fetchContents(); }, [currentFolderId]);
+  useEffect(() => {
+      if (items && items.length > 0) {
+          api.warmLocalBlobsToMemory(items).catch(() => {});
+      }
+  }, [items]);
 
   useEffect(() => {
     const onProjectChanged = (e: Event) => {
@@ -861,19 +888,35 @@ export default function ProjectFolder() {
   
   const handleShare = async (item: FileItem) => {
       if (item.type === ItemType.FOLDER) {
-          api.shareSmart(item);
+          setShareState({
+              isOpen: true,
+              item,
+              file: null,
+              files: [],
+              status: 'folder_choice',
+              progress: 0,
+              progressText: '',
+              isZip: false,
+              selectedIds: [],
+              shareTitle: item.name
+          });
           return;
       }
-      
+
       // Check for large files (> 30MB)
       const isLarge = (item.size || 0) > 30 * 1024 * 1024; // 30MB limit
-      
-      setShareState({ 
-          isOpen: true, 
-          item, 
-          file: null, 
-          status: isLarge ? 'choice' : 'downloading', 
-          progress: 0 
+
+      setShareState({
+          isOpen: true,
+          item,
+          file: null,
+          files: [],
+          status: isLarge ? 'choice' : 'downloading',
+          progress: 0,
+          progressText: 'جاري تحضير الملف...',
+          isZip: false,
+          selectedIds: [item.id],
+          shareTitle: item.name
       });
 
       if (!isLarge) {
@@ -882,29 +925,216 @@ export default function ProjectFolder() {
   };
 
   const downloadForShare = async (item: FileItem) => {
-      setShareState(prev => ({ ...prev, status: 'downloading', progress: 0 }));
+      setShareState(prev => ({ ...prev, status: 'downloading', progress: 0, progressText: 'جاري تحضير الملف...' }));
       try {
-          const blob = await api.downloadFileBlob(item.id, (p) => setShareState(prev => ({...prev, progress: p})));
-          let mimeType = blob.type;
-          if (item.name.toLowerCase().endsWith('.dwg') || item.name.toLowerCase().endsWith('.dxf')) {
-              mimeType = 'application/octet-stream';
-          }
-          const file = new File([blob], item.name, { type: mimeType });
-          setShareState(prev => ({ ...prev, status: 'ready', file }));
+          const blob = await api.downloadFileBlob(item.id, (p) => setShareState(prev => ({ ...prev, progress: p })));
+          const mimeType = inferShareMimeType(item.name, blob.type);
+          const file = new File([blob], sanitizeShareName(item.name, 'file'), { type: mimeType });
+          setShareState(prev => ({
+              ...prev,
+              status: 'ready',
+              file,
+              files: [file],
+              isZip: false,
+              selectedIds: prev.selectedIds.length ? prev.selectedIds : [item.id],
+              shareTitle: item.name
+          }));
       } catch (e) {
           console.error(e);
-          setShareState(prev => ({ ...prev, status: 'error' }));
+          setShareState(prev => ({ ...prev, status: 'error', errorMessage: 'تعذر تحميل الملف. يرجى التحقق من الإنترنت.' }));
       }
+  };
+
+  const prepareFolderShare = async (folderItem: FileItem, mode: 'zip' | 'separate') => {
+      setShareState(prev => ({
+          ...prev,
+          status: 'downloading',
+          progress: 5,
+          progressText: 'جاري فحص محتويات المجلد...',
+          isZip: mode === 'zip',
+          shareTitle: folderItem.name
+      }));
+      try {
+          const collected = await collectFolderFilesRecursive(
+              folderItem.id,
+              (id) => api.getContents(id),
+              (subName, count) => {
+                  setShareState(prev => ({
+                      ...prev,
+                      progress: 8,
+                      progressText: count > 0 ? `جاري الفحص (${count} ملف)...` : `جاري فحص ${subName || folderItem.name}...`
+                  }));
+              }
+          );
+
+          if (collected.length === 0) {
+              setShareState(prev => ({ ...prev, status: 'empty_folder', progress: 0 }));
+              return;
+          }
+
+          const downloadWeight = mode === 'zip' ? 0.72 : 1.0;
+          const downloaded = await downloadItemsAsFiles(
+              collected,
+              (id) => api.downloadFileBlob(id, undefined, true),
+              (pct, done, total) => {
+                  const mappedPct = Math.max(10, Math.round(pct * downloadWeight));
+                  setShareState(prev => ({
+                      ...prev,
+                      progress: mappedPct,
+                      progressText: `جاري تجهيز الملفات (${done} من ${total})...`
+                  }));
+              }
+          );
+
+          if (mode === 'zip') {
+              setShareState(prev => ({ ...prev, progress: 75, progressText: 'جاري ضغط الملفات في ملف ZIP...' }));
+              const zipFile = await createZipFromDownloaded(downloaded, folderItem.name, (zipPct) => {
+                  const mapped = Math.min(99, 75 + Math.round(zipPct * 0.25));
+                  setShareState(prev => ({ ...prev, progress: mapped, progressText: 'جاري ضغط الملفات...' }));
+              });
+              setShareState(prev => ({
+                  ...prev,
+                  status: 'ready',
+                  file: zipFile,
+                  files: [zipFile],
+                  isZip: true,
+                  progress: 100,
+                  shareTitle: folderItem.name
+              }));
+          } else {
+              const separateFiles = downloaded.map(d => d.file);
+              setShareState(prev => ({
+                  ...prev,
+                  status: 'ready',
+                  file: separateFiles[0] || null,
+                  files: separateFiles,
+                  isZip: false,
+                  progress: 100,
+                  shareTitle: folderItem.name
+              }));
+          }
+      } catch (e) {
+          console.error(e);
+          setShareState(prev => ({
+              ...prev,
+              status: 'error',
+              errorMessage: 'تعذر تحضير محتويات المجلد للمشاركة. يرجى التحقق من الإنترنت.'
+          }));
+      }
+  };
+
+  const prepareMultiFileShare = async (selectedFileItems: FileItem[], mode: 'zip' | 'separate') => {
+      if (selectedFileItems.length === 0) return;
+      const baseTitle = selectedFileItems.length === 1
+          ? selectedFileItems[0].name
+          : (currentFolderName || shareState.item?.name || 'ملفات المشروع');
+
+      setShareState(prev => ({
+          ...prev,
+          status: 'downloading',
+          progress: 5,
+          progressText: `جاري تجهيز ${selectedFileItems.length} ملفات...`,
+          isZip: mode === 'zip',
+          shareTitle: baseTitle
+      }));
+
+      try {
+          const entries = selectedFileItems.map(it => ({
+              item: it,
+              relativePath: sanitizeShareName(it.name, `file_${it.id}`)
+          }));
+          const downloadWeight = mode === 'zip' ? 0.72 : 1.0;
+          const downloaded = await downloadItemsAsFiles(
+              entries,
+              (id) => api.downloadFileBlob(id, undefined, true),
+              (pct, done, total) => {
+                  const mappedPct = Math.max(8, Math.round(pct * downloadWeight));
+                  setShareState(prev => ({
+                      ...prev,
+                      progress: mappedPct,
+                      progressText: `جاري تحضير (${done} من ${total}) ملف...`
+                  }));
+              }
+          );
+
+          if (mode === 'zip') {
+              setShareState(prev => ({ ...prev, progress: 75, progressText: 'جاري ضغط الملفات في ملف ZIP...' }));
+              const zipName = selectedFileItems.length === 1
+                  ? selectedFileItems[0].name.replace(/.[^/.]+$/, '')
+                  : (currentFolderName || 'مجموعة_ملفات');
+              const zipFile = await createZipFromDownloaded(downloaded, zipName, (zipPct) => {
+                  const mapped = Math.min(99, 75 + Math.round(zipPct * 0.25));
+                  setShareState(prev => ({ ...prev, progress: mapped, progressText: 'جاري ضغط الملفات...' }));
+              });
+              setShareState(prev => ({
+                  ...prev,
+                  status: 'ready',
+                  file: zipFile,
+                  files: [zipFile],
+                  isZip: true,
+                  progress: 100,
+                  shareTitle: baseTitle
+              }));
+          } else {
+              const separateFiles = downloaded.map(d => d.file);
+              setShareState(prev => ({
+                  ...prev,
+                  status: 'ready',
+                  file: separateFiles[0] || null,
+                  files: separateFiles,
+                  isZip: false,
+                  progress: 100,
+                  shareTitle: baseTitle
+              }));
+          }
+      } catch (e) {
+          console.error(e);
+          setShareState(prev => ({
+              ...prev,
+              status: 'error',
+              errorMessage: 'تعذر تحميل الملفات المحددة. يرجى التحقق من الإنترنت.'
+          }));
+      }
+  };
+
+  const openMultiSelectFromShare = () => {
+      setShareState(prev => {
+          const initialId = prev.item && prev.item.type === ItemType.FILE ? [prev.item.id] : [];
+          return {
+              ...prev,
+              status: 'multi_select',
+              selectedIds: prev.selectedIds.length > 0 ? prev.selectedIds : initialId
+          };
+      });
+  };
+
+  const toggleShareFileSelection = (fileId: string) => {
+      setShareState(prev => {
+          const exists = prev.selectedIds.includes(fileId);
+          return {
+              ...prev,
+              selectedIds: exists ? prev.selectedIds.filter(id => id !== fileId) : [...prev.selectedIds, fileId]
+          };
+      });
   };
 
   const shareLink = () => {
       if (shareState.item) {
-          api.shareSmart(shareState.item); // Will default to link share if no file provided
+          api.shareSmart(shareState.item);
       }
       setShareState(prev => ({ ...prev, isOpen: false }));
   };
 
-  const executeShare = () => { if (shareState.item && shareState.file) { api.shareSmart(shareState.item, shareState.file); setShareState(prev => ({ ...prev, isOpen: false })); } };
+  const executeShare = async () => {
+      const filesToSend = shareState.files.length > 0 ? shareState.files : (shareState.file ? [shareState.file] : []);
+      if (filesToSend.length === 0) return;
+      const result = await api.shareFilesSmart(filesToSend, shareState.shareTitle || shareState.item?.name);
+      if (result.method === 'native') {
+          setShareState(prev => ({ ...prev, isOpen: false }));
+      } else if (result.method === 'downloaded') {
+          setShareState(prev => ({ ...prev, status: 'downloaded_notice' }));
+      }
+  };
   const handleRename = (item: FileItem) => { setSelectedItem(item); setRenameValue(item.name); setModalMode('rename'); };
   const confirmRename = async () => { if (selectedItem && renameValue.trim()) { try { await api.renameItem(selectedItem.id, renameValue); setModalMode('none'); fetchContents(); } catch (e) { alert("فشل إعادة التسمية"); } } };
   const handleMove = async (item: FileItem) => { setSelectedItem(item); setMoveTargetId(currentFolderId); setMoveBreadcrumbs([{ id: currentFolderId, name: currentFolderName }]); setModalMode('move'); fetchMoveContents(currentFolderId); };
@@ -932,8 +1162,9 @@ export default function ProjectFolder() {
           if (sortConfig.key === 'date') return sortConfig.direction === 'desc' ? new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime() : new Date(a.createdTime).getTime() - new Date(b.createdTime).getTime(); 
           return sortConfig.direction === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name); 
       }); 
-      return sorted; 
+      return sorted;
   }, [items, sortConfig]);
+  const shareableFilesInFolder = useMemo(() => sortedItems.filter(i => i.type === ItemType.FILE), [sortedItems]);
   const openMasterData = () => { setModalMode('masterData'); };
 
   // --- REPORT GENERATION LOGIC (UPDATED WITH PMP FLOW) ---
@@ -1082,12 +1313,7 @@ export default function ProjectFolder() {
                       api.getLocalContents(item.id).catch(() => {});
                   }
               } else {
-                  const m = (item.mimeType || '').toLowerCase();
-                  const n = (item.name || '').toLowerCase();
-                  const isVid = m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp)$/i.test(n);
-                  if (!isVid && (!item.size || item.size <= 15 * 1024 * 1024)) {
-                      api.prefetchFileBlob(item.id);
-                  }
+                  api.warmMediaItem(item);
               }
           };
           if (viewMode === 'grid' && (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/') || item.name.endsWith('.webm') || item.name.endsWith('.mp4') || item.name.endsWith('.mov') || item.name.endsWith('.avi'))) {
@@ -1096,7 +1322,7 @@ export default function ProjectFolder() {
               const isVideoItem = mime.startsWith('video/') || name.endsWith('.webm') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');
 
               return (
-                  <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
+                  <div key={item.id} onPointerDown={handlePrefetchItem} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
                       {isVideoItem ? (
                           <VideoThumbnail item={item} className="w-full h-full" />
                       ) : (
@@ -1115,11 +1341,11 @@ export default function ProjectFolder() {
               );
           }
           return viewMode === 'list' ? (
-              <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
+              <div key={item.id} onPointerDown={handlePrefetchItem} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
                   <FileItemRow item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} />
               </div>
           ) : (
-              <div key={item.id} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
+              <div key={item.id} onPointerDown={handlePrefetchItem} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem}>
                   <FileGridCard item={item} onClick={() => handleItemClick(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} />
               </div>
           );
@@ -1156,10 +1382,145 @@ export default function ProjectFolder() {
           />
       )}
 
-      {shareState.isOpen && ( 
-        <div className="fixed inset-0 z-[1500] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> 
-            <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-6 text-center animate-scale-in border border-slate-200 relative overflow-hidden"> 
-                {shareState.status === 'choice' ? (
+      {shareState.isOpen && (
+        <div className="fixed inset-0 z-[1500] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+            <div className={`bg-white w-full ${shareState.status === 'multi_select' ? 'max-w-md' : 'max-w-xs'} rounded-2xl shadow-2xl p-6 text-center animate-scale-in border border-slate-200 relative overflow-hidden transition-all`}>
+                {shareState.status === 'folder_choice' ? (
+                    <>
+                        <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-3 border border-amber-100 shadow-sm">
+                            <i className="fa-solid fa-folder-open text-2xl"></i>
+                        </div>
+                        <h3 className="font-bold text-slate-800 mb-1 text-base">مشاركة المجلد</h3>
+                        <p className="text-xs font-bold text-slate-500 mb-5 px-2 truncate">{shareState.item?.name}</p>
+                        <div className="space-y-2.5 text-right">
+                            <button
+                                onClick={() => prepareFolderShare(shareState.item!, 'zip')}
+                                className="w-full bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 p-3.5 rounded-xl flex items-center gap-3 transition group active:scale-[0.98]"
+                            >
+                                <div className="w-10 h-10 bg-indigo-600 text-white rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                                    <i className="fa-solid fa-file-zipper text-lg"></i>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h4 className="font-bold text-slate-800 text-xs">مشاركة كملف مضغوط (ZIP)</h4>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">ضغط محتويات المجلد وإرسالها للواتساب</p>
+                                </div>
+                                <i className="fa-solid fa-chevron-left text-indigo-300 group-hover:text-indigo-600 transition text-xs"></i>
+                            </button>
+
+                            <button
+                                onClick={() => prepareFolderShare(shareState.item!, 'separate')}
+                                className="w-full bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 p-3.5 rounded-xl flex items-center gap-3 transition group active:scale-[0.98]"
+                            >
+                                <div className="w-10 h-10 bg-emerald-600 text-white rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                                    <i className="fa-brands fa-whatsapp text-xl"></i>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h4 className="font-bold text-slate-800 text-xs">مشاركة كملفات غير مضغوطة</h4>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">إرسال كل الملفات منفصلة مباشرة للواتساب</p>
+                                </div>
+                                <i className="fa-solid fa-chevron-left text-emerald-300 group-hover:text-emerald-600 transition text-xs"></i>
+                            </button>
+
+                            <button
+                                onClick={shareLink}
+                                className="w-full bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 font-bold py-2.5 rounded-xl transition flex items-center justify-center gap-2 text-xs"
+                            >
+                                <i className="fa-solid fa-link text-blue-500"></i>
+                                <span>مشاركة رابط المجلد فقط</span>
+                            </button>
+                        </div>
+                    </>
+                ) : shareState.status === 'multi_select' ? (
+                    <div className="text-right">
+                        <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">
+                            <div>
+                                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                                    <i className="fa-solid fa-list-check text-indigo-600"></i>
+                                    <span>اختيار ملفات للمشاركة</span>
+                                </h3>
+                                <p className="text-[11px] text-slate-500 mt-0.5">
+                                    تم تحديد <span className="font-bold text-indigo-600">{shareState.selectedIds.length}</span> من أصل {shareableFilesInFolder.length} ملف
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    const allSelected = shareState.selectedIds.length === shareableFilesInFolder.length && shareableFilesInFolder.length > 0;
+                                    setShareState(prev => ({
+                                        ...prev,
+                                        selectedIds: allSelected ? [] : shareableFilesInFolder.map(f => f.id)
+                                    }));
+                                }}
+                                className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition"
+                            >
+                                {shareState.selectedIds.length === shareableFilesInFolder.length && shareableFilesInFolder.length > 0 ? 'إلغاء الكل' : 'تحديد الكل'}
+                            </button>
+                        </div>
+
+                        <div className="max-h-[42vh] overflow-y-auto space-y-1.5 pr-1 mb-4">
+                            {shareableFilesInFolder.length === 0 ? (
+                                <div className="py-8 text-center text-slate-400 text-xs font-bold">لا توجد ملفات أخرى في هذا المجلد</div>
+                            ) : (
+                                shareableFilesInFolder.map(fileItem => {
+                                    const checked = shareState.selectedIds.includes(fileItem.id);
+                                    const lower = fileItem.name.toLowerCase();
+                                    const mime = (fileItem.mimeType || '').toLowerCase();
+                                    let iconClass = 'fa-file text-slate-400';
+                                    if (mime.startsWith('image/')) iconClass = 'fa-file-image text-purple-500';
+                                    else if (mime.startsWith('video/')) iconClass = 'fa-file-video text-pink-500';
+                                    else if (lower.endsWith('.pdf') || mime.includes('pdf')) iconClass = 'fa-file-pdf text-red-500';
+                                    else if (lower.endsWith('.dwg') || lower.endsWith('.dxf')) iconClass = 'fa-compass-drafting text-[#c41e3a]';
+                                    else if (lower.endsWith('.doc') || lower.endsWith('.docx')) iconClass = 'fa-file-word text-blue-600';
+                                    else if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) iconClass = 'fa-file-excel text-green-600';
+                                    else if (lower.endsWith('.zip') || lower.endsWith('.rar')) iconClass = 'fa-file-zipper text-amber-600';
+
+                                    return (
+                                        <div
+                                            key={fileItem.id}
+                                            onClick={() => toggleShareFileSelection(fileItem.id)}
+                                            className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition ${checked ? 'bg-indigo-50/70 border-indigo-300 shadow-sm' : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100'}`}
+                                        >
+                                            <div className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border transition ${checked ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300 text-transparent'}`}>
+                                                <i className="fa-solid fa-check text-[10px]"></i>
+                                            </div>
+                                            <i className={`fa-solid ${iconClass} text-sm shrink-0`}></i>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-xs font-bold text-slate-700 truncate">{fileItem.name}</div>
+                                            </div>
+                                            {fileItem.size ? (
+                                                <span className="text-[10px] font-bold text-slate-400 shrink-0">{formatShareBytes(fileItem.size)}</span>
+                                            ) : null}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                            <button
+                                disabled={shareState.selectedIds.length === 0}
+                                onClick={() => {
+                                    const selected = shareableFilesInFolder.filter(f => shareState.selectedIds.includes(f.id));
+                                    prepareMultiFileShare(selected, 'zip');
+                                }}
+                                className="w-full bg-indigo-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold py-2.5 px-3 rounded-xl shadow-md hover:bg-indigo-700 transition flex items-center justify-center gap-2 text-xs active:scale-95"
+                            >
+                                <i className="fa-solid fa-file-zipper"></i>
+                                <span>مشاركة كملف مضغوط (ZIP)</span>
+                            </button>
+                            <button
+                                disabled={shareState.selectedIds.length === 0}
+                                onClick={() => {
+                                    const selected = shareableFilesInFolder.filter(f => shareState.selectedIds.includes(f.id));
+                                    prepareMultiFileShare(selected, 'separate');
+                                }}
+                                className="w-full bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold py-2.5 px-3 rounded-xl shadow-md hover:bg-emerald-700 transition flex items-center justify-center gap-2 text-xs active:scale-95"
+                            >
+                                <i className="fa-brands fa-whatsapp text-sm"></i>
+                                <span>مشاركة كملفات منفصلة (واتساب)</span>
+                            </button>
+                        </div>
+                    </div>
+                ) : shareState.status === 'choice' ? (
                     <>
                         <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-blue-100 shadow-sm relative animate-pulse">
                             <i className="fa-solid fa-file-video text-2xl"></i>
@@ -1169,46 +1530,121 @@ export default function ProjectFolder() {
                             هذا الملف حجمه كبير ({Math.round((shareState.item?.size || 0) / 1024 / 1024)} MB).<br/>
                             لضمان سرعة المشاركة، نوصي بإرسال الرابط.
                         </p>
-                        <div className="space-y-3">
+                        <div className="space-y-2.5">
                             <button onClick={shareLink} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-blue-700 transition flex items-center justify-center gap-2 active:scale-95">
                                 <i className="fa-solid fa-link"></i> مشاركة الرابط (فوري)
                             </button>
                             <button onClick={() => downloadForShare(shareState.item!)} className="w-full bg-slate-100 text-slate-700 font-bold py-3 rounded-xl border border-slate-200 hover:bg-slate-200 transition flex items-center justify-center gap-2 text-xs">
                                 <i className="fa-solid fa-download"></i> تحميل ومشاركة الملف
                             </button>
+                            {shareableFilesInFolder.length > 1 && (
+                                <button onClick={openMultiSelectFromShare} className="w-full bg-indigo-50 text-indigo-700 font-bold py-2.5 rounded-xl border border-indigo-200 hover:bg-indigo-100 transition flex items-center justify-center gap-2 text-xs">
+                                    <i className="fa-solid fa-list-check"></i> تحديد ملفات متعددة للمشاركة
+                                </button>
+                            )}
                         </div>
+                    </>
+                ) : shareState.status === 'empty_folder' ? (
+                    <>
+                        <div className="w-16 h-16 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-amber-100">
+                            <i className="fa-regular fa-folder-open text-2xl"></i>
+                        </div>
+                        <h3 className="font-bold text-slate-800 mb-2 text-base">المجلد فارغ</h3>
+                        <p className="text-xs text-slate-500 mb-5 leading-relaxed">لا توجد ملفات داخل هذا المجلد لمشاركتها.</p>
+                        <button onClick={shareLink} className="w-full bg-slate-100 text-slate-700 font-bold py-2.5 rounded-xl border border-slate-200 hover:bg-slate-200 transition flex items-center justify-center gap-2 text-xs">
+                            <i className="fa-solid fa-link"></i> مشاركة رابط المجلد
+                        </button>
+                    </>
+                ) : shareState.status === 'downloaded_notice' ? (
+                    <>
+                        <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-100">
+                            <i className="fa-solid fa-circle-check text-2xl"></i>
+                        </div>
+                        <h3 className="font-bold text-slate-800 mb-2 text-base">تم تنزيل الملفات بنجاح</h3>
+                        <p className="text-xs text-slate-500 mb-5 leading-relaxed">
+                            متصفح الكمبيوتر لا يدعم إرسال الملفات مباشرة لنافذة المشاركة، لذا تم حفظها على جهازك لإرفاقها في واتساب.
+                        </p>
+                        <a
+                            href="https://wa.me/"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-emerald-700 transition flex items-center justify-center gap-2 active:scale-95 text-xs"
+                        >
+                            <i className="fa-brands fa-whatsapp text-base"></i>
+                            <span>فتح واتساب لإرفاق الملفات</span>
+                        </a>
                     </>
                 ) : (
                     <>
-                        <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-indigo-100 shadow-sm relative"> 
-                            {shareState.status === 'downloading' ? ( 
-                                <> 
-                                    <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div> 
-                                    <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div> 
-                                    <span className="text-[10px] font-bold z-10">{shareState.progress}%</span> 
-                                </> 
-                            ) : shareState.status === 'ready' ? ( 
-                                <i className="fa-solid fa-share-nodes text-2xl animate-pulse"></i> 
-                            ) : ( 
-                                <i className="fa-solid fa-triangle-exclamation text-red-500 text-2xl"></i> 
-                            )} 
-                        </div> 
-                        <h3 className="font-bold text-slate-800 mb-2 text-base"> 
-                            {shareState.status === 'downloading' ? 'جاري تحضير الملف...' : shareState.status === 'ready' ? 'الملف جاهز للمشاركة' : 'فشل التحميل'} 
-                        </h3> 
-                        {shareState.status === 'ready' && ( <p className="text-xs text-slate-500 mb-6 px-2 truncate"> {shareState.item?.name} </p> )} 
-                        {shareState.status === 'ready' ? ( 
-                            <button onClick={executeShare} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2 active:scale-95"> 
-                                <i className="fa-solid fa-paper-plane rtl:rotate-180"></i> مشاركة الآن 
-                            </button> 
-                        ) : shareState.status === 'error' ? ( 
-                            <div className="text-xs text-red-500 mb-4 font-bold bg-red-50 p-2 rounded-lg"> تعذر تحميل الملف. يرجى التحقق من الإنترنت. </div> 
-                        ) : null} 
+                        <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-indigo-100 shadow-sm relative">
+                            {shareState.status === 'downloading' ? (
+                                <>
+                                    <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                                    <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                                    <span className="text-[10px] font-bold z-10">{shareState.progress}%</span>
+                                </>
+                            ) : shareState.status === 'ready' ? (
+                                <i className={`fa-solid ${shareState.isZip ? 'fa-file-zipper' : 'fa-share-nodes'} text-2xl animate-pulse`}></i>
+                            ) : (
+                                <i className="fa-solid fa-triangle-exclamation text-red-500 text-2xl"></i>
+                            )}
+                        </div>
+                        <h3 className="font-bold text-slate-800 mb-2 text-base">
+                            {shareState.status === 'downloading'
+                                ? (shareState.progressText || 'جاري تحضير الملف...')
+                                : shareState.status === 'ready'
+                                    ? (shareState.isZip
+                                        ? 'الملف المضغوط جاهز للمشاركة'
+                                        : shareState.files.length > 1
+                                            ? `تم تجهيز ${shareState.files.length} ملفات للمشاركة`
+                                            : 'الملف جاهز للمشاركة')
+                                    : 'فشل التحميل'}
+                        </h3>
+                        {shareState.status === 'ready' && (
+                            <p className="text-xs text-slate-500 mb-4 px-2 truncate" title={shareState.files.map(f => f.name).join(', ')}>
+                                {shareState.files.length > 1
+                                    ? `${shareState.shareTitle || ''} • ${shareState.files.length} ملفات (${formatShareBytes(shareState.files.reduce((acc, f) => acc + f.size, 0))})`
+                                    : (shareState.files[0]?.name || shareState.item?.name)}
+                            </p>
+                        )}
+                        {shareState.status === 'ready' ? (
+                            <div className="space-y-2.5">
+                                {shareState.item?.type !== ItemType.FOLDER && shareableFilesInFolder.length > 0 && (
+                                    <button
+                                        onClick={openMultiSelectFromShare}
+                                        className="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 text-xs active:scale-95"
+                                    >
+                                        <i className="fa-solid fa-list-check"></i>
+                                        <span>
+                                            {shareState.files.length > 1 || shareState.isZip
+                                                ? 'تعديل تحديد الملفات'
+                                                : 'تحديد ملفات متعددة للمشاركة'}
+                                        </span>
+                                    </button>
+                                )}
+                                <button
+                                    onClick={executeShare}
+                                    className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2 active:scale-95"
+                                >
+                                    <i className="fa-solid fa-paper-plane rtl:rotate-180"></i>
+                                    <span>مشاركة الآن</span>
+                                </button>
+                            </div>
+                        ) : shareState.status === 'error' ? (
+                            <div className="text-xs text-red-500 mb-4 font-bold bg-red-50 p-2 rounded-lg">
+                                {shareState.errorMessage || 'تعذر تحميل الملف. يرجى التحقق من الإنترنت.'}
+                            </div>
+                        ) : null}
                     </>
                 )}
-                <button onClick={() => setShareState(prev => ({...prev, isOpen: false}))} className="mt-4 text-slate-400 text-xs font-bold hover:text-slate-600 transition"> إغلاق </button> 
-            </div> 
-        </div> 
+                <button
+                    onClick={() => setShareState(prev => ({ ...prev, isOpen: false }))}
+                    className="mt-4 text-slate-400 text-xs font-bold hover:text-slate-600 transition block mx-auto"
+                >
+                    إغلاق
+                </button>
+            </div>
+        </div>
       )}
 
       {/* Modals remain the same */}
@@ -1280,7 +1716,20 @@ export default function ProjectFolder() {
               }}
           />
       )}
-      {previewItem && ( <FileViewer item={previewItem} siblings={previewItem.mimeType?.startsWith('image/') ? items.filter(i => i.mimeType?.startsWith('image/')) : []} onClose={() => setPreviewItem(null)} /> )}
+      {previewItem && (
+          <FileViewer
+              item={previewItem}
+              siblings={(() => {
+                  const isPreviewMedia = (f: FileItem) => {
+                      const m = (f.mimeType || '').toLowerCase();
+                      const n = (f.name || '').toLowerCase();
+                      return m.startsWith('image/') || m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp|jpg|jpeg|png|webp|gif)$/i.test(n);
+                  };
+                  return isPreviewMedia(previewItem) ? sortedItems.filter(isPreviewMedia) : [];
+              })()}
+              onClose={() => setPreviewItem(null)}
+          />
+      )}
       {showAI && <ProjectAI projectId={projectId || ''} folderId={currentFolderId} projectData={currentProject} onClose={() => setShowAI(false)} onProjectUpdated={(updated) => setCurrentProject(updated)} />}
     </Layout>
   );

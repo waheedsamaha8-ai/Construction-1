@@ -684,23 +684,65 @@ export const ReportGenerator = {
             </table>
         ` : '';
 
-        const images: string[] = [];
+        const images: { src: string; mode: '1:1' | '3:4' | 'original' }[] = [];
         logs.forEach(log => {
             if (log.images && log.images.length > 0) {
-                log.images.forEach(img => images.push(img));
+                log.images.forEach((img, idx) => images.push({ src: img, mode: log.imageModes?.[idx] || '1:1' }));
             }
         });
 
-        const photoGridHtml = images.length > 0 ? `
-            <h2>التوثيق المصور (Site Photos)</h2>
-            <div class="photo-grid">
-                ${images.map(img => `
-                    <div class="photo-item">
-                        <img src="${img}" alt="Site Photo" />
-                    </div>
-                `).join('')}
-            </div>
-        ` : '';
+        let photoGridHtml = '';
+        if (images.length > 0) {
+            const photoCols: 1 | 2 | 3 | 4 =
+                images.length >= 4 ? 4 : images.length === 3 ? 3 : images.length === 2 ? 2 : 1;
+            const firstMode = images[0].mode;
+            const tableAspect = images.every(i => i.mode === firstMode)
+                ? (firstMode === '3:4' ? 'portrait' : firstMode === 'original' ? 'original' : 'square')
+                : 'square';
+            const squareH = photoCols === 1 ? 300 : photoCols === 2 ? 260 : photoCols === 3 ? 195 : 150;
+            const portraitH = photoCols === 1 ? 340 : photoCols === 2 ? 320 : photoCols === 3 ? 255 : 195;
+            const origMaxH = photoCols === 1 ? 340 : photoCols === 2 ? 280 : photoCols === 3 ? 220 : 170;
+            const photoHeightPx = tableAspect === 'portrait' ? portraitH : tableAspect === 'original' ? origMaxH : squareH;
+            const colPercent = (100 / photoCols).toFixed(2);
+            const rows: string[] = [];
+            for (let i = 0; i < images.length; i += photoCols) {
+                const chunk = images.slice(i, i + photoCols);
+                const cells: string[] = [];
+                for (let c = 0; c < photoCols; c++) {
+                    const entry = chunk[c];
+                    if (entry) {
+                        const imgIdx = i + c + 1;
+                        let imgStyle = '';
+                        if (entry.mode === 'original') {
+                            imgStyle = `width: 100% !important; height: auto !important; max-height: ${origMaxH}px !important; object-fit: contain !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                        } else if (entry.mode === '3:4') {
+                            const wStyle = photoCols === 1 ? `width: ${Math.round(portraitH * 0.75)}px !important; max-width: 100% !important;` : `width: 100% !important;`;
+                            imgStyle = `${wStyle} height: ${portraitH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                        } else {
+                            const wStyle = photoCols === 1 ? `width: ${squareH}px !important; max-width: 100% !important;` : `width: 100% !important;`;
+                            imgStyle = `${wStyle} height: ${squareH}px !important; object-fit: cover !important; object-position: center !important; display: block !important; margin: 0 auto !important; border-radius: 5px !important; border: 1px solid #e2e8f0;`;
+                        }
+                        cells.push(`
+                            <td style="width: ${colPercent}%; padding: 5px !important; border: 1px solid #cbd5e1 !important; background-color: #ffffff !important; text-align: center !important; vertical-align: middle !important;">
+                                <img data-ratio-mode="${entry.mode}" src="${entry.src}" alt="صورة رقم (${imgIdx})" style="${imgStyle}" />
+                                <div class="photo-catalog-caption" style="font-size: 9.5px !important; color: #475569 !important; font-weight: 800 !important; margin-top: 4px !important; text-align: center !important; line-height: 1.2 !important;">صورة رقم (${imgIdx})</div>
+                            </td>
+                        `);
+                    } else {
+                        cells.push(`<td style="width: ${colPercent}%; padding: 5px !important; border: 1px solid #f1f5f9 !important; background-color: #ffffff !important;">&nbsp;</td>`);
+                    }
+                }
+                rows.push(`<tr>${cells.join('')}</tr>`);
+            }
+            photoGridHtml = `
+                <h2>كتالوج التوثيق المصور (Site Photos)</h2>
+                <div class="table-responsive-wrapper" style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 8px 0; display: block;">
+                    <table class="qc-photos-table photo-catalog-table" data-cols="${photoCols}" data-photo-height="${photoHeightPx}" data-aspect="${tableAspect}" style="width: 100% !important; min-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; margin: 0 !important;">
+                        <tbody>${rows.join('')}</tbody>
+                    </table>
+                </div>
+            `;
+        }
 
         const signaturesHtml = `
             <table class="signatures-table" style="margin-top: 40px; border: none;">

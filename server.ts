@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -115,7 +116,8 @@ const server = createHttpServer(app);
 app.use((req: Request, res: Response, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Gemini-Api-Key, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Gemini-Api-Key, Authorization, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
   }
@@ -129,6 +131,77 @@ app.use(express.urlencoded({ extended: true, limit: '60mb' }));
 // Health Check
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', serverTime: new Date().toISOString() });
+});
+
+// High-Speed HTTP Range Proxy for Google Drive Video & Media Streaming
+app.get('/api/drive/stream/:fileId', async (req: Request, res: Response) => {
+  const fileId = String(req.params.fileId || '').trim();
+  const queryToken = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+  const authHeader = typeof req.headers.authorization === 'string' ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : '';
+  const token = queryToken || authHeader;
+
+  if (!/^[a-zA-Z0-9_-]{5,128}$/.test(fileId) || !token) {
+    return res.status(400).json({ error: 'Invalid fileId or missing token' });
+  }
+
+  const controller = new AbortController();
+  req.on('close', () => {
+    if (!res.writableEnded) {
+      try { controller.abort(); } catch {}
+    }
+  });
+
+  try {
+    const upstreamHeaders: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    if (typeof req.headers.range === 'string' && req.headers.range.trim()) {
+      upstreamHeaders.Range = req.headers.range;
+    }
+
+    const upstreamRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+      {
+        method: 'GET',
+        headers: upstreamHeaders,
+        signal: controller.signal,
+      }
+    );
+
+    if (!upstreamRes.ok && upstreamRes.status !== 206) {
+      return res.status(upstreamRes.status).end();
+    }
+
+    res.status(upstreamRes.status);
+    const forwardHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag'];
+    for (const h of forwardHeaders) {
+      const val = upstreamRes.headers.get(h);
+      if (val) res.setHeader(h, val);
+    }
+    if (!upstreamRes.headers.get('accept-ranges')) {
+      res.setHeader('Accept-Ranges', 'bytes');
+    }
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+
+    if (!upstreamRes.body) {
+      return res.end();
+    }
+
+    const nodeStream = Readable.fromWeb(upstreamRes.body as any);
+    nodeStream.on('error', () => {
+      if (!res.writableEnded) res.end();
+    });
+    res.on('error', () => {
+      try { nodeStream.destroy(); } catch {}
+    });
+    nodeStream.pipe(res);
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || res.headersSent) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    return res.status(502).json({ error: 'Media stream proxy failed' });
+  }
 });
 
 // Cross-Device Gemini Key Sync Endpoint
@@ -484,18 +557,47 @@ const getCliPort = (): number | undefined => {
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   let viteServer: { close: () => Promise<void> } | null = null;
+  let viteMiddlewares: any = null;
+  let viteInitError: any = null;
+
+  const cliPort = getCliPort();
+  const envPort = Number(process.env.PORT);
+  const defaultPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
+  const nginxPort = Number(process.env.NGINX_PORT);
+  const PORT = cliPort || (envPort && envPort !== nginxPort ? envPort : defaultPort);
+
+  let viteReadyPromise: Promise<void> = Promise.resolve();
 
   if (!isProd) {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server },
-      },
-      appType: 'spa',
+    viteReadyPromise = (async () => {
+      try {
+        const { createServer: createViteServer } = await import('vite');
+        const vite = await createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: false,
+          },
+          appType: 'spa',
+        });
+        viteServer = vite;
+        viteMiddlewares = vite.middlewares;
+      } catch (err) {
+        viteInitError = err;
+        console.error('Vite middleware initialization error:', err);
+      }
+    })();
+
+    app.use(async (req: Request, res: Response, next) => {
+      if (req.path.startsWith('/api')) return next();
+      await viteReadyPromise;
+      if (viteInitError) {
+        return res.status(500).send('Dev server Vite initialization error');
+      }
+      if (viteMiddlewares) {
+        return viteMiddlewares(req, res, next);
+      }
+      return next();
     });
-    viteServer = vite;
-    app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     if (fs.existsSync(distPath)) {
@@ -508,11 +610,12 @@ async function startServer() {
     }
   }
 
-  const cliPort = getCliPort();
-  const envPort = Number(process.env.PORT);
-  const defaultPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
-  const nginxPort = Number(process.env.NGINX_PORT);
-  const PORT = cliPort || (envPort && envPort !== nginxPort ? envPort : defaultPort);
+  server.on('error', (err: any) => {
+    console.error('HTTP Server error:', err);
+    if (err?.code === 'EADDRINUSE') {
+      process.exit(1);
+    }
+  });
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Construction Pro Server running on http://0.0.0.0:${PORT}`);

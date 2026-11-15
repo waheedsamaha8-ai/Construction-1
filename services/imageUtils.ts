@@ -57,6 +57,263 @@ export const imageUtils = {
     });
   },
 
+  // Compress image preserving original natural aspect ratio & EXIF orientation within byte budget
+  compressImagePreservingAspect: async (
+    file: File,
+    options?: {
+      maxDim?: number;   // max width or height (default 800)
+      quality?: number;  // initial quality (default 0.72)
+      maxBytes?: number; // strict byte limit (default 240KB)
+    }
+  ): Promise<File> => {
+    if (!file.type.startsWith('image/')) return file;
+
+    const initialMaxDim = options?.maxDim ?? 800;
+    const initialQuality = options?.quality ?? 0.72;
+    const maxBytes = options?.maxBytes ?? (240 * 1024);
+
+    let bitmap: ImageBitmap | null = null;
+    let fallbackImg: HTMLImageElement | null = null;
+    let objectUrl: string | null = null;
+    let srcW = 0;
+    let srcH = 0;
+
+    try {
+      if (typeof createImageBitmap === 'function') {
+        try {
+          bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions);
+        } catch {
+          bitmap = await createImageBitmap(file);
+        }
+        srcW = bitmap.width;
+        srcH = bitmap.height;
+      }
+    } catch {
+      bitmap = null;
+    }
+
+    if (!bitmap || !srcW || !srcH) {
+      objectUrl = URL.createObjectURL(file);
+      fallbackImg = await new Promise<HTMLImageElement | null>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = objectUrl!;
+      });
+      if (!fallbackImg || !fallbackImg.width || !fallbackImg.height) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return file;
+      }
+      srcW = fallbackImg.naturalWidth || fallbackImg.width;
+      srcH = fallbackImg.naturalHeight || fallbackImg.height;
+    }
+
+    try {
+      const canvasToBlob = (canvas: HTMLCanvasElement, mime: string, q: number): Promise<Blob | null> =>
+        new Promise((res) => canvas.toBlob((b) => res(b), mime, q));
+
+      const dimCandidates = [initialMaxDim, Math.max(480, Math.round(initialMaxDim * 0.7))];
+      const qualityCandidates = Array.from(new Set([initialQuality, Math.min(initialQuality, 0.55), 0.4, 0.28]));
+
+      let bestBlob: Blob | null = null;
+      let bestMime = 'image/webp';
+
+      for (const maxDim of dimCandidates) {
+        const scale = Math.min(1, maxDim / Math.max(srcW, srcH));
+        const outW = Math.max(1, Math.round(srcW * scale));
+        const outH = Math.max(1, Math.round(srcH * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, outW, outH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        if (bitmap) {
+          ctx.drawImage(bitmap, 0, 0, srcW, srcH, 0, 0, outW, outH);
+        } else if (fallbackImg) {
+          ctx.drawImage(fallbackImg, 0, 0, srcW, srcH, 0, 0, outW, outH);
+        }
+
+        for (const q of qualityCandidates) {
+          let blob = await canvasToBlob(canvas, 'image/webp', q);
+          let mime = 'image/webp';
+          if (!blob || blob.type !== 'image/webp') {
+            blob = await canvasToBlob(canvas, 'image/jpeg', q);
+            mime = 'image/jpeg';
+          }
+          if (blob) {
+            bestBlob = blob;
+            bestMime = mime;
+            if (blob.size <= maxBytes) {
+              const ext = mime === 'image/webp' ? '.webp' : '.jpg';
+              const newName = (file.name.replace(/\.[^/.]+$/, '') || 'log_image') + ext;
+              return new File([blob], newName, { type: mime, lastModified: Date.now() });
+            }
+          }
+        }
+      }
+
+      if (bestBlob) {
+        const ext = bestMime === 'image/webp' ? '.webp' : '.jpg';
+        const newName = (file.name.replace(/\.[^/.]+$/, '') || 'log_image') + ext;
+        return new File([bestBlob], newName, { type: bestMime, lastModified: Date.now() });
+      }
+      return file;
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') {
+        bitmap.close();
+      }
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+  },
+
+  // Center-crop to a fixed aspect ratio (default 3:4 portrait) and compress within byte budget
+  cropAndCompressImage: async (
+    file: File,
+    options?: {
+      aspectRatio?: number; // width / height, e.g., 3 / 4 = 0.75 for vertical 3:4
+      targetWidth?: number; // e.g., 480 => 480x640
+      quality?: number;     // initial WebP/JPEG quality
+      maxBytes?: number;    // strict byte limit (e.g., 240KB so Base64 stays < 350k chars)
+    }
+  ): Promise<File> => {
+    if (!file.type.startsWith('image/')) return file;
+
+    const targetAspect = options?.aspectRatio ?? (3 / 4);
+    const targetWidth = options?.targetWidth ?? 480;
+    const initialQuality = options?.quality ?? 0.72;
+    const maxBytes = options?.maxBytes ?? (240 * 1024);
+
+    let bitmap: ImageBitmap | null = null;
+    let fallbackImg: HTMLImageElement | null = null;
+    let objectUrl: string | null = null;
+    let srcW = 0;
+    let srcH = 0;
+
+    try {
+      if (typeof createImageBitmap === 'function') {
+        try {
+          bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions);
+        } catch {
+          bitmap = await createImageBitmap(file);
+        }
+        srcW = bitmap.width;
+        srcH = bitmap.height;
+      }
+    } catch {
+      bitmap = null;
+    }
+
+    if (!bitmap || !srcW || !srcH) {
+      objectUrl = URL.createObjectURL(file);
+      fallbackImg = await new Promise<HTMLImageElement | null>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = objectUrl!;
+      });
+      if (!fallbackImg || !fallbackImg.width || !fallbackImg.height) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return file;
+      }
+      srcW = fallbackImg.naturalWidth || fallbackImg.width;
+      srcH = fallbackImg.naturalHeight || fallbackImg.height;
+    }
+
+    try {
+      const srcRatio = srcW / srcH;
+      let sx = 0;
+      let sy = 0;
+      let cropW = srcW;
+      let cropH = srcH;
+
+      if (Math.abs(srcRatio - targetAspect) > 0.001) {
+        if (srcRatio > targetAspect) {
+          // Wider than target (e.g., landscape 16:9, 4:3, or square 1:1) -> crop sides cleanly from center
+          cropH = srcH;
+          cropW = Math.max(1, Math.round(srcH * targetAspect));
+          sx = Math.max(0, Math.round((srcW - cropW) / 2));
+          sy = 0;
+        } else {
+          // Taller than target (e.g., ultra-tall 9:16) -> crop top/bottom cleanly from center
+          cropW = srcW;
+          cropH = Math.max(1, Math.round(srcW / targetAspect));
+          sx = 0;
+          sy = Math.max(0, Math.round((srcH - cropH) / 2));
+        }
+      }
+
+      const canvasToBlob = (canvas: HTMLCanvasElement, mime: string, q: number): Promise<Blob | null> =>
+        new Promise((res) => canvas.toBlob((b) => res(b), mime, q));
+
+      const widthCandidates = [targetWidth, Math.max(300, Math.round(targetWidth * 0.75))];
+      const qualityCandidates = Array.from(new Set([initialQuality, Math.min(initialQuality, 0.55), 0.4, 0.28]));
+
+      let bestBlob: Blob | null = null;
+      let bestMime = 'image/webp';
+
+      for (const outW of widthCandidates) {
+        const outH = Math.round(outW / targetAspect);
+        const canvas = document.createElement('canvas');
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, outW, outH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        if (bitmap) {
+          ctx.drawImage(bitmap, sx, sy, cropW, cropH, 0, 0, outW, outH);
+        } else if (fallbackImg) {
+          ctx.drawImage(fallbackImg, sx, sy, cropW, cropH, 0, 0, outW, outH);
+        }
+
+        for (const q of qualityCandidates) {
+          let blob = await canvasToBlob(canvas, 'image/webp', q);
+          let mime = 'image/webp';
+          if (!blob || blob.type !== 'image/webp') {
+            blob = await canvasToBlob(canvas, 'image/jpeg', q);
+            mime = 'image/jpeg';
+          }
+          if (blob) {
+            bestBlob = blob;
+            bestMime = mime;
+            if (blob.size <= maxBytes) {
+              const ext = mime === 'image/webp' ? '.webp' : '.jpg';
+              const newName = (file.name.replace(/\.[^/.]+$/, '') || 'log_image') + ext;
+              return new File([blob], newName, { type: mime, lastModified: Date.now() });
+            }
+          }
+        }
+      }
+
+      if (bestBlob) {
+        const ext = bestMime === 'image/webp' ? '.webp' : '.jpg';
+        const newName = (file.name.replace(/\.[^/.]+$/, '') || 'log_image') + ext;
+        return new File([bestBlob], newName, { type: bestMime, lastModified: Date.now() });
+      }
+      return file;
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') {
+        bitmap.close();
+      }
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+  },
+
   generateImageThumbnail: async (file: File | Blob, maxDim: number = 260, quality: number = 0.7): Promise<string> => {
     return new Promise((resolve) => {
       try {

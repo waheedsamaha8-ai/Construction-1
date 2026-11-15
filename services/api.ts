@@ -9,6 +9,7 @@ import { autoSync } from './backgroundSync';
 import { marketService } from './ai/market';
 import { imageUtils } from './imageUtils';
 import appletConfig from '../firebase-applet-config.json';
+import { shareFilesWithFallback, ShareResult } from './shareHelper';
 
 declare const google: any;
 
@@ -123,14 +124,16 @@ interface CachedBlobEntry {
     bytes: number;
     ts: number;
 }
-const MAX_BLOB_CACHE_ITEMS = 36;
-const MAX_BLOB_CACHE_BYTES = 75 * 1024 * 1024; // 75MB RAM ceiling
+const MAX_BLOB_CACHE_ITEMS = 64;
+const MAX_BLOB_CACHE_BYTES = 150 * 1024 * 1024; // 150MB RAM ceiling
 const blobMemoryCache = new Map<string, CachedBlobEntry>();
 const inFlightDownloads = new Map<string, Promise<Blob>>();
+const warmedVideoHeadSet = new Set<string>();
+const warmedImageUrlSet = new Set<string>();
 let totalBlobCacheBytes = 0;
 
 const setMemoryBlob = (id: string, blob: Blob) => {
-    if (!id || !blob || blob.size === 0 || blob.size > 30 * 1024 * 1024) return;
+    if (!id || !blob || blob.size === 0 || blob.size > 65 * 1024 * 1024) return;
     const existing = blobMemoryCache.get(id);
     if (existing) {
         totalBlobCacheBytes -= existing.bytes;
@@ -1400,6 +1403,98 @@ export const api = {
   prefetchFileBlob(fileId: string): void {
       if (!fileId || getMemoryBlob(fileId) || inFlightDownloads.has(fileId)) return;
       this.downloadFileBlob(fileId, undefined, true).catch(() => {});
+  },
+  getDirectDriveStreamUrl(fileId: string, fallbackWebContentLink?: string): string {
+      if (accessToken && fileId && !isSyntheticDriveId(fileId)) {
+          return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&access_token=${encodeURIComponent(accessToken)}`;
+      }
+      return fallbackWebContentLink || '';
+  },
+  getVideoStreamUrl(fileId: string, fallbackWebContentLink?: string): string {
+      if (!fileId || isSyntheticDriveId(fileId)) return fallbackWebContentLink || '';
+      if (accessToken && typeof window !== 'undefined' && /^https?:$/i.test(window.location.protocol) && !window.location.hostname.endsWith('github.io')) {
+          return `/api/drive/stream/${encodeURIComponent(fileId)}?token=${encodeURIComponent(accessToken)}`;
+      }
+      return this.getDirectDriveStreamUrl(fileId, fallbackWebContentLink);
+  },
+  async warmLocalBlobsToMemory(items: FileItem[], limit: number = 18): Promise<void> {
+      if (!Array.isArray(items) || items.length === 0) return;
+      const mediaItems = items.filter((item) => {
+          if (!item || item.type === ItemType.FOLDER || !item.id) return false;
+          const m = (item.mimeType || '').toLowerCase();
+          const n = (item.name || '').toLowerCase();
+          return m.startsWith('image/') || m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp|jpg|jpeg|png|webp)$/i.test(n);
+      }).slice(0, limit);
+
+      await Promise.all(
+          mediaItems.map(async (item) => {
+              if (getMemoryBlob(item.id)) {
+                  getOrCreateMemoryBlobUrl(item.id);
+                  return;
+              }
+              try {
+                  const blob = await dbService.getBlob(item.id);
+                  if (blob && blob.size > 0) {
+                      getOrCreateMemoryBlobUrl(item.id, blob);
+                  }
+              } catch {}
+          })
+      );
+  },
+  warmMediaItem(item: FileItem): void {
+      if (!item || item.type === ItemType.FOLDER || !item.id) return;
+      const memCached = getMemoryBlob(item.id);
+      if (memCached) {
+          getOrCreateMemoryBlobUrl(item.id, memCached);
+          return;
+      }
+
+      const m = (item.mimeType || '').toLowerCase();
+      const n = (item.name || '').toLowerCase();
+      const isVid = m.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp)$/i.test(n);
+      const isImg = m.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(n);
+
+      // 1. Promote IndexedDB blob to RAM ObjectURL immediately (~1-3ms)
+      dbService.getBlob(item.id).then((localBlob) => {
+          if (localBlob && localBlob.size > 0) {
+              getOrCreateMemoryBlobUrl(item.id, localBlob);
+              return;
+          }
+          if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(item.id)) return;
+
+          if (isImg) {
+              let hiUrl = item.previewUrl || item.thumbnailLink || '';
+              if (hiUrl && hiUrl.includes('googleusercontent.com')) {
+                  hiUrl = hiUrl.replace(/=s\d+/, '=s1600');
+              } else if (!hiUrl || hiUrl.startsWith('data:')) {
+                  hiUrl = `https://drive.google.com/thumbnail?id=${item.id}&sz=w1600`;
+              }
+              if (hiUrl && !warmedImageUrlSet.has(item.id)) {
+                  warmedImageUrlSet.add(item.id);
+                  const img = new Image();
+                  img.referrerPolicy = 'no-referrer';
+                  img.src = hiUrl;
+              }
+              if (!item.size || item.size <= 15 * 1024 * 1024) {
+                  this.prefetchFileBlob(item.id);
+              }
+          } else if (isVid) {
+              const streamUrl = this.getVideoStreamUrl(item.id, item.webContentLink);
+              if (streamUrl && !warmedVideoHeadSet.has(item.id)) {
+                  warmedVideoHeadSet.add(item.id);
+                  // Warm first 512KB of video (container header / moov / first keyframe) in browser HTTP cache
+                  fetch(streamUrl, {
+                      headers: { Range: 'bytes=0-524287' },
+                      cache: 'force-cache'
+                  }).catch(() => {});
+              }
+              if (item.size && item.size > 0 && item.size <= 25 * 1024 * 1024) {
+                  this.prefetchFileBlob(item.id);
+              }
+          } else if (!item.size || item.size <= 12 * 1024 * 1024) {
+              this.prefetchFileBlob(item.id);
+          }
+      }).catch(() => {});
   },
 
   // --- OFFLINE-READY DOWNLOAD FUNCTION WITH IN-MEMORY LRU + IN-FLIGHT DEDUP ---
@@ -2716,21 +2811,25 @@ export const api = {
       triggerLoadingStop(); 
   },
   async shareItem(fileId: string): Promise<string> { if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED"); try { await fetchDrive(`files/${fileId}/permissions`, { method: 'POST', body: JSON.stringify({ role: 'reader', type: 'anyone' }) }); } catch (e) {} const res = await fetchDrive(`files/${fileId}?fields=webViewLink`); return res.webViewLink; },
-  async shareSmart(item: FileItem, fileObj?: File): Promise<void> { 
-      try { 
-          if (!navigator.share) { alert("خاصية المشاركة غير مدعومة في هذا المتصفح."); return; } 
-          if (item.type === ItemType.FOLDER || !fileObj) { 
-              const url = item.webViewLink || (window.location.origin + '/#/project/' + item.parentId + '/' + item.id); 
-              await navigator.share({ title: item.name, text: `مشاركة ملف: ${item.name}`, url: url }); 
-              return; 
-          } 
-          if (navigator.canShare && navigator.canShare({ files: [fileObj] })) { 
-              await navigator.share({ files: [fileObj], title: item.name, text: item.name }); 
-          } else { 
-              const url = URL.createObjectURL(fileObj); 
-              const a = document.createElement('a'); a.href = url; a.download = fileObj.name; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); 
-          } 
-      } catch (error: any) { } 
+  async shareFilesSmart(files: File[], title?: string): Promise<ShareResult> {
+      return await shareFilesWithFallback(files, title);
+  },
+  async shareSmart(item: FileItem, fileObj?: File): Promise<void> {
+      try {
+          if (fileObj && item.type !== ItemType.FOLDER) {
+              await shareFilesWithFallback([fileObj], item.name);
+              return;
+          }
+          const url = item.webViewLink || (window.location.origin + '/#/project/' + item.parentId + '/' + item.id);
+          if (navigator.share) {
+              await navigator.share({ title: item.name, text: `مشاركة: ${item.name}`, url });
+              return;
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(url).catch(() => {});
+          }
+          alert("خاصية المشاركة المباشرة غير مدعومة في هذا المتصفح. تم نسخ الرابط للمشاركة.");
+      } catch (error: any) { }
   },
   async deleteItem(id: string, parentId?: string): Promise<void> { 
       if (!authService.isAuthenticated()) return; 
@@ -2811,7 +2910,6 @@ export const api = {
           setMemoryBlob(tempId, file);
           try { await dbService.putBlob(tempId, file); } catch(e) { triggerLoadingStop(); throw new Error("Failed to save file offline"); }
           if (generatedThumb) {
-              try { localStorage.setItem(`vthumb_${tempId}`, generatedThumb); } catch (e) {}
               try { await dbService.putBlob(`vthumb_${tempId}`, new Blob([generatedThumb], { type: 'text/plain' })); } catch (e) {}
           }
           // Queue for later if authenticated
@@ -2835,7 +2933,6 @@ export const api = {
       dbService.putBlob(result.id, file).catch(() => {});
       if (generatedThumb && result?.id) {
           result.previewUrl = generatedThumb;
-          try { localStorage.setItem(`vthumb_${result.id}`, generatedThumb); } catch (e) {}
           dbService.putBlob(`vthumb_${result.id}`, new Blob([generatedThumb], { type: 'text/plain' })).catch(() => {});
           dbService.getItem<FileItem>('files', result.id).then((existingItem) => {
               if (existingItem) {
