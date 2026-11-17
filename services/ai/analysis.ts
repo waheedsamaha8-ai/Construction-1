@@ -1000,5 +1000,479 @@ export const analysisService = {
         } catch (e) {
             return `${itemHeaderSummaryHtml}<div class="warning-box editable-box">تعذر توليد التقرير حالياً، يرجى المحاولة مرة أخرى.</div>`;
         }
+    },
+
+    async discussOrModifyReportHtml(params: {
+        reportHtml: string;
+        instruction?: string;
+        audioBlob?: Blob;
+        mode?: 'auto' | 'edit' | 'discuss';
+        history?: { role: 'user' | 'assistant'; text: string }[];
+    }): Promise<{
+        action: 'discuss' | 'edit';
+        transcript: string;
+        reply: string;
+        updatedHtml?: string;
+    }> {
+        const cleanInstruction = (params.instruction || '').trim();
+        if (!cleanInstruction && !params.audioBlob) {
+            return {
+                action: 'discuss',
+                transcript: '',
+                reply: 'يرجى كتابة أمر أو تسجيل رسالة صوتية أولاً.',
+            };
+        }
+
+        const modeInstruction =
+            params.mode === 'edit'
+                ? 'المستخدم يطلب **تعديلاً أو إضافة** على التقرير نفسه (`action: "edit"`). قم بتنفيذ التعديل المطلوب وإرجاع كامل كود HTML المحدّث للتقرير في `updatedHtml`.'
+                : params.mode === 'discuss'
+                    ? 'المستخدم يطلب **مناقشة أو استفساراً أو شرحاً** حول التقرير (`action: "discuss"`). لا تعدّل التقرير واجعل `updatedHtml` فارغاً، وقدّم إجابة واضحة ومفصلة في `reply`.'
+                    : 'حدد تلقائياً: إذا كان الطلب يتضمن تعديل رقم/نسبة/نص/جدول أو إضافة بند/نقاط/توصيات/فقرة/صف أو حذف أو إعادة صياغة جزئية من التقرير، اختر `action: "edit"` وأرجع كامل كود HTML المحدّث في `updatedHtml`. أما إذا كان سؤالاً أو نقاشاً أو طلباً للشرح/المراجعة دون تعديل جسم التقرير، فاختر `action: "discuss"`.';
+
+        const historyBlock =
+            params.history && params.history.length > 0
+                ? `\nسجل النقاش السابق حول هذا التقرير:\n${params.history
+                      .slice(-6)
+                      .map((h) => `${h.role === 'user' ? 'المهندس' : 'الاستشاري'}: ${h.text}`)
+                      .join('\n')}\n`
+                : '';
+
+        const prompt = `
+            **ROLE:** كبير الاستشاريين الهندسيين ومحرر تقارير المكتب الفني والأسعار (Senior Engineering Consultant & Technical Report Editor - Egypt).
+            **TASK:** معالجة أمر المستخدم (${params.audioBlob ? 'أمر صوتي مسجل' : 'أمر كتابي'}) بخصوص التقرير الهندسي التالي.
+
+            ${modeInstruction}
+            ${historyBlock}
+            ${cleanInstruction ? `**أمر المستخدم الكتابي:**\n"${cleanInstruction}"\n` : '**ملاحظة:** استمع بدقة للتسجيل الصوتي المرفق واستخرج نص الأمر كاملاً في الحقل `transcript` باللغة العربية، ثم نفّذه.'}
+
+            **التقرير الحالي (HTML):**
+            \`\`\`html
+            ${params.reportHtml}
+            \`\`\`
+
+            **قواعد صارمة جداً عند اختيار \`action: "edit"\`:**
+            1. أرجع **كامل كود HTML للتقرير** بعد تطبيق التعديل أو الإضافة المطلوبة في \`updatedHtml\`، بحيث لا يضيع أي قسم أو جدول أو تنسيق من الأجزاء غير المطلوب تعديلها.
+            2. حافظ على نفس الفئات والعناصر الموجودة (\`table-responsive-wrapper\`, \`pricing-compact-table\`, \`boq-summary-mini-table\`, \`info-box\`, \`success-box\`, \`warning-box\`, \`cost-box\`, \`editable-box\`, سمات \`data-calc-*\`).
+            3. إذا تم تعديل أسعار أو كميات أو نسب هالك أو مصاريف غير مباشرة أو أرباح أو إضافة صفوف بجداول حسابات، حدّث الحسابات والإجماليات المرتبطة بدقة متناهية.
+            4. إذا طلب إضافة نقاط أو فقرة أو ملاحظات في جزئية معينة، أدرجها في الموضع الهندسي المناسب بنفس تنسيق التقرير.
+            5. لا تضع علامات \`\`\`html داخل \`updatedHtml\`.
+
+            **OUTPUT FORMAT (STRICT JSON ONLY):**
+            {
+              "action": "edit" | "discuss",
+              "transcript": "نص الطلب كما فهمته (أو تفريغ الصوت بالعربية)",
+              "reply": "رد موجز وواضح للمستخدم يشرح ما تم تعديله أو يجيب عن سؤاله بالتفصيل",
+              "updatedHtml": "كود HTML الكامل المحدّث في حالة edit فقط، أو نص فارغ في حالة discuss"
+            }
+        `;
+
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                action: { type: Type.STRING, enum: ['discuss', 'edit'] },
+                transcript: { type: Type.STRING },
+                reply: { type: Type.STRING },
+                updatedHtml: { type: Type.STRING },
+            },
+            required: ['action', 'transcript', 'reply'],
+        };
+
+        try {
+            const parts: any[] = [];
+            if (params.audioBlob) {
+                const audioPart = await fileToPart(params.audioBlob);
+                parts.push(audioPart);
+            }
+            parts.push({ text: prompt });
+
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: { parts },
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: schema,
+                },
+            });
+
+            const rawText = (result.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(rawText);
+
+            const resolvedAction: 'discuss' | 'edit' =
+                params.mode === 'discuss'
+                    ? 'discuss'
+                    : params.mode === 'edit' && parsed.updatedHtml
+                        ? 'edit'
+                        : parsed.action === 'edit' && parsed.updatedHtml && String(parsed.updatedHtml).trim().length > 20
+                            ? 'edit'
+                            : 'discuss';
+
+            const cleanedHtml =
+                resolvedAction === 'edit' && parsed.updatedHtml
+                    ? String(parsed.updatedHtml)
+                          .replace(/^```html/i, '')
+                          .replace(/^```/i, '')
+                          .replace(/```$/i, '')
+                          .trim()
+                    : undefined;
+
+            return {
+                action: resolvedAction,
+                transcript: String(parsed.transcript || cleanInstruction || 'أمر صوتي').trim(),
+                reply: String(parsed.reply || (resolvedAction === 'edit' ? 'تم تنفيذ التعديل المطلوب على التقرير.' : 'تمت مراجعة التقرير.')).trim(),
+                updatedHtml: cleanedHtml,
+            };
+        } catch (err) {
+            console.error('discussOrModifyReportHtml failed:', err);
+            throw new Error('تعذر معالجة الأمر على التقرير حالياً، يرجى المحاولة مرة أخرى.');
+        }
+    },
+
+    async inspectSitePhoto(
+        imageInput: Blob | File | string,
+        boqItems: BOQItem[] = [],
+        projectName: string = ''
+    ): Promise<{
+        detectedWork: string;
+        workStage: string;
+        qualityStatus: 'مطابق' | 'مقبول بملاحظات' | 'يحتاج معالجة';
+        qualityAssessment: string;
+        safetyStatus: 'آمن' | 'تحذير متوسط' | 'خطر - يلزم تدخل';
+        safetyAssessment: string;
+        suggestedBoqItemId: string;
+        suggestedBoqCode: string;
+        suggestedBoqDescription: string;
+        suggestedWorkCategory: string;
+        recommendations: string[];
+        conciseNote: string;
+    }> {
+        const fastCompressToInlinePart = async (input: Blob | File | string, maxDim = 512, quality = 0.65) => {
+            let srcUrl = '';
+            let revoke = false;
+            try {
+                if (typeof input === 'string') {
+                    if (input.startsWith('data:') || input.startsWith('blob:')) {
+                        srcUrl = input;
+                    } else {
+                        const resp = await fetch(input);
+                        const b = await resp.blob();
+                        srcUrl = URL.createObjectURL(b);
+                        revoke = true;
+                    }
+                } else {
+                    srcUrl = URL.createObjectURL(input);
+                    revoke = true;
+                }
+
+                return await new Promise<{ inlineData: { data: string; mimeType: string } }>((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            let w = img.naturalWidth || img.width || 512;
+                            let h = img.naturalHeight || img.height || 384;
+                            if (w > maxDim || h > maxDim) {
+                                if (w >= h) {
+                                    h = Math.max(1, Math.round((h * maxDim) / w));
+                                    w = maxDim;
+                                } else {
+                                    w = Math.max(1, Math.round((w * maxDim) / h));
+                                    h = maxDim;
+                                }
+                            }
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w;
+                            canvas.height = h;
+                            const ctx = canvas.getContext('2d');
+                            if (!ctx) throw new Error('Canvas unavailable');
+                            ctx.fillStyle = '#FFFFFF';
+                            ctx.fillRect(0, 0, w, h);
+                            ctx.drawImage(img, 0, 0, w, h);
+                            const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                            if (revoke) URL.revokeObjectURL(srcUrl);
+                            resolve({
+                                inlineData: {
+                                    data: dataUrl.split(',')[1] || '',
+                                    mimeType: 'image/jpeg',
+                                },
+                            });
+                        } catch (e) {
+                            if (revoke) URL.revokeObjectURL(srcUrl);
+                            reject(e);
+                        }
+                    };
+                    img.onerror = (e) => {
+                        if (revoke) URL.revokeObjectURL(srcUrl);
+                        reject(e);
+                    };
+                    img.src = srcUrl;
+                });
+            } catch {
+                if (revoke && srcUrl) URL.revokeObjectURL(srcUrl);
+                if (typeof input === 'string' && input.startsWith('data:')) {
+                    const [header, b64] = input.split(',');
+                    const m = header.match(/data:([^;]+)/i);
+                    return { inlineData: { data: b64 || '', mimeType: m ? m[1] : 'image/jpeg' } };
+                }
+                const fObj = input instanceof File
+                    ? input
+                    : input instanceof Blob
+                        ? new File([input], 'photo.jpg', { type: input.type || 'image/jpeg' })
+                        : new File([], 'photo.jpg', { type: 'image/jpeg' });
+                return await fileToPart(fObj, true);
+            }
+        };
+
+        const boqList = (boqItems || []).slice(0, 40);
+        const boqContext = boqList.length > 0
+            ? boqList.map(b => `${b.id}|${b.itemCode || '-'}|${(b.description || '').slice(0, 75)}`).join('\n')
+            : 'لا توجد مقايسة مسجلة — اقترح توصيف البند القياسي.';
+
+        const prompt = `افحص صورة الموقع الإنشائي للمشروع (${projectName || 'إنشائي'}) بدقة وسرعة وفق الكود المصري (ECP) وأرجع JSON فقط:
+بنود المقايسة (ID|Code|Desc):
+${boqContext}
+
+المطلوب باختصار واحترافية:
+1. detectedWork: وصف العمل المرصود والمعدات/العناصر الظاهرة.
+2. workStage: المرحلة (مثل: حفر، حدادة، نجارة، صب، مباني، تشطيبات).
+3. qualityStatus: ("مطابق" | "مقبول بملاحظات" | "يحتاج معالجة") + qualityAssessment (تقييم فني موجز).
+4. safetyStatus: ("آمن" | "تحذير متوسط" | "خطر - يلزم تدخل") + safetyAssessment (تقييم السلامة ومهمات الوقاية).
+5. suggestedBoqItemId: معرف البند المطابق من القائمة أعلاه أو ""، مع suggestedBoqCode و suggestedBoqDescription.
+6. recommendations: 2 إلى 3 توصيات عملية قصيرة.
+7. conciseNote: ملاحظة هندسية موجزة (سطر أول ملخص + نقاط مختصرة) لحفظها على الصورة.`;
+
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                detectedWork: { type: Type.STRING },
+                workStage: { type: Type.STRING },
+                qualityStatus: { type: Type.STRING, enum: ['مطابق', 'مقبول بملاحظات', 'يحتاج معالجة'] },
+                qualityAssessment: { type: Type.STRING },
+                safetyStatus: { type: Type.STRING, enum: ['آمن', 'تحذير متوسط', 'خطر - يلزم تدخل'] },
+                safetyAssessment: { type: Type.STRING },
+                suggestedBoqItemId: { type: Type.STRING },
+                suggestedBoqCode: { type: Type.STRING },
+                suggestedBoqDescription: { type: Type.STRING },
+                suggestedWorkCategory: { type: Type.STRING },
+                recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+                conciseNote: { type: Type.STRING },
+            },
+            required: [
+                'detectedWork',
+                'workStage',
+                'qualityStatus',
+                'qualityAssessment',
+                'safetyStatus',
+                'safetyAssessment',
+                'suggestedBoqDescription',
+                'recommendations',
+                'conciseNote',
+            ],
+        };
+
+        try {
+            const imagePart = await fastCompressToInlinePart(imageInput, 512, 0.65);
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: { parts: [imagePart, { text: prompt }] },
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: schema,
+                    thinkingConfig: { thinkingLevel: 'LOW' },
+                } as any,
+            });
+
+            const raw = (result.text || '{}').replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(raw || '{}');
+
+            const matchedBoq = parsed.suggestedBoqItemId
+                ? boqList.find(b => b.id === parsed.suggestedBoqItemId)
+                : undefined;
+
+            const qualityStatus = (['مطابق', 'مقبول بملاحظات', 'يحتاج معالجة'].includes(parsed.qualityStatus)
+                ? parsed.qualityStatus
+                : 'مقبول بملاحظات') as 'مطابق' | 'مقبول بملاحظات' | 'يحتاج معالجة';
+
+            const safetyStatus = (['آمن', 'تحذير متوسط', 'خطر - يلزم تدخل'].includes(parsed.safetyStatus)
+                ? parsed.safetyStatus
+                : 'تحذير متوسط') as 'آمن' | 'تحذير متوسط' | 'خطر - يلزم تدخل';
+
+            return {
+                detectedWork: String(parsed.detectedWork || 'أعمال موقع إنشائية').trim(),
+                workStage: String(parsed.workStage || 'قيد التنفيذ').trim(),
+                qualityStatus,
+                qualityAssessment: String(parsed.qualityAssessment || '').trim(),
+                safetyStatus,
+                safetyAssessment: String(parsed.safetyAssessment || '').trim(),
+                suggestedBoqItemId: matchedBoq ? matchedBoq.id : '',
+                suggestedBoqCode: matchedBoq ? (matchedBoq.itemCode || '') : String(parsed.suggestedBoqCode || '').trim(),
+                suggestedBoqDescription: matchedBoq
+                    ? matchedBoq.description
+                    : String(parsed.suggestedBoqDescription || '').trim(),
+                suggestedWorkCategory: String(parsed.suggestedWorkCategory || '').trim(),
+                recommendations: Array.isArray(parsed.recommendations)
+                    ? parsed.recommendations.map((r: any) => String(r).trim()).filter(Boolean)
+                    : [],
+                conciseNote: String(parsed.conciseNote || '').trim(),
+            };
+        } catch (err) {
+            console.error('inspectSitePhoto failed:', err);
+            throw new Error('تعذر إتمام الفحص البصري للصورة حالياً. يرجى التأكد من الاتصال والمحاولة مرة أخرى.');
+        }
+    },
+
+    async analyzeLogPhotoForEntry(
+        images: (string | Blob | File)[],
+        boqItems: BOQItem[] = [],
+        workCategories: string[] = [],
+        projectName: string = ''
+    ): Promise<{
+        logDescription: string;
+        matchedBoqItemId: string;
+        matchedBoqCode: string;
+        matchedWorkCategory: string;
+        matchReason: string;
+    }> {
+        if (!images || images.length === 0) {
+            throw new Error('يرجى إرفاق صورة واحدة على الأقل قبل التحليل.');
+        }
+
+        const toFastPart = async (input: string | Blob | File) => {
+            let srcUrl = '';
+            let revoke = false;
+            try {
+                if (typeof input === 'string') {
+                    if (input.startsWith('data:') || input.startsWith('blob:')) {
+                        srcUrl = input;
+                    } else {
+                        const resp = await fetch(input);
+                        const b = await resp.blob();
+                        srcUrl = URL.createObjectURL(b);
+                        revoke = true;
+                    }
+                } else {
+                    srcUrl = URL.createObjectURL(input);
+                    revoke = true;
+                }
+                return await new Promise<{ inlineData: { data: string; mimeType: string } }>((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            let w = img.naturalWidth || img.width || 512;
+                            let h = img.naturalHeight || img.height || 384;
+                            const maxDim = 512;
+                            if (w > maxDim || h > maxDim) {
+                                if (w >= h) {
+                                    h = Math.max(1, Math.round((h * maxDim) / w));
+                                    w = maxDim;
+                                } else {
+                                    w = Math.max(1, Math.round((w * maxDim) / h));
+                                    h = maxDim;
+                                }
+                            }
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w;
+                            canvas.height = h;
+                            const ctx = canvas.getContext('2d');
+                            if (!ctx) throw new Error('Canvas unavailable');
+                            ctx.fillStyle = '#FFFFFF';
+                            ctx.fillRect(0, 0, w, h);
+                            ctx.drawImage(img, 0, 0, w, h);
+                            const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+                            if (revoke) URL.revokeObjectURL(srcUrl);
+                            resolve({
+                                inlineData: {
+                                    data: dataUrl.split(',')[1] || '',
+                                    mimeType: 'image/jpeg',
+                                },
+                            });
+                        } catch (e) {
+                            if (revoke) URL.revokeObjectURL(srcUrl);
+                            reject(e);
+                        }
+                    };
+                    img.onerror = (e) => {
+                        if (revoke) URL.revokeObjectURL(srcUrl);
+                        reject(e);
+                    };
+                    img.src = srcUrl;
+                });
+            } catch {
+                if (revoke && srcUrl) URL.revokeObjectURL(srcUrl);
+                const fileObj = input instanceof File
+                    ? input
+                    : input instanceof Blob
+                        ? new File([input], 'log_photo.jpg', { type: input.type || 'image/jpeg' })
+                        : new File([], 'log_photo.jpg', { type: 'image/jpeg' });
+                return await fileToPart(fileObj, true);
+            }
+        };
+
+        const boqList = (boqItems || []).slice(0, 45);
+        const boqContext = boqList.length > 0
+            ? boqList.map(b => `${b.id}|${b.itemCode || '-'}|${(b.description || '').slice(0, 75)}`).join('\n')
+            : 'لا توجد بنود مقايسة مسجلة حالياً.';
+
+        const categoriesContext = workCategories.length > 0
+            ? workCategories.join(' | ')
+            : 'أعمال حفر وردم | أعمال خرسانات | أعمال مباني | أعمال تشطيبات ودهانات | أعمال كهرباء وإنارة | أعمال سباكة وصحي';
+
+        const prompt = `حلل صور الموقع للمشروع (${projectName || 'إنشائي'}) لملء يومية الموقع الميدانية وأرجع JSON فقط:
+1. logDescription: بيان يومية هندسي عربي رسمي موجز (3 إلى 4 جمل) يصف الأعمال الجارية والمعدات/العناصر وملاحظات الجودة والسلامة.
+2. matchedBoqItemId: معرف البند المطابق من قائمة المقايسة أدناه أو "".
+3. matchedWorkCategory: التصنيف المطابق من قائمة التصنيفات أدناه.
+4. matchReason: جملة قصيرة توضح سبب الربط.
+
+التصنيفات المتاحة:
+${categoriesContext}
+
+بنود المقايسة (ID|Code|Desc):
+${boqContext}`;
+
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                logDescription: { type: Type.STRING },
+                matchedBoqItemId: { type: Type.STRING },
+                matchedBoqCode: { type: Type.STRING },
+                matchedWorkCategory: { type: Type.STRING },
+                matchReason: { type: Type.STRING },
+            },
+            required: ['logDescription', 'matchedBoqItemId', 'matchedWorkCategory', 'matchReason'],
+        };
+
+        try {
+            const parts: any[] = [];
+            for (const img of images.slice(0, 3)) {
+                parts.push(await toFastPart(img));
+            }
+            parts.push({ text: prompt });
+
+            const result = await safeGenerateContent(MODEL_SMART, {
+                contents: { parts },
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: schema,
+                    thinkingConfig: { thinkingLevel: 'LOW' },
+                } as any,
+            });
+
+            const raw = (result.text || '{}').replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(raw || '{}');
+
+            const matchedBoq = parsed.matchedBoqItemId
+                ? boqList.find(b => b.id === parsed.matchedBoqItemId)
+                : undefined;
+
+            const exactCat = workCategories.find(c => c.trim() === String(parsed.matchedWorkCategory || '').trim()) || '';
+
+            return {
+                logDescription: String(parsed.logDescription || '').trim(),
+                matchedBoqItemId: matchedBoq ? matchedBoq.id : '',
+                matchedBoqCode: matchedBoq ? (matchedBoq.itemCode || '') : String(parsed.matchedBoqCode || '').trim(),
+                matchedWorkCategory: exactCat || String(parsed.matchedWorkCategory || '').trim(),
+                matchReason: String(parsed.matchReason || '').trim(),
+            };
+        } catch (err) {
+            console.error('analyzeLogPhotoForEntry failed:', err);
+            throw new Error('تعذر تحليل الصورة لملء بيان اليومية حالياً. يرجى المحاولة مرة أخرى.');
+        }
     }
 };

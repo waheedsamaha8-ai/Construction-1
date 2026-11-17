@@ -1,4 +1,14 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { aiHelper } from '../services/aiHelper';
+import {
+    recalculateReportTables,
+    recalculateReportHtmlString,
+    cleanTransientCalcHtml,
+} from '../services/reportCalculationEngine';
+import {
+    reportSpeechReader,
+    generateContextualReportPrompts,
+} from '../services/reportSpeechReader';
 
 export const formatInteractiveReportHtml = (rawHtml: string): string => {
     if (!rawHtml) return '';
@@ -377,7 +387,16 @@ interface InteractiveReportViewerProps {
     isDirectEditing?: boolean;
     onDirectEditChange?: (editing: boolean) => void;
     showFloatingEditBar?: boolean;
+    showAiCommandBar?: boolean;
     className?: string;
+}
+
+interface ReportAiMessage {
+    id: string;
+    role: 'user' | 'assistant';
+    text: string;
+    action?: 'discuss' | 'edit';
+    isVoice?: boolean;
 }
 
 export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = ({
@@ -386,6 +405,7 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
     isDirectEditing: controlledEditing,
     onDirectEditChange,
     showFloatingEditBar = false,
+    showAiCommandBar = true,
     className = '',
 }) => {
     const [internalEditing, setInternalEditing] = useState(false);
@@ -403,14 +423,45 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
     } | null>(null);
     const [customPercentInput, setCustomPercentInput] = useState<number>(25);
     const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+    const [autoCalcNotice, setAutoCalcNotice] = useState(false);
+
+    // End-of-Report AI Assistant Bar (Text + Voice)
+    const [aiInput, setAiInput] = useState('');
+    const [aiMode, setAiMode] = useState<'auto' | 'edit' | 'discuss'>('auto');
+    const [isAiProcessing, setIsAiProcessing] = useState(false);
+    const [aiThread, setAiThread] = useState<ReportAiMessage[]>([]);
+    const [undoStack, setUndoStack] = useState<string[]>([]);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+    const [voiceDuration, setVoiceDuration] = useState(0);
+    const [showPromptCards, setShowPromptCards] = useState(true);
+
+    // Zero-Quota Bilingual Report Reader (TTS)
+    const [isReadingAloud, setIsReadingAloud] = useState(false);
+    const [isSpeechPaused, setIsSpeechPaused] = useState(false);
+    const [speechRate, setSpeechRate] = useState<number>(1.0);
+    const [speechProgress, setSpeechProgress] = useState<{ index: number; total: number; preview: string }>({
+        index: 0,
+        total: 0,
+        preview: '',
+    });
 
     const containerRef = useRef<HTMLDivElement>(null);
     const editableRef = useRef<HTMLDivElement>(null);
     const saveTimerRef = useRef<any>(null);
+    const recalcNoticeTimerRef = useRef<any>(null);
+    const lastEditedCellRef = useRef<HTMLElement | null>(null);
     const lastCommittedHtmlRef = useRef<string | null>(null);
     const hasInitializedDomRef = useRef<boolean>(false);
 
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
+    const voiceStreamRef = useRef<MediaStream | null>(null);
+    const voiceTimerRef = useRef<any>(null);
+    const cancelVoiceFlagRef = useRef<boolean>(false);
+
     const formattedHtml = useMemo(() => formatInteractiveReportHtml(htmlContent), [htmlContent]);
+    const contextualPrompts = useMemo(() => generateContextualReportPrompts(htmlContent), [htmlContent]);
 
     // Sync external htmlContent into editableRef ONLY when external content genuinely changes and NOT during active editing
     useEffect(() => {
@@ -428,17 +479,63 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
         hasInitializedDomRef.current = true;
     }, [formattedHtml, htmlContent, isDirectEditing]);
 
+    // Cleanup timers, audio stream, and speech synthesis on unmount
+    useEffect(() => {
+        return () => {
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            if (recalcNoticeTimerRef.current) clearTimeout(recalcNoticeTimerRef.current);
+            if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+            if (voiceStreamRef.current) {
+                voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+            }
+            reportSpeechReader.stop(true);
+        };
+    }, []);
+
+    const getActiveEditedCell = (): HTMLElement | null => {
+        const sel = window.getSelection();
+        const anchor = sel?.anchorNode;
+        if (anchor && editableRef.current?.contains(anchor)) {
+            const el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as HTMLElement);
+            const cell = el?.closest('td, th') as HTMLElement | null;
+            if (cell) return cell;
+        }
+        const active = document.activeElement as HTMLElement | null;
+        if (active && editableRef.current?.contains(active)) {
+            return active.closest('td, th') as HTMLElement | null;
+        }
+        return null;
+    };
+
     const commitHtmlChange = (newHtml: string) => {
+        const cleaned = cleanTransientCalcHtml(newHtml);
         if (!onContentChange) return;
-        lastCommittedHtmlRef.current = newHtml;
+        lastCommittedHtmlRef.current = cleaned;
         setAutoSaveStatus('saving');
-        onContentChange(newHtml);
+        onContentChange(cleaned);
         setAutoSaveStatus('saved');
         setTimeout(() => setAutoSaveStatus('idle'), 2000);
     };
 
+    const triggerRecalcNotice = () => {
+        setAutoCalcNotice(true);
+        if (recalcNoticeTimerRef.current) clearTimeout(recalcNoticeTimerRef.current);
+        recalcNoticeTimerRef.current = setTimeout(() => setAutoCalcNotice(false), 1800);
+    };
+
     const handleDirectInput = () => {
-        if (!editableRef.current || !onContentChange) return;
+        if (!editableRef.current) return;
+        const activeCell = getActiveEditedCell();
+        if (activeCell) {
+            lastEditedCellRef.current = activeCell;
+        }
+        // Excel-like live automatic recalculation across dependent cells & tables
+        const didRecalc = recalculateReportTables(editableRef.current, activeCell || lastEditedCellRef.current);
+        if (didRecalc) {
+            triggerRecalcNotice();
+        }
+
+        if (!onContentChange) return;
         setAutoSaveStatus('saving');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(() => {
@@ -446,13 +543,253 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
             if (currentHtml !== undefined) {
                 commitHtmlChange(currentHtml);
             }
-        }, 500);
+        }, 450);
     };
 
     const handleDirectBlur = () => {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (!editableRef.current || !onContentChange) return;
+        if (!editableRef.current) return;
+        const didRecalc = recalculateReportTables(editableRef.current, lastEditedCellRef.current);
+        if (didRecalc) {
+            triggerRecalcNotice();
+        }
+        lastEditedCellRef.current = null;
+        if (!onContentChange) return;
         commitHtmlChange(editableRef.current.innerHTML);
+    };
+
+    const handleRunAiCommand = async (textOverride?: string, audioBlob?: Blob) => {
+        const instruction = (textOverride !== undefined ? textOverride : aiInput).trim();
+        if (!instruction && !audioBlob) return;
+        if (isAiProcessing) return;
+
+        setAiError(null);
+        setIsAiProcessing(true);
+
+        const currentHtml = cleanTransientCalcHtml(editableRef.current?.innerHTML || htmlContent || '');
+        const optimisticUserMsgId = `u_${Date.now()}`;
+        const userLabel = audioBlob
+            ? (instruction || 'أمر صوتي مسجل...')
+            : instruction;
+
+        setAiThread((prev) => [
+            ...prev,
+            { id: optimisticUserMsgId, role: 'user', text: userLabel, isVoice: Boolean(audioBlob) },
+        ]);
+        if (!audioBlob && textOverride === undefined) {
+            setAiInput('');
+        }
+
+        try {
+            const effectiveMode: 'auto' | 'edit' | 'discuss' =
+                !onContentChange && aiMode === 'auto' ? 'discuss' : aiMode;
+
+            const result = await aiHelper.discussOrModifyReportHtml({
+                reportHtml: currentHtml,
+                instruction: instruction || undefined,
+                audioBlob,
+                mode: effectiveMode,
+                history: aiThread.map((m) => ({ role: m.role, text: m.text })),
+            });
+
+            // Update transcript on voice message if Gemini transcribed it
+            if (audioBlob && result.transcript) {
+                setAiThread((prev) =>
+                    prev.map((m) =>
+                        m.id === optimisticUserMsgId ? { ...m, text: result.transcript } : m
+                    )
+                );
+            }
+
+            if (result.action === 'edit' && result.updatedHtml && onContentChange) {
+                const formatted = formatInteractiveReportHtml(result.updatedHtml);
+                const recalculated = recalculateReportHtmlString(formatted);
+
+                setUndoStack((prev) => [...prev.slice(-9), currentHtml]);
+                if (editableRef.current) {
+                    editableRef.current.innerHTML = recalculated;
+                }
+                commitHtmlChange(recalculated);
+            }
+
+            setAiThread((prev) => [
+                ...prev,
+                {
+                    id: `a_${Date.now()}`,
+                    role: 'assistant',
+                    text: result.reply,
+                    action: result.action,
+                },
+            ]);
+        } catch (err: any) {
+            setAiError(err?.message || 'تعذر تنفيذ الأمر على التقرير، يرجى المحاولة مرة أخرى.');
+            setAiThread((prev) => prev.filter((m) => m.id !== optimisticUserMsgId));
+        } finally {
+            setIsAiProcessing(false);
+        }
+    };
+
+    const handleUndoAiEdit = () => {
+        if (undoStack.length === 0 || !onContentChange) return;
+        const previousHtml = undoStack[undoStack.length - 1];
+        setUndoStack((prev) => prev.slice(0, -1));
+        const formatted = formatInteractiveReportHtml(previousHtml);
+        if (editableRef.current) {
+            editableRef.current.innerHTML = formatted;
+        }
+        commitHtmlChange(previousHtml);
+        setAiThread((prev) => [
+            ...prev,
+            {
+                id: `u_undo_${Date.now()}`,
+                role: 'assistant',
+                text: 'تم التراجع واستعادة نسخة التقرير السابقة بنجاح.',
+                action: 'edit',
+            },
+        ]);
+    };
+
+    const startVoiceRecording = async () => {
+        if (isRecordingVoice || isAiProcessing) return;
+        setAiError(null);
+        try {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                setAiError('المتصفح لا يدعم تسجيل الصوت، يرجى استخدام الأمر الكتابي.');
+                return;
+            }
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            voiceStreamRef.current = stream;
+            audioChunksRef.current = [];
+            cancelVoiceFlagRef.current = false;
+
+            const mimeOptions = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+            const supportedMime = mimeOptions.find((m) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m));
+            const recorder = supportedMime
+                ? new MediaRecorder(stream, { mimeType: supportedMime })
+                : new MediaRecorder(stream);
+
+            recorder.ondataavailable = (ev) => {
+                if (ev.data && ev.data.size > 0) {
+                    audioChunksRef.current.push(ev.data);
+                }
+            };
+
+            recorder.onstop = () => {
+                if (voiceTimerRef.current) {
+                    clearInterval(voiceTimerRef.current);
+                    voiceTimerRef.current = null;
+                }
+                if (voiceStreamRef.current) {
+                    voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+                    voiceStreamRef.current = null;
+                }
+                setIsRecordingVoice(false);
+                setVoiceDuration(0);
+
+                if (cancelVoiceFlagRef.current) {
+                    audioChunksRef.current = [];
+                    return;
+                }
+
+                const blob = new Blob(audioChunksRef.current, {
+                    type: recorder.mimeType || 'audio/webm',
+                });
+                audioChunksRef.current = [];
+                if (blob.size > 200) {
+                    handleRunAiCommand(undefined, blob);
+                } else {
+                    setAiError('التسجيل الصوتي قصير جداً، يرجى المحاولة مرة أخرى.');
+                }
+            };
+
+            mediaRecorderRef.current = recorder;
+            recorder.start(250);
+            setIsRecordingVoice(true);
+            setVoiceDuration(0);
+            voiceTimerRef.current = setInterval(() => {
+                setVoiceDuration((s) => s + 1);
+            }, 1000);
+        } catch (err) {
+            setAiError('تعذر الوصول إلى الميكروفون. يرجى السماح بصلاحية الميكروفون أو الكتابة.');
+            setIsRecordingVoice(false);
+        }
+    };
+
+    const stopAndSendVoiceRecording = () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            cancelVoiceFlagRef.current = false;
+            mediaRecorderRef.current.stop();
+        }
+    };
+
+    const cancelVoiceRecording = () => {
+        cancelVoiceFlagRef.current = true;
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+        } else {
+            if (voiceStreamRef.current) {
+                voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+                voiceStreamRef.current = null;
+            }
+            setIsRecordingVoice(false);
+            setVoiceDuration(0);
+        }
+    };
+
+    const formatDuration = (sec: number) => {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
+    const handleToggleReadAloud = () => {
+        if (isReadingAloud) {
+            reportSpeechReader.stop(false);
+            setIsReadingAloud(false);
+            setIsSpeechPaused(false);
+            return;
+        }
+        if (!editableRef.current) return;
+        setAiError(null);
+        reportSpeechReader.start(
+            editableRef.current,
+            {
+                onStart: () => {
+                    setIsReadingAloud(true);
+                    setIsSpeechPaused(false);
+                },
+                onProgress: (index, total, preview) => {
+                    setSpeechProgress({ index, total, preview });
+                },
+                onPauseChange: (paused) => {
+                    setIsSpeechPaused(paused);
+                },
+                onEnd: () => {
+                    setIsReadingAloud(false);
+                    setIsSpeechPaused(false);
+                },
+                onError: (msg) => {
+                    setIsReadingAloud(false);
+                    setIsSpeechPaused(false);
+                    setAiError(msg);
+                },
+            },
+            speechRate
+        );
+    };
+
+    const handleTogglePauseSpeech = () => {
+        if (!isReadingAloud) return;
+        if (isSpeechPaused) reportSpeechReader.resume();
+        else reportSpeechReader.pause();
+    };
+
+    const handleCycleSpeechRate = () => {
+        const rates = [1.0, 1.2, 1.4, 0.85];
+        const idx = rates.indexOf(speechRate);
+        const nextRate = rates[(idx + 1) % rates.length];
+        setSpeechRate(nextRate);
+        reportSpeechReader.setRate(nextRate);
     };
 
     const handleTableClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -522,7 +859,12 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0"></span>
                         <span className="font-bold">وضع التعديل المباشر مفعّل:</span>
-                        <span className="text-slate-700 text-[11px]">انقر على أي نص أو جدول للتعديل، ويتم الحفظ التلقائي على نفس التقرير.</span>
+                        <span className="text-slate-700 text-[11px]">انقر على أي خلية أو رقم للتعديل — يتم تحديث الحسابات والإجماليات تلقائياً كملف إكسل.</span>
+                        {autoCalcNotice && (
+                            <span className="text-teal-700 bg-teal-100 border border-teal-200 px-2 py-0.5 rounded-full font-bold text-[10px] flex items-center gap-1">
+                                <i className="fa-solid fa-calculator text-[9px]"></i> تم تحديث الحسابات تلقائياً
+                            </span>
+                        )}
                         {autoSaveStatus === 'saving' && (
                             <span className="text-amber-600 font-bold text-[10px] flex items-center gap-1">
                                 <i className="fa-solid fa-circle-notch fa-spin"></i> جاري الحفظ...
@@ -819,6 +1161,13 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                     background-color: #f5f3ff !important;
                     outline: 2px solid #6366f1 !important;
                 }
+                @keyframes calcCellFlash {
+                    0% { background-color: #bbf7d0 !important; color: #065f46 !important; }
+                    100% { }
+                }
+                .interactive-report-body td.calc-recalc-flash {
+                    animation: calcCellFlash 0.75s ease-out;
+                }
             `}</style>
 
             <div
@@ -832,6 +1181,327 @@ export const InteractiveReportViewer: React.FC<InteractiveReportViewerProps> = (
                     isDirectEditing ? 'is-editable cursor-text p-2' : ''
                 }`}
             />
+
+            {/* End-of-Report Interactive AI Command Bar (Text + Voice + Zero-Quota Reader) */}
+            {showAiCommandBar && htmlContent && htmlContent.trim().length > 0 && (
+                <div className="mt-5 pt-3 border-t border-slate-200 no-print" dir="rtl">
+                    <div className="bg-slate-50/90 border border-slate-200 rounded-2xl p-2.5 sm:p-3.5 shadow-xs space-y-2.5">
+                        {/* Compact Single-Line Header */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                                <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                                    <i className="fa-solid fa-wand-magic-sparkles text-[11px]"></i>
+                                </div>
+                                <span className="text-xs font-extrabold text-slate-900">مساعد التقرير</span>
+
+                                {/* Zero-Quota Bilingual Voice Reader Button */}
+                                <button
+                                    type="button"
+                                    onClick={handleToggleReadAloud}
+                                    className={`px-2 py-1 rounded-lg text-[10.5px] font-bold flex items-center gap-1 border transition ${
+                                        isReadingAloud
+                                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                            : 'bg-white hover:bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    }`}
+                                    title="قراءة التقرير صوتياً بالعربية والمصطلحات الإنجليزية (بدون استهلاك الكوته)"
+                                >
+                                    <i className={`fa-solid ${isReadingAloud ? 'fa-volume-high animate-pulse' : 'fa-volume-low'} text-[10px]`}></i>
+                                    <span>{isReadingAloud ? 'إيقاف القراءة' : 'قراءة صوتية'}</span>
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                                {/* Mode Selector Pills */}
+                                <div className="inline-flex bg-white p-0.5 rounded-xl border border-slate-200 text-[10.5px] font-bold shadow-2xs">
+                                    <button
+                                        type="button"
+                                        onClick={() => setAiMode('auto')}
+                                        className={`px-2 py-1 rounded-lg transition ${
+                                            aiMode === 'auto'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'text-slate-600 hover:text-slate-900'
+                                        }`}
+                                    >
+                                        تلقائي
+                                    </button>
+                                    {onContentChange && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setAiMode('edit')}
+                                            className={`px-2 py-1 rounded-lg transition ${
+                                                aiMode === 'edit'
+                                                    ? 'bg-emerald-600 text-white'
+                                                    : 'text-slate-600 hover:text-slate-900'
+                                            }`}
+                                        >
+                                            تعديل
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setAiMode('discuss')}
+                                        className={`px-2 py-1 rounded-lg transition ${
+                                            aiMode === 'discuss'
+                                                ? 'bg-amber-600 text-white'
+                                                : 'text-slate-600 hover:text-slate-900'
+                                        }`}
+                                    >
+                                        مناقشة
+                                    </button>
+                                </div>
+
+                                {/* Undo AI Edit Button */}
+                                {undoStack.length > 0 && onContentChange && (
+                                    <button
+                                        type="button"
+                                        onClick={handleUndoAiEdit}
+                                        disabled={isAiProcessing}
+                                        className="px-2 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[10.5px] font-bold flex items-center gap-1 transition disabled:opacity-50"
+                                        title="التراجع عن آخر تعديل"
+                                    >
+                                        <i className="fa-solid fa-rotate-right text-[10px]"></i>
+                                        <span>تراجع</span>
+                                    </button>
+                                )}
+
+                                {aiThread.length > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setAiThread([])}
+                                        className="w-7 h-7 rounded-lg bg-white hover:bg-slate-100 text-slate-500 border border-slate-200 flex items-center justify-center transition"
+                                        title="مسح المحادثة"
+                                    >
+                                        <i className="fa-solid fa-eraser text-[10px]"></i>
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Live Zero-Quota Audio Player Strip (visible only during reading) */}
+                        {isReadingAloud && (
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-2.5 py-2 space-y-1.5 animate-fade-in">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                        <button
+                                            type="button"
+                                            onClick={handleTogglePauseSpeech}
+                                            className="w-7 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shrink-0 transition"
+                                            title={isSpeechPaused ? 'استئناف' : 'إيقاف مؤقت'}
+                                        >
+                                            <i className={`fa-solid ${isSpeechPaused ? 'fa-play' : 'fa-pause'} text-[10px]`}></i>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                reportSpeechReader.stop(false);
+                                                setIsReadingAloud(false);
+                                                setIsSpeechPaused(false);
+                                            }}
+                                            className="w-7 h-7 rounded-lg bg-white hover:bg-red-50 text-red-600 border border-red-200 flex items-center justify-center shrink-0 transition"
+                                            title="إيقاف"
+                                        >
+                                            <i className="fa-solid fa-stop text-[10px]"></i>
+                                        </button>
+                                        <div className="text-[11px] font-bold text-emerald-950 truncate">
+                                            {speechProgress.preview || 'جاري تجهيز قراءة التقرير...'}
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        {speechProgress.total > 0 && (
+                                            <span className="text-[10px] font-mono font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-200">
+                                                {speechProgress.index + 1}/{speechProgress.total}
+                                            </span>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={handleCycleSpeechRate}
+                                            className="text-[10px] font-mono font-bold text-emerald-800 bg-white hover:bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200 transition"
+                                            title="تغيير سرعة القراءة"
+                                        >
+                                            {speechRate}x
+                                        </button>
+                                    </div>
+                                </div>
+                                {speechProgress.total > 0 && (
+                                    <div className="w-full h-1 bg-emerald-200/70 rounded-full overflow-hidden">
+                                        <div
+                                            className="h-full bg-emerald-600 transition-all duration-300"
+                                            style={{ width: `${Math.min(100, Math.round(((speechProgress.index + 1) / speechProgress.total) * 100))}%` }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Discussion / Edit Confirmation Feed */}
+                        {aiThread.length > 0 && (
+                            <div className="max-h-56 overflow-y-auto space-y-2 bg-white border border-slate-200 rounded-xl p-2.5">
+                                {aiThread.map((msg) => (
+                                    <div
+                                        key={msg.id}
+                                        className={`flex flex-col ${
+                                            msg.role === 'user' ? 'items-start' : 'items-end'
+                                        }`}
+                                    >
+                                        <div
+                                            className={`max-w-[92%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                                                msg.role === 'user'
+                                                    ? 'bg-indigo-600 text-white font-semibold'
+                                                    : msg.action === 'edit'
+                                                        ? 'bg-emerald-50 border border-emerald-200 text-emerald-950 font-semibold'
+                                                        : 'bg-slate-100 border border-slate-200 text-slate-800 font-medium'
+                                            }`}
+                                        >
+                                            <div className="flex items-center gap-1.5 mb-0.5 text-[10px] opacity-80 font-bold">
+                                                {msg.role === 'user' ? (
+                                                    <>
+                                                        <i className={`fa-solid ${msg.isVoice ? 'fa-microphone' : 'fa-user'}`}></i>
+                                                        <span>{msg.isVoice ? 'أمر صوتي' : 'طلبك'}</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <i className={`fa-solid ${msg.action === 'edit' ? 'fa-check-double text-emerald-600' : 'fa-comments text-indigo-600'}`}></i>
+                                                        <span>{msg.action === 'edit' ? 'تم تعديل وحفظ التقرير' : 'الاستشاري'}</span>
+                                                    </>
+                                                )}
+                                            </div>
+                                            <div className="whitespace-pre-wrap">{msg.text}</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Dynamic Report-Aware Quick Question & Edit Cards (8 cards) */}
+                        {contextualPrompts.length > 0 && !isRecordingVoice && (
+                            <div className="space-y-1.5">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPromptCards((v) => !v)}
+                                    className="flex items-center justify-between w-full text-[10.5px] font-bold text-slate-500 hover:text-indigo-700 px-0.5 transition"
+                                >
+                                    <span className="flex items-center gap-1.5">
+                                        <i className="fa-solid fa-bolt text-amber-500"></i>
+                                        <span>أسئلة وأوامر مقترحة للتقرير ({contextualPrompts.length})</span>
+                                    </span>
+                                    <i className={`fa-solid ${showPromptCards ? 'fa-chevron-up' : 'fa-chevron-down'} text-[9px]`}></i>
+                                </button>
+
+                                {showPromptCards && (
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                        {contextualPrompts.map((item, i) => (
+                                            <button
+                                                key={i}
+                                                type="button"
+                                                disabled={isAiProcessing}
+                                                onClick={() => handleRunAiCommand(item.label)}
+                                                className="text-right px-2.5 py-2 rounded-xl bg-white hover:bg-indigo-50 text-slate-700 hover:text-indigo-800 border border-slate-200 hover:border-indigo-300 text-[10.5px] font-bold leading-snug flex items-start gap-1.5 transition shadow-2xs disabled:opacity-50"
+                                            >
+                                                <i className={`fa-solid ${item.icon} text-indigo-500 text-[10px] mt-0.5 shrink-0`}></i>
+                                                <span className="line-clamp-2">{item.label}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Inline Error Banner */}
+                        {aiError && (
+                            <div className="bg-red-50 border border-red-200 text-red-700 text-[11px] font-bold px-3 py-2 rounded-xl flex items-center justify-between gap-2">
+                                <span className="flex items-center gap-1.5">
+                                    <i className="fa-solid fa-triangle-exclamation"></i>
+                                    {aiError}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setAiError(null)}
+                                    className="text-red-500 hover:text-red-700"
+                                >
+                                    <i className="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Command Input or Active Voice Recording Bar */}
+                        {isRecordingVoice ? (
+                            <div className="flex items-center justify-between gap-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                                <div className="flex items-center gap-2 text-red-700 text-xs font-extrabold">
+                                    <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-ping"></span>
+                                    <span>جاري التسجيل...</span>
+                                    <span className="font-mono bg-white px-2 py-0.5 rounded-md border border-red-200 text-[11px]">
+                                        {formatDuration(voiceDuration)}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={cancelVoiceRecording}
+                                        className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold transition"
+                                    >
+                                        إلغاء
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={stopAndSendVoiceRecording}
+                                        className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-xs transition"
+                                    >
+                                        <i className="fa-solid fa-paper-plane text-[10px]"></i>
+                                        <span>إرسال</span>
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-1.5">
+                                <textarea
+                                    rows={1}
+                                    value={aiInput}
+                                    disabled={isAiProcessing}
+                                    onChange={(e) => setAiInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleRunAiCommand();
+                                        }
+                                    }}
+                                    placeholder={
+                                        aiMode === 'discuss'
+                                            ? 'اكتب سؤالك لمناقشة التقرير...'
+                                            : aiMode === 'edit'
+                                                ? 'اكتب التعديل أو الإضافة المطلوبة...'
+                                                : 'اكتب أمراً أو سؤالاً عن التقرير...'
+                                    }
+                                    className="flex-1 h-10 px-3 py-2.5 rounded-xl bg-white border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none text-xs font-semibold text-slate-900 resize-none leading-tight"
+                                />
+
+                                <button
+                                    type="button"
+                                    onClick={startVoiceRecording}
+                                    disabled={isAiProcessing}
+                                    className="w-10 h-10 rounded-xl bg-white hover:bg-red-50 text-slate-700 hover:text-red-600 border border-slate-300 hover:border-red-300 flex items-center justify-center transition shrink-0 disabled:opacity-50"
+                                    title="أمر صوتي"
+                                >
+                                    <i className="fa-solid fa-microphone text-sm"></i>
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={() => handleRunAiCommand()}
+                                    disabled={isAiProcessing || !aiInput.trim()}
+                                    className="h-10 px-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition shrink-0 disabled:opacity-50"
+                                >
+                                    {isAiProcessing ? (
+                                        <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                    ) : (
+                                        <i className="fa-solid fa-paper-plane text-xs"></i>
+                                    )}
+                                    <span className="hidden sm:inline">{isAiProcessing ? 'جاري التنفيذ...' : 'تنفيذ'}</span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Column Width Percentage Modal */}
             {editingColumnModal && (

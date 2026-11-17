@@ -2,13 +2,19 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom'; 
-import { FileItem } from '../types';
+import { FileItem, Project } from '../types';
 import { aiHelper } from '../services/aiHelper';
 import { api } from '../services/api';
 import { dbService } from '../services/db';
 import { thumbnailSync } from '../services/thumbnailSync';
 import { autoSync } from '../services/backgroundSync';
 import { printService } from '../services/printService';
+import {
+    exportPhotoNoteToPdf,
+    exportPhotoNoteToExcel,
+    exportPhotoNoteToWord,
+    SitePhotoInspectionData
+} from '../services/photoReportExport';
 import * as pdfjsLib from 'pdfjs-dist';
 import ImageEditor from './ImageEditor';
 import DwgViewer from './DwgViewer';
@@ -25,7 +31,9 @@ if (GlobalWorkerOptions) {
 
 interface FileViewerProps {
   item: FileItem;
-  siblings?: FileItem[]; 
+  siblings?: FileItem[];
+  project?: Project | null;
+  onItemUpdated?: (item: FileItem) => void;
   onClose: () => void;
 }
 
@@ -94,7 +102,7 @@ const PdfPage: React.FC<{ pdfDoc: any, pageNum: number, scale: number }> = ({ pd
     );
 };
 
-const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose }) => {
+const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], project, onItemUpdated, onClose }) => {
   const navigate = useNavigate();
   const [currentIndex, setCurrentIndex] = useState(() => {
       const idx = siblings.findIndex(f => f.id === item.id);
@@ -108,6 +116,38 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
   const [isAnalysisMenuOpen, setIsAnalysisMenuOpen] = useState(false);
   const [isDirectEditingAnalysis, setIsDirectEditingAnalysis] = useState(false);
+
+  // Visual Inspection & Photo Note Persistence / Export States
+  const loadCachedInspection = (fileId: string): SitePhotoInspectionData | null => {
+      if (!fileId) return null;
+      try {
+          const raw = localStorage.getItem(`me_visual_inspection_v1_${fileId}`);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === 'object' && parsed.detectedWork ? parsed : null;
+      } catch {
+          return null;
+      }
+  };
+
+  const saveCachedInspection = (fileId: string, data: SitePhotoInspectionData) => {
+      if (!fileId || !data) return;
+      try {
+          localStorage.setItem(`me_visual_inspection_v1_${fileId}`, JSON.stringify(data));
+      } catch {}
+  };
+
+  const [savedNotesById, setSavedNotesById] = useState<Record<string, string>>({});
+  const [savedInspectionsById, setSavedInspectionsById] = useState<Record<string, SitePhotoInspectionData>>({});
+  const [isVisualModalOpen, setIsVisualModalOpen] = useState(false);
+  const [visualModalMode, setVisualModalMode] = useState<'inspect' | 'notes'>('inspect');
+  const [isInspectingPhoto, setIsInspectingPhoto] = useState(false);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
+  const [inspectionResult, setInspectionResult] = useState<SitePhotoInspectionData | null>(() => loadCachedInspection(currentItem.id));
+  const [photoNoteDraft, setPhotoNoteDraft] = useState<string>(currentItem.description || '');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [noteSavedSuccess, setNoteSavedSuccess] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'pdf' | 'excel' | 'word' | null>(null);
   
   const isMediaImageItem = (f: Partial<FileItem>) => {
       const m = (f.mimeType || '').toLowerCase();
@@ -252,6 +292,14 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       setIsImgGesturing(false);
       setAnalysisResult(null);
       setIsAnalysisOpen(false);
+      setIsVisualModalOpen(false);
+      setIsInspectingPhoto(false);
+      setInspectionError(null);
+      setInspectionResult(savedInspectionsById[currentItem.id] || loadCachedInspection(currentItem.id));
+      setNoteSavedSuccess(false);
+      setExportingFormat(null);
+      const localKnownNote = savedNotesById[currentItem.id] ?? currentItem.description ?? '';
+      setPhotoNoteDraft(localKnownNote);
       setLoadError(false);
       setDownloadProgress(0);
       setPdfDoc(null);
@@ -504,6 +552,169 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
       navigate(`/editor/${currentItem.parentId}/${currentItem.parentId}`, {
           state: { initialContent: analysisResult }
       });
+  };
+
+  // Sync saved file note from metadata if not yet hydrated on currentItem
+  useEffect(() => {
+      if (!isImage) return;
+      let cancelled = false;
+      const existingNote = savedNotesById[currentItem.id] ?? currentItem.description;
+      if (existingNote !== undefined) {
+          setPhotoNoteDraft(existingNote);
+      }
+      if (currentItem.description === undefined && savedNotesById[currentItem.id] === undefined) {
+          api.getFileMetadata(currentItem.id).then((meta) => {
+              if (!cancelled && meta?.description !== undefined) {
+                  setSavedNotesById(prev => ({ ...prev, [currentItem.id]: meta.description || '' }));
+                  setPhotoNoteDraft(meta.description || '');
+              }
+          }).catch(() => {});
+      }
+      return () => { cancelled = true; };
+  }, [currentItem.id, isImage]);
+
+  const resolveActiveProject = (): Project | null => {
+      if (project) return project;
+      const cached = api.getCachedProjects() || [];
+      if (currentItem.projectName) {
+          const byName = cached.find(p => p.name === currentItem.projectName);
+          if (byName) return byName;
+      }
+      return cached.find(p => p.id === currentItem.parentId || p.driveFolderId === currentItem.parentId) || null;
+  };
+
+  const resolveImageSource = async (): Promise<Blob | string> => {
+      const memBlob = api.getCachedBlobSync(currentItem.id);
+      if (memBlob && memBlob.size > 0) return memBlob;
+      try {
+          const cachedIdb = await dbService.getBlob(currentItem.id);
+          if (cachedIdb && cachedIdb.size > 0) return cachedIdb;
+      } catch {}
+      if (displayUrl && (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:'))) {
+          return displayUrl;
+      }
+      try {
+          const downloaded = await api.downloadFileBlob(currentItem.id);
+          if (downloaded && downloaded.size > 0) return downloaded;
+      } catch {}
+      if (displayUrl) return displayUrl;
+      throw new Error('تعذر الوصول لبيانات الصورة.');
+  };
+
+  const resolveFastImageForAi = async (): Promise<Blob | string> => {
+      // 1. Instant 0ms memory blob
+      const memBlob = api.getCachedBlobSync(currentItem.id);
+      if (memBlob && memBlob.size > 0) return memBlob;
+
+      // 2. Instant ~1ms IndexedDB blob
+      try {
+          const cachedIdb = await dbService.getBlob(currentItem.id);
+          if (cachedIdb && cachedIdb.size > 0) return cachedIdb;
+      } catch {}
+
+      // 3. Local data: or blob: URL already in displayUrl
+      if (displayUrl && (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:'))) {
+          return displayUrl;
+      }
+
+      // 4. Cached thumbnail data URL from thumbnailSync
+      const syncThumb = getSyncThumbFallback(currentItem);
+      if (syncThumb && syncThumb.startsWith('data:')) {
+          return syncThumb;
+      }
+
+      // 5. Fallback to full resolve
+      return await resolveImageSource();
+  };
+
+  const handleVisualInspect = async (forceReinspect = false) => {
+      if (!isImage) return;
+      setVisualModalMode('inspect');
+      setIsVisualModalOpen(true);
+      setInspectionError(null);
+      setNoteSavedSuccess(false);
+
+      const currentSavedNote = savedNotesById[currentItem.id] ?? currentItem.description ?? '';
+      if (!photoNoteDraft && currentSavedNote) {
+          setPhotoNoteDraft(currentSavedNote);
+      }
+
+      const existingCached = savedInspectionsById[currentItem.id] || loadCachedInspection(currentItem.id);
+      if (!forceReinspect && existingCached) {
+          setInspectionResult(existingCached);
+          if (!photoNoteDraft.trim() && !currentSavedNote.trim() && existingCached.conciseNote) {
+              setPhotoNoteDraft(existingCached.conciseNote);
+          }
+          return;
+      }
+
+      setIsInspectingPhoto(true);
+      try {
+          const imgSource = await resolveFastImageForAi();
+          const proj = resolveActiveProject();
+          const res = await aiHelper.inspectSitePhoto(
+              imgSource,
+              proj?.boqItems || [],
+              proj?.name || currentItem.projectName || ''
+          );
+          setInspectionResult(res);
+          setSavedInspectionsById(prev => ({ ...prev, [currentItem.id]: res }));
+          saveCachedInspection(currentItem.id, res);
+          if (!photoNoteDraft.trim() && !currentSavedNote.trim() && res.conciseNote) {
+              setPhotoNoteDraft(res.conciseNote);
+          } else if (forceReinspect && res.conciseNote && !currentSavedNote.trim()) {
+              setPhotoNoteDraft(res.conciseNote);
+          }
+      } catch (err: any) {
+          setInspectionError(err?.message || 'تعذر إجراء الفحص البصري للصورة.');
+      } finally {
+          setIsInspectingPhoto(false);
+      }
+  };
+
+  const handleSavePhotoNote = async () => {
+      const trimmed = photoNoteDraft.trim();
+      setIsSavingNote(true);
+      setNoteSavedSuccess(false);
+      try {
+          const updated = await api.updateFileDescription(currentItem.id, trimmed, currentItem);
+          setSavedNotesById(prev => ({ ...prev, [currentItem.id]: trimmed }));
+          if (onItemUpdated) {
+              onItemUpdated(updated || { ...currentItem, description: trimmed });
+          }
+          setNoteSavedSuccess(true);
+      } catch (err) {
+          alert('تعذر حفظ الملاحظة على بيانات الملف.');
+      } finally {
+          setIsSavingNote(false);
+      }
+  };
+
+  const handleExportPhotoAndNote = async (format: 'pdf' | 'excel' | 'word') => {
+      setExportingFormat(format);
+      try {
+          const imgSource = await resolveImageSource();
+          const proj = resolveActiveProject();
+          const payload = {
+              imageSrcOrBlob: imgSource,
+              fileName: currentItem.name,
+              noteText: photoNoteDraft.trim() || savedNotesById[currentItem.id] || currentItem.description || inspectionResult?.conciseNote || '',
+              inspection: inspectionResult,
+              projectName: proj?.name || currentItem.projectName || '',
+              contractorName: proj?.contractor || '',
+              dateStr: currentItem.createdTime
+                  ? new Date(currentItem.createdTime).toLocaleDateString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                  : new Date().toLocaleDateString('ar-EG')
+          };
+          if (format === 'pdf') await exportPhotoNoteToPdf(payload);
+          else if (format === 'excel') await exportPhotoNoteToExcel(payload);
+          else await exportPhotoNoteToWord(payload);
+      } catch (err: any) {
+          console.error('Export photo note failed:', err);
+          alert(err?.message || 'تعذر تصدير الصورة والملاحظة. يرجى المحاولة مرة أخرى.');
+      } finally {
+          setExportingFormat(null);
+      }
   };
 
   const handleShare = async () => {
@@ -1173,7 +1384,22 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                 </div>
                 <div className="min-w-0 flex flex-col justify-center">
                     <h3 className="font-bold text-xs sm:text-sm truncate max-w-[180px] sm:max-w-[320px] leading-tight" title={currentItem.name}>{currentItem.name}</h3>
-                    {siblings.length > 1 && <span className="text-[9px] text-slate-400 font-mono leading-tight">{currentIndex + 1} / {siblings.length}</span>}
+                    <div className="flex items-center gap-1.5">
+                        {siblings.length > 1 && <span className="text-[9px] text-slate-400 font-mono leading-tight">{currentIndex + 1} / {siblings.length}</span>}
+                        {isImage && (savedNotesById[currentItem.id] ?? currentItem.description) && (
+                            <span
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => handleVisualInspect(false)}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleVisualInspect(false); }}
+                                className="compact-note-pill cursor-pointer bg-amber-500/20 text-amber-300 border border-amber-400/30 rounded font-bold hover:bg-amber-500/30 transition inline-flex items-center gap-1 select-none"
+                                title="عرض الفحص البصري والملاحظات المحفوظة"
+                            >
+                                <i className="fa-solid fa-note-sticky"></i>
+                                <span>ملاحظة محفوظة</span>
+                            </span>
+                        )}
+                    </div>
                 </div>
             </div>
             <div className="flex gap-1.5 shrink-0 items-center relative">
@@ -1183,7 +1409,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                     className={`w-8 h-8 rounded-xl flex items-center justify-center transition text-xs border ${showActionsMenu ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg' : 'bg-white/10 hover:bg-white/20 text-white border-white/10'}`}
                     title="أدوات وخيارات الملف"
                 >
-                    {analyzing || isSharing ? (
+                    {analyzing || isInspectingPhoto || isSharing ? (
                         <i className="fa-solid fa-circle-notch fa-spin text-xs text-yellow-300"></i>
                     ) : (
                         <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
@@ -1206,11 +1432,44 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                             className="fixed inset-0 z-[90]"
                             onClick={() => setShowActionsMenu(false)}
                         ></div>
-                        <div className="absolute left-0 top-10 w-60 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
+                        <div className="absolute left-0 top-10 w-64 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-2 z-[100] space-y-1.5 text-white animate-scale-in origin-top-left">
                             <div className="px-2.5 py-1 border-b border-slate-800 flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400">خيارات وأدوات الملف</span>
                                 <i className="fa-solid fa-wand-magic-sparkles text-[10px] text-indigo-400"></i>
                             </div>
+
+                            {/* Visual Site Analyzer Button (Images) - Single unified entry with saved inspection & re-inspect */}
+                            {isImage && (
+                                <button
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        handleVisualInspect(false);
+                                    }}
+                                    disabled={isInspectingPhoto}
+                                    className="w-full px-3 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 text-white flex items-center gap-2.5 transition shadow-md border border-white/15 text-xs font-extrabold disabled:opacity-50"
+                                >
+                                    <div className="w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+                                        {isInspectingPhoto ? (
+                                            <i className="fa-solid fa-circle-notch fa-spin text-xs text-yellow-300"></i>
+                                        ) : (
+                                            <i className="fa-solid fa-eye text-xs text-yellow-300"></i>
+                                        )}
+                                    </div>
+                                    <div className="text-right flex-1 min-w-0">
+                                        <div className="truncate font-extrabold flex items-center justify-between gap-1">
+                                            <span>فحص بصري</span>
+                                            {(savedInspectionsById[currentItem.id] || loadCachedInspection(currentItem.id)) && (
+                                                <span className="text-[8.5px] bg-emerald-400/25 text-emerald-200 border border-emerald-300/30 px-1.5 py-0.5 rounded font-bold">محفوظ</span>
+                                            )}
+                                        </div>
+                                        <div className="text-[9.5px] text-indigo-100 font-normal truncate">
+                                            {(savedInspectionsById[currentItem.id] || loadCachedInspection(currentItem.id))
+                                                ? 'عرض النتيجة المحفوظة أو إعادة الفحص والتصدير'
+                                                : 'الجودة والسلامة وبند المقايسة والتصدير'}
+                                        </div>
+                                    </div>
+                                </button>
+                            )}
 
                             {/* AI Technical Analysis Button (Images, PDFs, Audio) */}
                             {(isPdf || isImage || isAudio) && (
@@ -1220,7 +1479,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                                         handleAnalyze();
                                     }}
                                     disabled={analyzing}
-                                    className="w-full px-3 py-2.5 rounded-xl bg-gradient-to-r from-blue-700/90 via-indigo-600/90 to-purple-600/90 hover:from-blue-600 hover:to-purple-500 text-white flex items-center gap-2.5 transition shadow-md border border-white/15 text-xs font-extrabold disabled:opacity-50"
+                                    className="w-full px-3 py-2 rounded-xl bg-gradient-to-r from-blue-700/80 to-indigo-700/80 hover:from-blue-600 hover:to-indigo-600 text-white flex items-center gap-2.5 transition shadow-sm border border-white/10 text-xs font-bold disabled:opacity-50"
                                 >
                                     <div className="w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
                                         {analyzing ? (
@@ -1462,6 +1721,302 @@ const FileViewer: React.FC<FileViewerProps> = ({ item, siblings = [], onClose })
                     )}
                 </div>
             </div>
+      )}
+
+      {/* Visual Inspection + Photo Notes Persistence & Export Modal */}
+      {isVisualModalOpen && (
+          <div className="fixed inset-0 z-[2100] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 animate-fade-in">
+              <div className="bg-white w-full max-w-2xl max-h-[92vh] rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-scale-in text-slate-900">
+                  {/* Modal Header */}
+                  <div className="bg-gradient-to-l from-slate-900 via-indigo-950 to-indigo-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-white/15 border border-white/20 flex items-center justify-center shrink-0">
+                              <i className={`fa-solid ${visualModalMode === 'inspect' ? 'fa-eye text-amber-300' : 'fa-note-sticky text-amber-300'} text-sm`}></i>
+                          </div>
+                          <div className="min-w-0">
+                              <h3 className="font-extrabold text-sm truncate">المحلل البصري وتوثيق الصورة</h3>
+                              <p className="text-[10px] text-indigo-200 truncate">{currentItem.name}</p>
+                          </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                          {!isInspectingPhoto && (
+                              <button
+                                  type="button"
+                                  onClick={() => handleVisualInspect(true)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 text-[11px] font-extrabold flex items-center gap-1.5 transition border border-amber-400/30"
+                                  title="إعادة تشغيل الفحص البصري الذكي للصورة"
+                              >
+                                  <i className="fa-solid fa-rotate text-amber-300 text-[10px]"></i>
+                                  <span>{inspectionResult ? 'إعادة الفحص' : 'بدء الفحص'}</span>
+                              </button>
+                          )}
+                          <button
+                              type="button"
+                              onClick={() => setIsVisualModalOpen(false)}
+                              className="w-8 h-8 rounded-xl bg-white/10 hover:bg-red-500/80 text-white flex items-center justify-center transition"
+                              title="إغلاق"
+                          >
+                              <i className="fa-solid fa-times text-xs"></i>
+                          </button>
+                      </div>
+                  </div>
+
+                  {/* Modal Body */}
+                  <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-4 bg-slate-50">
+                      {/* Image Thumbnail + File Metadata Summary */}
+                      <div className="bg-white rounded-2xl p-3 border border-slate-200 shadow-sm flex items-center gap-3">
+                          {displayUrl && (
+                              <img
+                                  src={displayUrl}
+                                  alt={currentItem.name}
+                                  className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl object-cover border border-slate-200 shrink-0 bg-slate-100"
+                              />
+                          )}
+                          <div className="flex-1 min-w-0 space-y-1">
+                              <div className="text-xs font-extrabold text-slate-800 truncate">{currentItem.name}</div>
+                              <div className="text-[11px] text-slate-500 font-bold flex flex-wrap gap-2">
+                                  <span><i className="fa-regular fa-calendar ml-1 text-indigo-500"></i>{new Date(currentItem.createdTime).toLocaleDateString('ar-EG')}</span>
+                                  {resolveActiveProject()?.name && (
+                                      <span><i className="fa-solid fa-building ml-1 text-indigo-500"></i>{resolveActiveProject()?.name}</span>
+                                  )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                  <div className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                                      <i className="fa-solid fa-database text-[9px]"></i>
+                                      <span>بيانات الملف: {savedNotesById[currentItem.id] ?? currentItem.description ? 'توجد ملاحظة موثقة' : 'لم تُضف ملاحظة بعد'}</span>
+                                  </div>
+                                  {inspectionResult && !isInspectingPhoto && (
+                                      <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                                          <i className="fa-solid fa-circle-check text-[9px]"></i>
+                                          <span>نتيجة الفحص محفوظة</span>
+                                      </div>
+                                  )}
+                              </div>
+                          </div>
+                      </div>
+
+                      {/* Inspection Loading */}
+                      {isInspectingPhoto && (
+                          <div className="bg-white rounded-2xl p-5 border border-indigo-100 shadow-sm flex flex-col items-center justify-center text-center gap-2">
+                              <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                              <div className="text-sm font-extrabold text-slate-800">جاري الفحص البصري السريع للصورة...</div>
+                              <p className="text-xs text-slate-500">رصد الأعمال وتقييم الجودة والسلامة المهنية ومطابقة بنود المقايسة</p>
+                          </div>
+                      )}
+
+                      {/* Inspection Error */}
+                      {inspectionError && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-3 text-xs font-bold flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                  <i className="fa-solid fa-triangle-exclamation text-red-500"></i>
+                                  <span>{inspectionError}</span>
+                              </div>
+                              <button
+                                  type="button"
+                                  onClick={() => handleVisualInspect(true)}
+                                  className="px-3 py-1 bg-red-600 text-white rounded-lg text-[11px] hover:bg-red-700 transition shrink-0"
+                              >
+                                  إعادة المحاولة
+                              </button>
+                          </div>
+                      )}
+
+                      {/* Inspection Structured Cards */}
+                      {!isInspectingPhoto && inspectionResult && (
+                          <div className="space-y-3">
+                              {/* Observed Work */}
+                              <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-sm">
+                                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                                      <span className="text-xs font-extrabold text-indigo-900 flex items-center gap-1.5">
+                                          <i className="fa-solid fa-helmet-safety text-indigo-600"></i>
+                                          العمل المرصود والمرحلة التنفيذية
+                                      </span>
+                                      <span className="text-[10px] font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-md">
+                                          {inspectionResult.workStage}
+                                      </span>
+                                  </div>
+                                  <p className="text-xs text-slate-700 font-bold leading-relaxed">{inspectionResult.detectedWork}</p>
+                              </div>
+
+                              {/* Quality & HSE Grid */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-sm">
+                                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                                          <span className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                                              <i className="fa-solid fa-award text-blue-600"></i>
+                                              تقييم الجودة
+                                          </span>
+                                          <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                                              inspectionResult.qualityStatus === 'مطابق'
+                                                  ? 'bg-emerald-100 text-emerald-800'
+                                                  : inspectionResult.qualityStatus === 'يحتاج معالجة'
+                                                      ? 'bg-red-100 text-red-800'
+                                                      : 'bg-amber-100 text-amber-800'
+                                          }`}>
+                                              {inspectionResult.qualityStatus}
+                                          </span>
+                                      </div>
+                                      <p className="text-[11px] text-slate-600 font-bold leading-relaxed">{inspectionResult.qualityAssessment}</p>
+                                  </div>
+
+                                  <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-sm">
+                                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                                          <span className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                                              <i className="fa-solid fa-shield-halved text-emerald-600"></i>
+                                              السلامة المهنية (HSE)
+                                          </span>
+                                          <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                                              inspectionResult.safetyStatus === 'آمن'
+                                                  ? 'bg-emerald-100 text-emerald-800'
+                                                  : inspectionResult.safetyStatus.includes('خطر')
+                                                      ? 'bg-red-100 text-red-800'
+                                                      : 'bg-amber-100 text-amber-800'
+                                          }`}>
+                                              {inspectionResult.safetyStatus}
+                                          </span>
+                                      </div>
+                                      <p className="text-[11px] text-slate-600 font-bold leading-relaxed">{inspectionResult.safetyAssessment}</p>
+                                  </div>
+                              </div>
+
+                              {/* Suggested BOQ & Recommendations */}
+                              <div className="bg-gradient-to-l from-indigo-50 to-blue-50 rounded-2xl p-3.5 border border-indigo-200 space-y-2">
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                      <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
+                                          <i className="fa-solid fa-list-check text-indigo-600"></i>
+                                          بند المقايسة المقترح
+                                      </span>
+                                      {inspectionResult.suggestedBoqCode && (
+                                          <span className="text-[10px] font-mono font-extrabold bg-white text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200">
+                                              بند {inspectionResult.suggestedBoqCode}
+                                          </span>
+                                      )}
+                                  </div>
+                                  <p className="text-xs text-indigo-900 font-bold leading-relaxed">{inspectionResult.suggestedBoqDescription}</p>
+                                  {inspectionResult.recommendations && inspectionResult.recommendations.length > 0 && (
+                                      <div className="pt-2 border-t border-indigo-200/70">
+                                          <div className="text-[11px] font-extrabold text-slate-800 mb-1">التوصيات العملية:</div>
+                                          <ul className="space-y-1 text-[11px] text-slate-700 font-bold list-disc pr-4">
+                                              {inspectionResult.recommendations.map((rec, rIdx) => (
+                                                  <li key={rIdx}>{rec}</li>
+                                              ))}
+                                          </ul>
+                                      </div>
+                                  )}
+                              </div>
+                          </div>
+                      )}
+
+                      {/* Photo Note Editor & Persistence to File Metadata */}
+                      <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-sm space-y-2.5">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <label className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                                  <i className="fa-solid fa-pen-to-square text-amber-500"></i>
+                                  ملاحظات الصورة (تُحفظ مباشرة في بيانات الملف)
+                              </label>
+                              {inspectionResult?.conciseNote && photoNoteDraft.trim() !== inspectionResult.conciseNote.trim() && (
+                                  <button
+                                      type="button"
+                                      onClick={() => {
+                                          setPhotoNoteDraft(inspectionResult.conciseNote || '');
+                                          setNoteSavedSuccess(false);
+                                      }}
+                                      className="text-[10px] font-extrabold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded-lg transition flex items-center gap-1"
+                                  >
+                                      <i className="fa-solid fa-wand-magic-sparkles text-[9px]"></i>
+                                      <span>إدراج ملخص الفحص البصري</span>
+                                  </button>
+                              )}
+                          </div>
+
+                          <textarea
+                              value={photoNoteDraft}
+                              onChange={(e) => {
+                                  setPhotoNoteDraft(e.target.value);
+                                  if (noteSavedSuccess) setNoteSavedSuccess(false);
+                              }}
+                              rows={4}
+                              placeholder="اكتب ملاحظاتك الهندسية على الصورة أو قم بتشغيل الفحص البصري لإدراج النتيجة تلقائياً..."
+                              className="w-full p-3 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white outline-none text-xs font-bold text-slate-800 leading-relaxed resize-y"
+                          />
+
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <button
+                                  type="button"
+                                  onClick={handleSavePhotoNote}
+                                  disabled={isSavingNote}
+                                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold shadow-md flex items-center gap-2 transition disabled:opacity-50"
+                              >
+                                  {isSavingNote ? (
+                                      <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                  ) : (
+                                      <i className="fa-solid fa-floppy-disk text-xs"></i>
+                                  )}
+                                  <span>حفظ كملاحظة على الصورة</span>
+                              </button>
+
+                              {noteSavedSuccess && (
+                                  <span className="text-[11px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                                      <i className="fa-solid fa-circle-check"></i>
+                                      <span>تم التوثيق والحفظ في بيانات الملف</span>
+                                  </span>
+                              )}
+                          </div>
+                      </div>
+
+                      {/* Formatted Exports (PDF / Excel / Word) */}
+                      <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-sm space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                                  <i className="fa-solid fa-file-export text-teal-600"></i>
+                                  تصدير الصورة والملاحظة كملف احترافي منسق
+                              </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                              <button
+                                  type="button"
+                                  onClick={() => handleExportPhotoAndNote('pdf')}
+                                  disabled={!!exportingFormat}
+                                  className="py-2.5 px-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+                              >
+                                  {exportingFormat === 'pdf' ? (
+                                      <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                  ) : (
+                                      <i className="fa-solid fa-file-pdf text-sm"></i>
+                                  )}
+                                  <span>PDF</span>
+                              </button>
+                              <button
+                                  type="button"
+                                  onClick={() => handleExportPhotoAndNote('excel')}
+                                  disabled={!!exportingFormat}
+                                  className="py-2.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+                              >
+                                  {exportingFormat === 'excel' ? (
+                                      <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                  ) : (
+                                      <i className="fa-solid fa-file-excel text-sm"></i>
+                                  )}
+                                  <span>Excel</span>
+                              </button>
+                              <button
+                                  type="button"
+                                  onClick={() => handleExportPhotoAndNote('word')}
+                                  disabled={!!exportingFormat}
+                                  className="py-2.5 px-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+                              >
+                                  {exportingFormat === 'word' ? (
+                                      <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                                  ) : (
+                                      <i className="fa-solid fa-file-word text-sm"></i>
+                                  )}
+                                  <span>Word</span>
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );

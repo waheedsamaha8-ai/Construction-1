@@ -690,12 +690,15 @@ export const isSyntheticDriveId = (id: string | null | undefined): boolean => {
            id === 'Connecting...';
 };
 
-const uploadFileDirect = async (parentId: string, file: File, onProgress?: (p:number)=>void): Promise<any> => {
-    const metadata = {
+const uploadFileDirect = async (parentId: string, file: File, onProgress?: (p:number)=>void, description?: string): Promise<any> => {
+    const metadata: any = {
         name: file.name,
         mimeType: getMimeType(file),
         parents: [parentId]
     };
+    if (description && description.trim()) {
+        metadata.description = description.trim();
+    }
 
     const form = new FormData();
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
@@ -703,7 +706,7 @@ const uploadFileDirect = async (parentId: string, file: File, onProgress?: (p:nu
 
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id');
+        xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,createdTime,size,description');
         xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
         
         xhr.upload.onprogress = (e) => {
@@ -730,14 +733,17 @@ const uploadFileDirect = async (parentId: string, file: File, onProgress?: (p:nu
     });
 };
 
-const uploadFileResumable = async (parentId: string, file: File, onProgress?: (p:number)=>void): Promise<any> => {
-    const metadata = {
+const uploadFileResumable = async (parentId: string, file: File, onProgress?: (p:number)=>void, description?: string): Promise<any> => {
+    const metadata: any = {
         name: file.name,
         mimeType: getMimeType(file),
         parents: [parentId]
     };
+    if (description && description.trim()) {
+        metadata.description = description.trim();
+    }
     
-    const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+    const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,createdTime,size,description', {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -2624,13 +2630,17 @@ export const api = {
       try { 
           let query = `'${targetId}' in parents and trashed = false and name != 'metadata.json'`; 
           if (!includeSystemFolders) { query += ` and name != '${ARCHIVE_FOLDER_NAME}' and name != '${HIDDEN_LOGS_FOLDER}'`; } 
-          const fields = 'files(id, name, mimeType, createdTime, webViewLink, webContentLink, thumbnailLink, size)'; 
+          const fields = 'files(id, name, mimeType, createdTime, webViewLink, webContentLink, thumbnailLink, size, description)'; 
           const result = await fetchDrive(`files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=folder,createdTime desc`); 
           
           const localPreviewMap = new Map<string, string>();
+          const localDescriptionMap = new Map<string, string>();
           localChildren.forEach(lc => {
               if (lc.previewUrl && lc.previewUrl.startsWith('data:image')) {
                   localPreviewMap.set(lc.id, lc.previewUrl);
+              }
+              if (lc.description) {
+                  localDescriptionMap.set(lc.id, lc.description);
               }
           });
 
@@ -2657,6 +2667,7 @@ export const api = {
                       previewUrl: savedThumb || f.thumbnailLink, 
                       thumbnailLink: f.thumbnailLink,
                       webContentLink: f.webContentLink, 
+                      description: f.description ?? localDescriptionMap.get(f.id) ?? '',
                       fileCount: known ? known.fileCount : 0, 
                       folderCount: known ? known.folderCount : 0, 
                       size: f.size ? parseInt(f.size) : 0 
@@ -2768,8 +2779,8 @@ export const api = {
       const localFile = await dbService.getItem<FileItem>('files', id);
       if (!navigator.onLine || isSyntheticDriveId(id)) { return localFile || null; }
       try { 
-          const res = await fetchDrive(`files/${id}?fields=id,name,mimeType,parents,createdTime,size`); 
-          return { id: res.id, name: res.name, type: res.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, parentId: res.parents?.[0] || '', createdTime: res.createdTime, size: res.size ? parseInt(res.size) : 0 }; 
+          const res = await fetchDrive(`files/${id}?fields=id,name,mimeType,parents,createdTime,size,description`); 
+          return { id: res.id, name: res.name, mimeType: res.mimeType, type: res.mimeType === 'application/vnd.google-apps.folder' ? ItemType.FOLDER : ItemType.FILE, parentId: res.parents?.[0] || localFile?.parentId || '', createdTime: res.createdTime, size: res.size ? parseInt(res.size) : 0, description: res.description ?? localFile?.description ?? '' }; 
       } catch (e) { return localFile || null; } 
   },
   async createFolder(parentId: string, name: string): Promise<FileItem> { 
@@ -2794,12 +2805,60 @@ export const api = {
       const item = await dbService.getItem<FileItem>('files', id);
       if (item) { 
           await dbService.putItem('files', { ...item, name: newName }); 
-          if (item.parentId) contentCache.delete(item.parentId);
+          if (item.parentId) {
+              const cached = this.getCachedContents(item.parentId);
+              if (cached) {
+                  updateCache(item.parentId, cached.map(c => c.id === id ? { ...c, name: newName } : c));
+              }
+          }
       }
       if (!navigator.onLine || authService.isGuest() || isSyntheticDriveId(id)) return;
       triggerLoadingStart(); 
       await fetchDrive(`files/${id}`, { method: 'PATCH', body: JSON.stringify({ name: newName }) }); 
       triggerLoadingStop(); 
+  },
+  async updateFileMetadata(id: string, updates: { name?: string; description?: string }, existingFallback?: Partial<FileItem>): Promise<FileItem | null> {
+      if (!authService.isAuthenticated()) return null;
+      const existing = (await dbService.getItem<FileItem>('files', id)) || (existingFallback as FileItem | undefined);
+      const updatedItem: FileItem | null = existing ? {
+          ...existing,
+          ...(updates.name !== undefined ? { name: updates.name } : {}),
+          ...(updates.description !== undefined ? { description: updates.description } : {})
+      } : null;
+
+      if (updatedItem) {
+          await dbService.putItem('files', updatedItem).catch(() => {});
+          if (updatedItem.parentId) {
+              const cached = this.getCachedContents(updatedItem.parentId);
+              if (cached) {
+                  updateCache(
+                      updatedItem.parentId,
+                      cached.map(c => c.id === id ? {
+                          ...c,
+                          ...(updates.name !== undefined ? { name: updates.name } : {}),
+                          ...(updates.description !== undefined ? { description: updates.description } : {})
+                      } : c)
+                  );
+              }
+          }
+      }
+
+      if (navigator.onLine && !authService.isGuest() && !isSyntheticDriveId(id)) {
+          const patchPayload: any = {};
+          if (updates.name !== undefined) patchPayload.name = updates.name;
+          if (updates.description !== undefined) patchPayload.description = updates.description;
+          if (Object.keys(patchPayload).length > 0) {
+              try {
+                  await fetchDrive(`files/${id}`, { method: 'PATCH', body: JSON.stringify(patchPayload) });
+              } catch (e) {
+                  console.warn('Drive metadata patch failed, saved locally in IndexedDB', e);
+              }
+          }
+      }
+      return updatedItem;
+  },
+  async updateFileDescription(id: string, description: string, existingFallback?: Partial<FileItem>): Promise<FileItem | null> {
+      return this.updateFileMetadata(id, { description }, existingFallback);
   },
   async moveItem(fileId: string, currentParentId: string, newParentId: string): Promise<void> { 
       if (!authService.isAuthenticated()) return; 
@@ -2896,9 +2955,10 @@ export const api = {
       triggerLoadingStart(); 
       try { await fetchDrive(`files/${id}`, { method: 'DELETE' }); } catch(e: any) { if (e.message && (e.message.includes('403') || e.message.includes('Forbidden'))) throw new Error("ليس لديك صلاحية لحذف هذا الملف."); if (!e.message || !e.message.includes('404')) throw e; } finally { triggerLoadingStop(); } 
   },
-  async uploadFile(parentId: string, file: File, onProgress?: (percent: number) => void): Promise<any> { 
+  async uploadFile(parentId: string, file: File, onProgress?: (percent: number) => void, description?: string): Promise<any> { 
       if (!authService.isAuthenticated()) throw new Error("AUTH_REQUIRED"); 
       triggerLoadingStart(); 
+      const cleanDesc = description?.trim() || '';
       const isVid = (file.type || '').startsWith('video/') || /\.(mp4|mov|webm|avi|mkv|3gp)$/i.test(file.name || '');
       let generatedThumb = '';
       if (isVid) {
@@ -2915,9 +2975,9 @@ export const api = {
           }
           // Queue for later if authenticated
           if (!authService.isGuest()) {
-              await syncService.addToQueue(SyncActionType.UPLOAD_FILE, { parentId, tempId, name: file.name, mimeType: file.type });
+              await syncService.addToQueue(SyncActionType.UPLOAD_FILE, { parentId, tempId, name: file.name, mimeType: file.type, description: cleanDesc });
           }
-          const fakeItem: FileItem = { id: tempId, parentId, name: file.name, mimeType: file.type, type: ItemType.FILE, createdTime: new Date().toISOString(), size: file.size, previewUrl: generatedThumb || undefined };
+          const fakeItem: FileItem = { id: tempId, parentId, name: file.name, mimeType: file.type, type: ItemType.FILE, createdTime: new Date().toISOString(), size: file.size, previewUrl: generatedThumb || undefined, ...(cleanDesc ? { description: cleanDesc } : {}) };
           await dbService.putItem('files', fakeItem);
           const existingParentCache = this.getCachedContents(parentId);
           if (existingParentCache) {
@@ -2928,18 +2988,35 @@ export const api = {
           return fakeItem;
       }
       let result;
-      if (file.size > 4 * 1024 * 1024) result = await uploadFileResumable(parentId, file, onProgress);
-      else result = await uploadFileDirect(parentId, file, onProgress);
+      if (file.size > 4 * 1024 * 1024) result = await uploadFileResumable(parentId, file, onProgress, cleanDesc);
+      else result = await uploadFileDirect(parentId, file, onProgress, cleanDesc);
       setMemoryBlob(result.id, file);
       dbService.putBlob(result.id, file).catch(() => {});
+      if (cleanDesc && result?.id) {
+          result.description = cleanDesc;
+      }
+      if (result?.id) {
+          const savedItem: FileItem = {
+              id: result.id,
+              parentId,
+              name: result.name || file.name,
+              mimeType: result.mimeType || getMimeType(file),
+              type: ItemType.FILE,
+              createdTime: result.createdTime || new Date().toISOString(),
+              size: result.size ? parseInt(result.size) : file.size,
+              ...(generatedThumb ? { previewUrl: generatedThumb } : {}),
+              ...(cleanDesc ? { description: cleanDesc } : {})
+          };
+          dbService.putItem('files', savedItem).catch(() => {});
+          const existingParentCache = this.getCachedContents(parentId);
+          if (existingParentCache) {
+              const exists = existingParentCache.some(c => c.id === savedItem.id);
+              updateCache(parentId, exists ? existingParentCache.map(c => c.id === savedItem.id ? { ...c, ...savedItem } : c) : [savedItem, ...existingParentCache]);
+          }
+      }
       if (generatedThumb && result?.id) {
           result.previewUrl = generatedThumb;
           dbService.putBlob(`vthumb_${result.id}`, new Blob([generatedThumb], { type: 'text/plain' })).catch(() => {});
-          dbService.getItem<FileItem>('files', result.id).then((existingItem) => {
-              if (existingItem) {
-                  dbService.putItem('files', { ...existingItem, previewUrl: generatedThumb }).catch(() => {});
-              }
-          }).catch(() => {});
       }
       triggerLoadingStop();
       return result;

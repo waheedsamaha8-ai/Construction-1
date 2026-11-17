@@ -335,6 +335,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [tempEditLogWorkCategory, setTempEditLogWorkCategory] = useState<string>('');
     const [selectedLogBoqItemId, setSelectedLogBoqItemId] = useState<string>('');
     const [selectedWorkCategory, setSelectedWorkCategory] = useState<string>('');
+    const [isAnalyzingLogPhoto, setIsAnalyzingLogPhoto] = useState<'add' | 'edit' | null>(null);
+    const [logPhotoAiNote, setLogPhotoAiNote] = useState<string>('');
     const [isWorkCategoryDropdownOpen, setIsWorkCategoryDropdownOpen] = useState<boolean>(false);
     const [editingCategoryName, setEditingCategoryName] = useState<string | null>(null);
     const [editCategoryInputValue, setEditCategoryInputValue] = useState<string>('');
@@ -1022,6 +1024,62 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
     };
 
+    const handleAnalyzeLogPhotos = async (target: 'add' | 'edit') => {
+        const imgs = target === 'add' ? logImages : tempEditLogImages;
+        if (!imgs || imgs.length === 0) return;
+
+        setIsAnalyzingLogPhoto(target);
+        if (target === 'add') setLogPhotoAiNote('');
+
+        try {
+            const categoryNames = allWorkCategories.map(c => c.name);
+            const result = await aiHelper.analyzeLogPhotoForEntry(
+                imgs,
+                linkableBoqItems,
+                categoryNames,
+                masterData.projectName || seedProject?.name || initialProjectData?.name || ''
+            );
+
+            if (target === 'add') {
+                setMasterData(prev => ({
+                    ...prev,
+                    newLog: prev.newLog.trim()
+                        ? `${prev.newLog.trim()}\n\n${result.logDescription}`
+                        : result.logDescription
+                }));
+                if (result.matchedBoqItemId) {
+                    setSelectedLogBoqItemId(result.matchedBoqItemId);
+                }
+                if (result.matchedWorkCategory) {
+                    setSelectedWorkCategory(result.matchedWorkCategory);
+                }
+                const matchedBoqObj = result.matchedBoqItemId
+                    ? linkableBoqItems.find(b => b.id === result.matchedBoqItemId)
+                    : undefined;
+                const badgeMsg = matchedBoqObj
+                    ? `تم كتابة البيان وربطه بالبند (${matchedBoqObj.itemCode}): ${(matchedBoqObj.description || '').slice(0, 55)}`
+                    : (result.matchedWorkCategory
+                        ? `تم كتابة البيان الهندسي وتصنيف العمل: ${result.matchedWorkCategory}`
+                        : 'تم كتابة البيان الهندسي بنجاح');
+                setLogPhotoAiNote(badgeMsg);
+            } else {
+                setTempEditLogContent(prev =>
+                    prev.trim() ? `${prev.trim()}\n\n${result.logDescription}` : result.logDescription
+                );
+                if (result.matchedBoqItemId) {
+                    setTempEditLogBoqItemId(result.matchedBoqItemId);
+                }
+                if (result.matchedWorkCategory) {
+                    setTempEditLogWorkCategory(result.matchedWorkCategory);
+                }
+            }
+        } catch (err: any) {
+            showLogImageToast(err?.message || 'تعذر تحليل الصورة لملء البيان حالياً.');
+        } finally {
+            setIsAnalyzingLogPhoto(null);
+        }
+    };
+
     const addLog = async () => { 
         if (!masterData.newLog && logImages.length === 0) return; 
         
@@ -1055,6 +1113,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setLogImageModes([]);
         setSelectedLogBoqItemId('');
         setSelectedWorkCategory('');
+        setLogPhotoAiNote('');
         setShowAddLogModal(false);
         
         // 2. Indicate Saving Background
@@ -4447,6 +4506,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                         );
                                                     })}
                                                 </div>
+                                                {tempEditLogImages.length > 0 && (
+                                                    <div className="mb-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleAnalyzeLogPhotos('edit')}
+                                                            disabled={isAnalyzingLogPhoto !== null}
+                                                            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 text-white text-xs font-extrabold shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-60"
+                                                        >
+                                                            {isAnalyzingLogPhoto === 'edit' ? (
+                                                                <>
+                                                                    <i className="fa-solid fa-circle-notch fa-spin text-yellow-300"></i>
+                                                                    <span>جاري تحليل الصورة وملء البيان...</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i>
+                                                                    <span>تحليل الصورة وملء البيان</span>
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 <div className="flex justify-between"><button onClick={() => setSourceModal({ type: 'editLog', title: 'إضافة صورة' })} className="text-[10px] text-blue-600 bg-blue-100 px-2 py-1 rounded">إضافة صورة</button><div className="flex gap-2"><button onClick={() => saveEditLog(log.id)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">حفظ</button><button onClick={() => setEditingLogId(null)} className="text-xs bg-white border px-3 py-1 rounded">إلغاء</button></div></div>
                                             </div>
                                         ) : (
@@ -7169,39 +7250,67 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
                                     {/* Selected Images Preview */}
                                     {logImages.length > 0 && (
-                                        <div className="flex gap-2.5 overflow-x-auto py-1.5 px-1 bg-slate-50 rounded-xl border border-slate-200 items-start">
-                                            {logImages.map((img, idx) => {
-                                                const mode: LogImageAspectMode = logImageModes[idx] || '1:1';
-                                                const badge = getAspectModeBadge(mode);
-                                                return (
-                                                    <div key={idx} className={`relative w-20 shrink-0 ${mode === '3:4' ? 'aspect-[3/4]' : mode === '1:1' ? 'aspect-square' : ''}`}>
-                                                        <img src={img} alt="" className={`w-full ${mode === 'original' ? 'h-auto block' : 'h-full object-cover'} rounded-xl border-2 border-blue-500 shadow-sm`} />
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setLogImageModes(prev => {
-                                                                const next = logImages.map((_, i) => prev[i] || '1:1');
-                                                                next[idx] = getNextImageAspectMode(next[idx]);
-                                                                return next;
-                                                            })}
-                                                            className={`!min-h-0 !min-w-0 !h-auto leading-none absolute bottom-1 left-1 px-1 py-0.5 rounded text-[8px] font-black border shadow ${badge.cls}`}
-                                                            title={badge.title}
-                                                        >
-                                                            {badge.label}
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setLogImages(prev => prev.filter((_, i) => i !== idx));
-                                                                setLogImageModes(prev => prev.filter((_, i) => i !== idx));
-                                                            }}
-                                                            className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow"
-                                                            title="حذف الصورة"
-                                                        >
-                                                            <i className="fa-solid fa-times"></i>
-                                                        </button>
-                                                    </div>
-                                                );
-                                            })}
+                                        <div className="space-y-2">
+                                            <div className="flex gap-2.5 overflow-x-auto py-1.5 px-1 bg-slate-50 rounded-xl border border-slate-200 items-start">
+                                                {logImages.map((img, idx) => {
+                                                    const mode: LogImageAspectMode = logImageModes[idx] || '1:1';
+                                                    const badge = getAspectModeBadge(mode);
+                                                    return (
+                                                        <div key={idx} className={`relative w-20 shrink-0 ${mode === '3:4' ? 'aspect-[3/4]' : mode === '1:1' ? 'aspect-square' : ''}`}>
+                                                            <img src={img} alt="" className={`w-full ${mode === 'original' ? 'h-auto block' : 'h-full object-cover'} rounded-xl border-2 border-blue-500 shadow-sm`} />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setLogImageModes(prev => {
+                                                                    const next = logImages.map((_, i) => prev[i] || '1:1');
+                                                                    next[idx] = getNextImageAspectMode(next[idx]);
+                                                                    return next;
+                                                                })}
+                                                                className={`!min-h-0 !min-w-0 !h-auto leading-none absolute bottom-1 left-1 px-1 py-0.5 rounded text-[8px] font-black border shadow ${badge.cls}`}
+                                                                title={badge.title}
+                                                            >
+                                                                {badge.label}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setLogImages(prev => prev.filter((_, i) => i !== idx));
+                                                                    setLogImageModes(prev => prev.filter((_, i) => i !== idx));
+                                                                }}
+                                                                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] shadow"
+                                                                title="حذف الصورة"
+                                                            >
+                                                                <i className="fa-solid fa-times"></i>
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => handleAnalyzeLogPhotos('add')}
+                                                disabled={isAnalyzingLogPhoto !== null || isUploadingImages}
+                                                className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 text-white text-xs font-extrabold shadow-md flex items-center justify-center gap-2 transition disabled:opacity-60"
+                                            >
+                                                {isAnalyzingLogPhoto === 'add' ? (
+                                                    <>
+                                                        <i className="fa-solid fa-circle-notch fa-spin text-yellow-300"></i>
+                                                        <span>جاري تحليل الصورة وكتابة البيان وربط البند...</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i>
+                                                        <span>تحليل الصورة وملء البيان</span>
+                                                    </>
+                                                )}
+                                            </button>
+
+                                            {logPhotoAiNote && (
+                                                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl px-3 py-2 text-[11px] font-extrabold flex items-center gap-2">
+                                                    <i className="fa-solid fa-circle-check text-emerald-600 shrink-0"></i>
+                                                    <span className="truncate">{logPhotoAiNote}</span>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 

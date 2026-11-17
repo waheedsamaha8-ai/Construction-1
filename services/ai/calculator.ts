@@ -596,7 +596,7 @@ export const calculatorService = {
 
         // Build printable / archivable HTML report
         const reportHtml = `
-            <div dir="rtl" style="font-family: 'Cairo', sans-serif;">
+            <div dir="rtl" style="font-family: 'Cairo', sans-serif;" data-calc-qty="${qty}">
                 <h2>تحليل فئة البند ومعدلات استهلاك الخامات طبقاً للسوق المصري</h2>
                 <div class="info-box editable-box">
                     <strong>بيانات البند محل الدراسة:</strong><br/>
@@ -607,7 +607,7 @@ export const calculatorService = {
                 </div>
 
                 <h3>أولاً: الملخص المالي لتحليل سعر الوحدة (${unit})</h3>
-                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: center;">
+                <table width="100%" border="1" data-calc-table="summary-boq" style="border-collapse: collapse; width: 100%; text-align: center;">
                     <thead>
                         <tr style="background-color: #0f172a; color: #ffffff;">
                             <th>التكلفة المباشرة للوحدة</th>
@@ -629,7 +629,7 @@ export const calculatorService = {
                 </table>
 
                 <h3>ثانياً: جدول تحليل الفئة التفصيلي للوحدة الواحدة (1 ${unit})</h3>
-                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: right;">
+                <table width="100%" border="1" data-calc-table="breakdown" style="border-collapse: collapse; width: 100%; text-align: right;">
                     <thead>
                         <tr style="background-color: #1e293b; color: #ffffff;">
                             <th>التصنيف</th>
@@ -655,7 +655,7 @@ export const calculatorService = {
                 </table>
 
                 <h3>ثالثاً: حصر كميات المواد والخامات المطلوبة لتنفيذ (${qty.toLocaleString()} ${unit}) طبقاً لمعدلات التنفيذ</h3>
-                <table width="100%" border="1" style="border-collapse: collapse; width: 100%; text-align: right;">
+                <table width="100%" border="1" data-calc-table="materials" style="border-collapse: collapse; width: 100%; text-align: right;">
                     <thead>
                         <tr style="background-color: #065f46; color: #ffffff;">
                             <th>الخامة / المادة</th>
@@ -1034,14 +1034,14 @@ export const calculatorService = {
         const bodyHtml = `
             <h1>تقرير التسعير وتحليل الفئة ومعدلات التنفيذ</h1>
 
-            <div class="info-box editable-box" style="font-size: 11px !important; line-height: 1.5 !important; padding: 8px 10px !important;">
+            <div class="info-box editable-box" data-calc-qty="${qty}" style="font-size: 11px !important; line-height: 1.5 !important; padding: 8px 10px !important;">
                 <strong>بيانات البند:</strong> ${desc}<br/>
                 <strong>التصنيف:</strong> ${category} | <strong>الوحدة:</strong> (${unit}) | <strong>الكمية:</strong> (${qty.toLocaleString()} ${unit}) | <strong>المرجع:</strong> ${parsed.ecpReference || 'الكود المصري (ECP)'}
                 ${params.notes ? `<br/><strong>ملاحظات:</strong> ${params.notes}` : ''}
             </div>
 
             <h2>أولاً: الملخص المالي لتحليل السعر</h2>
-            <table class="pricing-compact-table">
+            <table class="pricing-compact-table" data-calc-table="summary-7row">
                 <thead>
                     <tr>
                         <th style="width: 44%; background-color: #1e3a8a !important; color: #ffffff !important;">عنصر التكلفة</th>
@@ -1097,7 +1097,7 @@ export const calculatorService = {
             </table>
 
             <h2>ثانياً: جدول حصر الخامات ومعدلات الاستهلاك والهالك</h2>
-            <table class="pricing-compact-table">
+            <table class="pricing-compact-table" data-calc-table="materials">
                 <thead>
                     <tr>
                         <th style="width: 24%;">الخامة / المادة</th>
@@ -1129,7 +1129,7 @@ export const calculatorService = {
             </table>
 
             <h2>ثالثاً: جدول معدلات التنفيذ والإنتاجية للعمالة والمصنعيات</h2>
-            <table class="pricing-compact-table">
+            <table class="pricing-compact-table" data-calc-table="labor">
                 <thead>
                     <tr>
                         <th style="width: 24%;">طاقم العمل</th>
@@ -1160,7 +1160,7 @@ export const calculatorService = {
             </table>
 
             <h2>رابعاً: جدول معدلات تشغيل واستهلاك المعدات والعدد</h2>
-            <table class="pricing-compact-table">
+            <table class="pricing-compact-table" data-calc-table="equipment">
                 <thead>
                     <tr>
                         <th style="width: 26%;">المعدة / الآلة</th>
@@ -1172,7 +1172,7 @@ export const calculatorService = {
                 </thead>
                 <tbody>
                     ${equipmentRows.map((eq: any) => `
-                        <tr>
+                        <tr data-daily-rate="${eq.dailyCostOrRate}">
                             <td>${eq.equipmentName}</td>
                             <td>${eq.usageRole}</td>
                             <td style="text-align: center;">${eq.dailyProductivity} ${unit}/يوم</td>

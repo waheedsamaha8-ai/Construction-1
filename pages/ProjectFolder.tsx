@@ -20,6 +20,7 @@ import { DwgController, openDwgInExternalApp } from '../components/DwgController
 import { ReportGenerator } from '../services/reportGenerator'; // IMPORT GENERATOR
 import VideoThumbnail from '../components/VideoThumbnail';
 import InteractiveReportViewer from '../components/InteractiveReportViewer';
+import { SitePhotoInspectionData } from '../services/photoReportExport';
 
 // ... (ArchiveSummaryCard, CategoryCard, FileGridCard, ArchiveFullViewer, SkeletonRow components remain unchanged) ...
 const ArchiveSummaryCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
@@ -94,6 +95,144 @@ const FileGridCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: ()
                 )}
             </div> 
         </div> 
+    );
+};
+const MediaGridCard: React.FC<{
+    item: FileItem;
+    isVideoItem: boolean;
+    colIndex: number;
+    onClick: () => void;
+    onPrefetch: () => void;
+    onDelete: () => void;
+    onRename: () => void;
+    onMove: () => void;
+    onShare: () => void;
+}> = ({ item, isVideoItem, colIndex, onClick, onPrefetch, onDelete, onRename, onMove, onShare }) => {
+    const [showMenu, setShowMenu] = useState(false);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const btnRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (
+                menuRef.current &&
+                !menuRef.current.contains(event.target as Node) &&
+                btnRef.current &&
+                !btnRef.current.contains(event.target as Node)
+            ) {
+                setShowMenu(false);
+            }
+        };
+        if (showMenu) document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showMenu]);
+
+    const smMenuAlign = colIndex % 3 === 0 ? 'right-0 origin-top-right' : 'left-0 origin-top-left';
+    const mdMenuAlign = colIndex % 4 === 0 ? 'md:right-0 md:left-auto md:origin-top-right' : 'md:left-0 md:right-auto md:origin-top-left';
+
+    return (
+        <div
+            onPointerDown={onPrefetch}
+            onMouseEnter={onPrefetch}
+            onTouchStart={onPrefetch}
+            onClick={onClick}
+            className={`aspect-square relative group overflow-visible rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10 ${showMenu ? 'z-[100]' : 'z-0'}`}
+        >
+            <div className="w-full h-full rounded-2xl overflow-hidden relative">
+                {isVideoItem ? (
+                    <VideoThumbnail item={item} className="w-full h-full" />
+                ) : (
+                    item.previewUrl || item.thumbnailLink ? (
+                        <img
+                            src={item.previewUrl || item.thumbnailLink}
+                            alt={item.name}
+                            className="w-full h-full object-cover transition duration-300 group-hover:scale-110"
+                            referrerPolicy="no-referrer"
+                        />
+                    ) : (
+                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
+                            <i className="fa-solid fa-image text-2xl"></i>
+                        </div>
+                    )
+                )}
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent pt-3 pb-1 px-1 pointer-events-none z-10 flex items-end justify-center">
+                    <p className="text-[7.5px] sm:text-[8.5px] text-white/95 font-medium truncate text-center leading-none tracking-tight drop-shadow-sm" title={item.name}>
+                        {item.name}
+                    </p>
+                </div>
+            </div>
+
+            <div
+                className="absolute top-1.5 left-1.5 z-20"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+            >
+                <button
+                    ref={btnRef}
+                    type="button"
+                    aria-label="خيارات الملف"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setShowMenu(!showMenu);
+                    }}
+                    className={`w-6 h-6 sm:w-7 sm:h-7 !min-h-0 rounded-full flex items-center justify-center transition backdrop-blur-sm border ${
+                        showMenu
+                            ? 'bg-blue-600 text-white border-blue-400 shadow-md'
+                            : 'bg-black/45 text-white/95 border-white/25 hover:bg-black/75 shadow-sm'
+                    }`}
+                >
+                    <i className="fa-solid fa-ellipsis-vertical text-[10px]"></i>
+                </button>
+                {showMenu && (
+                    <div
+                        ref={menuRef}
+                        className={`absolute top-full mt-1 w-36 bg-white rounded-xl shadow-xl border border-slate-100 z-50 overflow-hidden animate-scale-in ${smMenuAlign} ${mdMenuAlign}`}
+                    >
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMenu(false);
+                                onShare();
+                            }}
+                            className="w-full text-right px-3 py-2.5 text-[10px] font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 border-b"
+                        >
+                            <i className="fa-solid fa-share-nodes text-indigo-500 w-4"></i> مشاركة
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMenu(false);
+                                onRename();
+                            }}
+                            className="w-full text-right px-3 py-2.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 border-b"
+                        >
+                            <i className="fa-solid fa-pen-to-square text-blue-500 w-4"></i> تعديل
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMenu(false);
+                                onMove();
+                            }}
+                            className="w-full text-right px-3 py-2.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 border-b"
+                        >
+                            <i className="fa-solid fa-arrow-right-to-bracket text-orange-500 w-4"></i> نقل
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMenu(false);
+                                onDelete();
+                            }}
+                            className="w-full text-right px-3 py-2.5 text-[10px] font-bold text-red-600 hover:bg-red-50 flex items-center gap-2"
+                        >
+                            <i className="fa-solid fa-trash text-red-500 w-4"></i> حذف
+                        </button>
+                    </div>
+                )}
+            </div>
+        </div>
     );
 };
 const wrapTablesInHtml = (html: string) => {
@@ -415,6 +554,7 @@ export default function ProjectFolder() {
   const [modalMode, setModalMode] = useState<'none' | 'createFolder' | 'upload' | 'masterData' | 'rename' | 'move' | 'createManualBOQ'>('none');
   const [selectedItem, setSelectedItem] = useState<FileItem | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [renameDescription, setRenameDescription] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [currentFolderId, setCurrentFolderId] = useState(targetId);
   const [currentFolderName, setCurrentFolderName] = useState<string>(
@@ -484,11 +624,45 @@ export default function ProjectFolder() {
     selectedIds: []
   });
 
-  // --- NEW COMMENT STATES ---
+  // --- NEW COMMENT & SMART VISUAL INSPECTION STATES ---
   const [commentModalOpen, setCommentModalOpen] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
   const [pendingVideoFile, setPendingVideoFile] = useState<File | null>(null); // For video case
+  const [pendingCapturePreviewUrl, setPendingCapturePreviewUrl] = useState<string>('');
+  const [captureInspecting, setCaptureInspecting] = useState(false);
+  const [captureInspectionError, setCaptureInspectionError] = useState<string | null>(null);
+  const [captureInspectionResult, setCaptureInspectionResult] = useState<SitePhotoInspectionData | null>(null);
+
+  useEffect(() => {
+      const firstImage = pendingUploadFiles.find(f => f.type.startsWith('image/'));
+      if (commentModalOpen && firstImage) {
+          const url = URL.createObjectURL(firstImage);
+          setPendingCapturePreviewUrl(url);
+          return () => URL.revokeObjectURL(url);
+      } else {
+          setPendingCapturePreviewUrl('');
+      }
+  }, [commentModalOpen, pendingUploadFiles]);
+
+  const handleInspectCapturedPhoto = async () => {
+      const targetImage = pendingUploadFiles.find(f => f.type.startsWith('image/'));
+      if (!targetImage) return;
+      setCaptureInspecting(true);
+      setCaptureInspectionError(null);
+      try {
+          const result = await aiHelper.inspectSitePhoto(
+              targetImage,
+              currentProject?.boqItems || [],
+              currentProject?.name || ''
+          );
+          setCaptureInspectionResult(result);
+      } catch (err: any) {
+          setCaptureInspectionError(err?.message || 'تعذر إجراء الفحص البصري الذكي للصورة.');
+      } finally {
+          setCaptureInspecting(false);
+      }
+  };
   
   useEffect(() => {
       const checkArchive = async () => {
@@ -729,7 +903,7 @@ export default function ProjectFolder() {
               fileToUpload = await imageUtils.compressImage(renamedFile); 
           } 
           
-          await api.uploadFile(currentFolderId, fileToUpload, (p) => setUploadProgress(p)); 
+          await api.uploadFile(currentFolderId, fileToUpload, (p) => setUploadProgress(p), comment); 
           if (closeOnFinish) fetchContents(); 
       } catch (e: any) { 
           alert(`فشل الرفع: ${e.message || 'خطأ غير معروف'}`); console.error(e); 
@@ -807,7 +981,7 @@ export default function ProjectFolder() {
 
   const triggerFileInput = (inputRef: React.RefObject<HTMLInputElement>) => { setTimeout(() => { inputRef.current?.click(); }, 50); };
   
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => { 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, fromCamera: boolean = false) => { 
       const files = e.target.files; 
       if (!files || files.length === 0) return; 
       
@@ -819,12 +993,15 @@ export default function ProjectFolder() {
           return; 
       } 
       
-      // If Geotagging is ON, intercept for comment
-      if (useGeotagging) {
+      // Intercept live camera capture OR when Geotagging is ON for photos/videos
+      if (fromCamera || useGeotagging) {
           const imageOrVideo = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
           if (imageOrVideo.length > 0) {
               setPendingUploadFiles(imageOrVideo);
               setCommentText('');
+              setCaptureInspectionResult(null);
+              setCaptureInspectionError(null);
+              setCaptureInspecting(false);
               setCommentModalOpen(true);
               e.target.value = '';
               return;
@@ -858,14 +1035,16 @@ export default function ProjectFolder() {
 
       for (let i = 0; i < totalFiles; i++) {
           setUploadStatusMsg(`جاري رفع ${i + 1} من ${totalFiles}: ${filesToProcess[i].name}`);
-          // Pass the comment here AND index i for unique serial numbers in batch
-          await performUpload(filesToProcess[i], i === totalFiles - 1, true, comment, i);
+          // Pass the comment (saved in file metadata AND optionally watermarked) + index i for unique serial numbers
+          await performUpload(filesToProcess[i], i === totalFiles - 1, useGeotagging, comment, i);
           completed++;
           setUploadProgress((completed / totalFiles) * 100);
       }
       
       setPendingUploadFiles([]);
       setPendingVideoFile(null);
+      setCaptureInspectionResult(null);
+      setCaptureInspectionError(null);
   };
 
   const handlePdfChoice = async (mode: 'file' | 'images') => { setShowPdfModeModal(false); if (!pendingPdfFile) return; if (mode === 'file') { setIsUploading(true); setUploadStatusMsg("جاري رفع ملف PDF..."); await performUpload(pendingPdfFile, true, false, '', 0); } else { setIsUploading(true); setUploadStatusMsg("جاري تحويل PDF إلى صور..."); try { const folderName = pendingPdfFile.name.replace('.pdf', ''); const newFolder = await api.createFolder(currentFolderId, folderName); const images = await imageUtils.convertPdfToImages(pendingPdfFile, (curr, total) => { setUploadStatusMsg(`جاري تحويل صفحة ${curr} من ${total}`); setUploadProgress((curr/total)*50); }); for (let i = 0; i < images.length; i++) { setUploadStatusMsg(`جاري رفع صورة ${i + 1} من ${images.length}`); await api.uploadFile(newFolder.id, images[i], (p) => { setUploadProgress(50 + ((i / images.length) * 50) + (p * 0.5 / images.length)); }); } fetchContents(); } catch (e) { alert("فشل معالجة ملف PDF"); console.error(e); } finally { setIsUploading(false); setUploadStatusMsg(''); } } setPendingPdfFile(null); };
@@ -1135,8 +1314,33 @@ export default function ProjectFolder() {
           setShareState(prev => ({ ...prev, status: 'downloaded_notice' }));
       }
   };
-  const handleRename = (item: FileItem) => { setSelectedItem(item); setRenameValue(item.name); setModalMode('rename'); };
-  const confirmRename = async () => { if (selectedItem && renameValue.trim()) { try { await api.renameItem(selectedItem.id, renameValue); setModalMode('none'); fetchContents(); } catch (e) { alert("فشل إعادة التسمية"); } } };
+  const handleRename = (item: FileItem) => {
+      setSelectedItem(item);
+      setRenameValue(item.name);
+      setRenameDescription(item.description || '');
+      setModalMode('rename');
+      if (item.type === ItemType.FILE && item.description === undefined) {
+          api.getFileMetadata(item.id).then((meta) => {
+              if (meta?.description !== undefined) setRenameDescription(meta.description);
+          }).catch(() => {});
+      }
+  };
+  const confirmRename = async () => {
+      if (selectedItem && renameValue.trim()) {
+          try {
+              const updates: { name?: string; description?: string } = { name: renameValue.trim() };
+              if (selectedItem.type === ItemType.FILE) {
+                  updates.description = renameDescription.trim();
+              }
+              await api.updateFileMetadata(selectedItem.id, updates, selectedItem);
+              setItems(prev => prev.map(i => i.id === selectedItem.id ? { ...i, ...updates } : i));
+              setModalMode('none');
+              fetchContents();
+          } catch (e) {
+              alert("فشل تعديل بيانات الملف");
+          }
+      }
+  };
   const handleMove = async (item: FileItem) => { setSelectedItem(item); setMoveTargetId(currentFolderId); setMoveBreadcrumbs([{ id: currentFolderId, name: currentFolderName }]); setModalMode('move'); fetchMoveContents(currentFolderId); };
   const fetchMoveContents = async (targetId: string) => { setLoadingMove(true); try { const contents = await api.getContents(targetId, true); const folders = contents.filter(i => i.type === ItemType.FOLDER && i.id !== selectedItem?.id); setMoveFolderItems(folders); } catch(e) { setMoveFolderItems([]); } finally { setLoadingMove(false); } };
   const handleMoveNavigate = (folder: FileItem) => { setMoveTargetId(folder.id); setMoveBreadcrumbs(prev => [...prev, { id: folder.id, name: folder.name }]); fetchMoveContents(folder.id); };
@@ -1278,8 +1482,8 @@ export default function ProjectFolder() {
     >
       
       {/* ... (Hidden Inputs) ... */}
-      <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,application/rtf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
-      <input type="file" ref={cameraInputRef} onChange={handleFileUpload} accept="image/*" capture="environment" style={{ display: 'none' }} />
+      <input type="file" multiple ref={fileInputRef} onChange={(e) => handleFileUpload(e, false)} style={{ display: 'none' }} accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,application/rtf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+      <input type="file" ref={cameraInputRef} onChange={(e) => handleFileUpload(e, true)} accept="image/*" capture="environment" style={{ display: 'none' }} />
       <input type="file" ref={scanInputRef} style={{ display: 'none' }} />
       
       {isUploading && (<div className="fixed top-0 left-0 w-full h-10 bg-slate-900 text-white z-[1000] flex items-center px-4 shadow-xl"><span className="text-[10px] font-bold mr-2 whitespace-nowrap">{uploadStatusMsg || `جاري الرفع ${uploadProgress}%`}</span><div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden"><div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div></div></div>)}
@@ -1306,7 +1510,7 @@ export default function ProjectFolder() {
             </div>
         </div> 
       )}
-      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map(item => {
+      {loading ? ( <div className="space-y-2"><SkeletonRow /><SkeletonRow /><SkeletonRow /></div> ) : ( <div key={currentFolderId} className="min-h-[300px]"> {isArchiveRoot || isArchiveSection ? ( <div className="space-y-4 pb-10"> <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"> {sortedItems.filter(i => i.type === ItemType.FOLDER).map(item => <CategoryCard key={item.id} item={item} onClick={() => handleItemClick(item)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onShare={() => handleShare(item)} /> )} </div> {sortedItems.filter(i => i.type !== ItemType.FOLDER).map(item => <ArchiveSummaryCard key={item.id} item={item} onClick={() => setSelectedArchiveItem(item)} onDelete={() => handleDeleteItemClick(item.id, item.name)} onRename={() => handleRename(item)} onMove={() => handleMove(item)} onShare={() => handleShare(item)} /> )} </div> ) : ( <div className={viewMode === 'list' ? 'space-y-2' : 'grid grid-cols-3 md:grid-cols-4 gap-1.5 md:gap-2.5'}> {sortedItems.map((item, idx) => {
           const handlePrefetchItem = () => {
               if (item.type === ItemType.FOLDER) {
                   if (!api.getCachedContents(item.id)) {
@@ -1322,22 +1526,18 @@ export default function ProjectFolder() {
               const isVideoItem = mime.startsWith('video/') || name.endsWith('.webm') || name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi');
 
               return (
-                  <div key={item.id} onPointerDown={handlePrefetchItem} onMouseEnter={handlePrefetchItem} onTouchStart={handlePrefetchItem} onClick={() => handleItemClick(item)} className="aspect-square relative group overflow-hidden rounded-2xl shadow-sm cursor-pointer bg-slate-900 border border-slate-100/10">
-                      {isVideoItem ? (
-                          <VideoThumbnail item={item} className="w-full h-full" />
-                      ) : (
-                          item.previewUrl || item.thumbnailLink ? (
-                              <img src={item.previewUrl || item.thumbnailLink} alt={item.name} className="w-full h-full object-cover transition duration-300 group-hover:scale-110" referrerPolicy="no-referrer" />
-                          ) : (
-                              <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
-                                  <i className="fa-solid fa-image text-2xl"></i>
-                              </div>
-                          )
-                      )}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent pt-3 pb-1 px-1 pointer-events-none z-10 flex items-end justify-center">
-                          <p className="text-[7.5px] sm:text-[8.5px] text-white/95 font-medium truncate text-center leading-none tracking-tight drop-shadow-sm" title={item.name}>{item.name}</p>
-                      </div>
-                  </div>
+                  <MediaGridCard
+                      key={item.id}
+                      item={item}
+                      isVideoItem={isVideoItem}
+                      colIndex={idx}
+                      onPrefetch={handlePrefetchItem}
+                      onClick={() => handleItemClick(item)}
+                      onDelete={() => handleDeleteItemClick(item.id, item.name)}
+                      onRename={() => handleRename(item)}
+                      onMove={() => handleMove(item)}
+                      onShare={() => handleShare(item)}
+                  />
               );
           }
           return viewMode === 'list' ? (
@@ -1651,36 +1851,203 @@ export default function ProjectFolder() {
       <ConfirmModal isOpen={!!deleteTarget} title="تأكيد الحذف" message={`هل أنت متأكد من رغبتك في حذف "${deleteTarget?.name}"؟ لا يمكن التراجع عن هذا الإجراء.`} onConfirm={confirmDelete} onCancel={() => setDeleteTarget(null)} type="danger" />
       {modalMode === 'createFolder' && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-5 animate-scale-in"> <h3 className="font-bold text-slate-800 mb-4 text-center">مجلد جديد</h3> <input type="text" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="اسم المجلد..." className="w-full p-3 border border-slate-200 rounded-xl mb-4 bg-slate-50 outline-none focus:border-blue-500 text-sm font-bold text-center" autoFocus /> <div className="flex gap-2"> <button onClick={handleCreateFolder} className="flex-1 bg-blue-600 text-white py-2 rounded-xl font-bold hover:bg-blue-700 transition">إنشاء</button> <button onClick={() => setModalMode('none')} className="flex-1 bg-slate-100 text-slate-600 py-2 rounded-xl font-bold hover:bg-slate-200 transition">إلغاء</button> </div> </div> </div> )}
       {showPdfModeModal && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 text-center animate-scale-in border border-slate-200"> <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl"> <i className="fa-solid fa-file-pdf"></i> </div> <h3 className="text-lg font-bold text-slate-800 mb-2">طريقة رفع ملف PDF</h3> <p className="text-xs text-slate-500 mb-6">كيف ترغب في حفظ هذا الملف في المجلد؟</p> <div className="flex flex-col gap-3"> <button onClick={() => handlePdfChoice('file')} className="w-full bg-slate-50 border border-slate-200 hover:bg-slate-100 p-4 rounded-xl flex items-center gap-4 transition group"> <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-sm text-red-500 border border-slate-100"> <i className="fa-solid fa-file-pdf text-xl"></i> </div> <div className="text-right flex-1"> <h4 className="font-bold text-slate-800 text-sm">ملف مستند (PDF)</h4> <p className="text-[10px] text-slate-400">حفظ كملف واحد للقراءة والطباعة</p> </div> <i className="fa-solid fa-chevron-left text-slate-300 group-hover:text-blue-500 transition"></i> </button> <button onClick={() => handlePdfChoice('images')} className="w-full bg-slate-50 border border-slate-200 hover:bg-slate-100 p-4 rounded-xl flex items-center gap-4 transition group"> <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-sm text-purple-500 border border-slate-100"> <i className="fa-solid fa-images text-xl"></i> </div> <div className="text-right flex-1"> <h4 className="font-bold text-slate-800 text-sm">ألبوم صور (مجلد)</h4> <p className="text-[10px] text-slate-400">تحويل كل صفحة لصورة وحفظها في مجلد</p> </div> <i className="fa-solid fa-chevron-left text-slate-300 group-hover:text-blue-500 transition"></i> </button> </div> <button onClick={() => { setShowPdfModeModal(false); setPendingPdfFile(null); }} className="mt-6 text-slate-400 text-xs font-bold hover:text-red-500 transition">إلغاء</button> </div> </div> )}
-      {modalMode === 'rename' && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-5 animate-scale-in"> <h3 className="font-bold text-slate-800 mb-4 text-center">إعادة تسمية</h3> <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl mb-4 bg-slate-50 outline-none focus:border-blue-500 text-sm font-bold text-center" autoFocus /> <div className="flex gap-2"> <button onClick={confirmRename} className="flex-1 bg-blue-600 text-white py-2 rounded-xl font-bold hover:bg-blue-700 transition">حفظ</button> <button onClick={() => setModalMode('none')} className="flex-1 bg-slate-100 text-slate-600 py-2 rounded-xl font-bold hover:bg-slate-200 transition">إلغاء</button> </div> </div> </div> )}
+      {modalMode === 'rename' && (
+          <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-5 animate-scale-in border border-slate-200">
+                  <h3 className="font-extrabold text-slate-800 mb-4 text-center flex items-center justify-center gap-2">
+                      <i className="fa-solid fa-pen-to-square text-blue-600"></i>
+                      <span>{selectedItem?.type === ItemType.FILE ? 'تعديل بيانات وملاحظات الملف' : 'إعادة تسمية المجلد'}</span>
+                  </h3>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">الاسم</label>
+                  <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      className="w-full p-3 border border-slate-200 rounded-xl mb-3 bg-slate-50 outline-none focus:border-blue-500 text-sm font-bold text-right"
+                      autoFocus
+                  />
+                  {selectedItem?.type === ItemType.FILE && (
+                      <>
+                          <label className="block text-[11px] font-bold text-slate-500 mb-1">ملاحظات وتوثيق الملف</label>
+                          <textarea
+                              value={renameDescription}
+                              onChange={(e) => setRenameDescription(e.target.value)}
+                              rows={4}
+                              placeholder="لا توجد ملاحظات مسجلة في بيانات الملف..."
+                              className="w-full p-3 border border-slate-200 rounded-xl mb-4 bg-slate-50 outline-none focus:border-blue-500 text-xs font-bold text-slate-800 resize-y leading-relaxed"
+                          />
+                      </>
+                  )}
+                  <div className="flex gap-2">
+                      <button onClick={confirmRename} className="flex-1 bg-blue-600 text-white py-2.5 rounded-xl font-bold hover:bg-blue-700 transition">حفظ</button>
+                      <button onClick={() => setModalMode('none')} className="flex-1 bg-slate-100 text-slate-600 py-2.5 rounded-xl font-bold hover:bg-slate-200 transition">إلغاء</button>
+                  </div>
+              </div>
+          </div>
+      )}
       {modalMode === 'move' && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col max-h-[80vh] animate-scale-in border border-slate-200 overflow-hidden"> <div className="p-4 bg-slate-100 border-b border-slate-200 flex justify-between items-center shrink-0"> <div> <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2"><i className="fa-solid fa-arrow-right-to-bracket text-orange-500"></i> نقل "{selectedItem?.name}" إلى...</h3> </div> <button onClick={() => setModalMode('none')} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-500 transition"><i className="fa-solid fa-times"></i></button> </div> <div className="px-3 py-2 bg-white border-b border-slate-100 flex items-center gap-1 overflow-x-auto text-xs whitespace-nowrap hide-scrollbar"> {(moveBreadcrumbs.length > 1 || (moveTargetId !== projectId)) && ( <button onClick={handleMoveBack} className="w-6 h-6 flex items-center justify-center bg-slate-100 rounded-full hover:bg-slate-200 mr-1 shrink-0"> <i className="fa-solid fa-arrow-right text-[10px] text-slate-600 rtl:rotate-180"></i> </button> )} {moveBreadcrumbs.map((crumb, idx) => ( <div key={crumb.id} className="flex items-center"> {idx > 0 && <span className="text-slate-300 mx-1">/</span>} <span className={`font-bold ${idx === moveBreadcrumbs.length - 1 ? 'text-orange-600' : 'text-slate-500'}`}>{crumb.name}</span> </div> ))} </div> <div className="flex-1 overflow-y-auto p-2 bg-slate-50 min-h-[200px]"> {loadingMove ? ( <div className="text-center py-10"><div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div><p className="text-xs text-slate-400">جاري التحميل...</p></div> ) : moveFolderItems.length === 0 ? ( <div className="text-center py-10 text-slate-400"><i className="fa-solid fa-folder-open text-3xl mb-2 opacity-30"></i><p className="text-xs font-bold">لا توجد مجلدات فرعية</p></div> ) : ( <div className="space-y-1"> {moveFolderItems.map(item => ( <div key={item.id} onClick={() => handleMoveNavigate(item)} className="flex items-center gap-3 p-3 rounded-xl cursor-pointer border bg-white border-slate-100 hover:bg-yellow-50 transition group"> <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-yellow-100 text-yellow-600"><i className="fa-solid fa-folder text-sm"></i></div> <div className="flex-1 min-w-0"><h4 className="text-xs font-bold text-slate-700 truncate group-hover:text-blue-700">{item.name}</h4></div> <i className="fa-solid fa-chevron-left text-slate-300 text-xs group-hover:text-blue-400"></i> </div> ))} </div> )} </div> <div className="p-3 bg-white border-t border-slate-200 shrink-0 flex gap-2"> <button onClick={confirmMove} className="flex-1 bg-orange-600 text-white py-3 rounded-xl font-bold hover:bg-orange-700 transition shadow-lg flex items-center justify-center gap-2 text-xs"> <i className="fa-solid fa-check"></i> نقل إلى هنا </button> <button onClick={() => setModalMode('none')} className="bg-slate-100 text-slate-600 px-6 py-3 rounded-xl font-bold hover:bg-slate-200 transition text-xs"> إلغاء </button> </div> </div> </div> )}
       {showMediaChoice && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-6 text-center animate-scale-in"> <h3 className="text-slate-800 font-bold mb-4">التصوير الهندسي</h3> <div className="grid grid-cols-2 gap-3"> <button onClick={() => { setShowMediaChoice(false); triggerFileInput(cameraInputRef); }} className="bg-indigo-50 text-indigo-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs"> <i className="fa-solid fa-camera text-xl"></i> صورة </button> <button onClick={() => { setShowMediaChoice(false); setShowVideoRecorder(true); }} className="bg-purple-50 text-purple-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs"> <i className="fa-solid fa-video text-xl"></i> فيديو </button> </div> <button onClick={() => setShowMediaChoice(false)} className="mt-4 text-slate-400 font-bold">إلغاء</button> </div> </div> )}
       {showVideoRecorder && ( <div className="fixed inset-0 z-[1300] bg-black flex flex-col"> <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center"> <video ref={videoPreviewRef} className="absolute inset-0 w-full h-full object-cover" autoPlay playsInline muted></video> <canvas ref={canvasRef} className="hidden"></canvas> <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-10"> <div className="bg-black/50 text-white px-3 py-1 rounded-full text-xs font-bold border border-white/20"> {isVideoRecording ? <span className="text-red-500 animate-pulse">● REC {Math.floor(videoTimer/60)}:{(videoTimer%60).toString().padStart(2,'0')}</span> : 'جاهز'} </div> <button onClick={() => setVideoQuality(videoQuality === 'hd' ? 'sd' : 'hd')} className="bg-black/40 text-white px-3 py-1 rounded-full text-[10px] font-bold border border-white/20"> {videoQuality === 'hd' ? 'HD 720p' : 'SD 480p'} </button> </div> </div> <div className="bg-slate-900 p-6 flex justify-between items-center text-white shrink-0 safe-bottom"> <button onClick={() => setShowVideoRecorder(false)} className="font-bold">إلغاء</button> <button onClick={isVideoRecording ? stopRecordingVideo : startRecordingVideo} className={`w-16 h-16 rounded-full border-4 flex items-center justify-center transition ${isVideoRecording ? 'border-red-500 scale-110' : 'border-white bg-red-600'}`}> {isVideoRecording ? <div className="w-6 h-6 bg-red-500 rounded-sm"></div> : <div className="w-16 h-16 rounded-full bg-red-600"></div>} </button> <div className="w-10"></div> </div> </div> )}
       
-      {/* Comment Modal for Geotagging */}
+      {/* Post-Capture Smart Visual Inspection & Photo Note Modal */}
       {commentModalOpen && (
-          <div className="fixed inset-0 z-[1400] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-              <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 text-center animate-scale-in border border-slate-200">
-                  <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl border border-blue-200">
-                      <i className="fa-regular fa-comment-dots"></i>
+          <div className="fixed inset-0 z-[1400] bg-slate-900/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+              <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-scale-in border border-slate-200">
+                  <div className="bg-gradient-to-l from-indigo-900 via-indigo-800 to-blue-800 text-white px-4 py-3 flex items-center justify-between shrink-0">
+                      <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center">
+                              <i className="fa-solid fa-camera text-amber-300 text-sm"></i>
+                          </div>
+                          <div>
+                              <h3 className="font-extrabold text-sm leading-tight">توثيق وفحص الصورة الميدانية</h3>
+                              <p className="text-[10px] text-indigo-200">
+                                  {pendingVideoFile ? 'فيديو ميداني مسجل' : `عدد الصور المختارة: ${pendingUploadFiles.length || 1}`}
+                              </p>
+                          </div>
+                      </div>
+                      <button
+                          type="button"
+                          onClick={() => {
+                              setCommentModalOpen(false);
+                              setPendingUploadFiles([]);
+                              setPendingVideoFile(null);
+                              setCaptureInspectionResult(null);
+                              setCaptureInspectionError(null);
+                          }}
+                          className="w-8 h-8 rounded-xl bg-white/10 hover:bg-red-500/80 flex items-center justify-center transition text-white"
+                          title="إلغاء الرفع"
+                      >
+                          <i className="fa-solid fa-times text-xs"></i>
+                      </button>
                   </div>
-                  <h3 className="font-bold text-slate-800 text-lg mb-2">إضافة تعليق</h3>
-                  <p className="text-xs text-slate-500 mb-4">يمكنك إضافة تعليق يظهر في شريط علوي على الصورة/الفيديو.</p>
-                  
-                  <textarea 
-                      value={commentText} 
-                      onChange={(e) => setCommentText(e.target.value)} 
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl mb-4 text-sm outline-none focus:border-blue-500 transition min-h-[80px] resize-none font-bold" 
-                      placeholder="اكتب التعليق هنا..." 
-                      autoFocus
-                  />
-                  
-                  <div className="flex gap-3">
-                      <button onClick={() => processPendingUploads(commentText)} className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg text-xs flex items-center justify-center gap-2">
-                          <i className="fa-solid fa-pen-nib"></i> إدراج التعليق
+
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 text-right">
+                      {/* Captured Photo Preview + Smart Visual Inspection Trigger */}
+                      {pendingCapturePreviewUrl && (
+                          <div className="bg-white rounded-2xl p-3 border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center gap-3">
+                              <img
+                                  src={pendingCapturePreviewUrl}
+                                  alt="معاينة الصورة الملتقطة"
+                                  className="w-full sm:w-28 h-40 sm:h-28 rounded-xl object-cover border border-slate-200 shrink-0 bg-slate-100"
+                              />
+                              <div className="flex-1 w-full space-y-2 text-right">
+                                  <div className="text-xs font-extrabold text-slate-800">المحلل البصري لصور الموقع</div>
+                                  <p className="text-[11px] text-slate-500 font-bold leading-snug">
+                                      تحليل العمل المرصود وتقييم الجودة والسلامة المهنية واقتراح بند المقايسة المطابق تلقائياً.
+                                  </p>
+                                  <button
+                                      type="button"
+                                      onClick={handleInspectCapturedPhoto}
+                                      disabled={captureInspecting}
+                                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 text-white text-xs font-extrabold shadow-md flex items-center justify-center gap-2 transition disabled:opacity-60"
+                                  >
+                                      {captureInspecting ? (
+                                          <>
+                                              <i className="fa-solid fa-circle-notch fa-spin text-yellow-300"></i>
+                                              <span>جاري الفحص البصري الذكي...</span>
+                                          </>
+                                      ) : (
+                                          <>
+                                              <i className="fa-solid fa-eye text-yellow-300"></i>
+                                              <span>فحص بصري ذكي</span>
+                                          </>
+                                      )}
+                                  </button>
+                              </div>
+                          </div>
+                      )}
+
+                      {captureInspectionError && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-2.5 text-xs font-bold flex items-center gap-2">
+                              <i className="fa-solid fa-triangle-exclamation"></i>
+                              <span>{captureInspectionError}</span>
+                          </div>
+                      )}
+
+                      {/* Inspection Result Cards */}
+                      {captureInspectionResult && (
+                          <div className="bg-white rounded-2xl p-3.5 border border-indigo-200 shadow-sm space-y-2.5">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <span className="text-xs font-extrabold text-indigo-900 flex items-center gap-1.5">
+                                      <i className="fa-solid fa-clipboard-check text-indigo-600"></i>
+                                      نتيجة الفحص البصري
+                                  </span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                                          captureInspectionResult.qualityStatus === 'مطابق'
+                                              ? 'bg-emerald-100 text-emerald-800'
+                                              : captureInspectionResult.qualityStatus === 'يحتاج معالجة'
+                                                  ? 'bg-red-100 text-red-800'
+                                                  : 'bg-amber-100 text-amber-800'
+                                      }`}>
+                                          الجودة: {captureInspectionResult.qualityStatus}
+                                      </span>
+                                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                                          captureInspectionResult.safetyStatus === 'آمن'
+                                              ? 'bg-emerald-100 text-emerald-800'
+                                              : captureInspectionResult.safetyStatus.includes('خطر')
+                                                  ? 'bg-red-100 text-red-800'
+                                                  : 'bg-amber-100 text-amber-800'
+                                      }`}>
+                                          السلامة: {captureInspectionResult.safetyStatus}
+                                      </span>
+                                  </div>
+                              </div>
+
+                              <div className="text-[11.5px] text-slate-700 font-bold space-y-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                                  <div><strong className="text-slate-900">العمل المرصود:</strong> {captureInspectionResult.detectedWork}</div>
+                                  <div><strong className="text-slate-900">تقييم الجودة:</strong> {captureInspectionResult.qualityAssessment}</div>
+                                  <div><strong className="text-slate-900">السلامة المهنية:</strong> {captureInspectionResult.safetyAssessment}</div>
+                                  <div className="text-indigo-800">
+                                      <strong>بند المقايسة المقترح:</strong>{' '}
+                                      {captureInspectionResult.suggestedBoqCode ? `[بند ${captureInspectionResult.suggestedBoqCode}] ` : ''}
+                                      {captureInspectionResult.suggestedBoqDescription}
+                                  </div>
+                              </div>
+
+                              <button
+                                  type="button"
+                                  onClick={() => setCommentText(captureInspectionResult.conciseNote || captureInspectionResult.detectedWork)}
+                                  className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm flex items-center justify-center gap-2 transition"
+                              >
+                                  <i className="fa-solid fa-file-circle-plus"></i>
+                                  <span>إدراج الملخص تلقائياً في ملاحظات الصورة</span>
+                              </button>
+                          </div>
+                      )}
+
+                      {/* Photo Note Textarea */}
+                      <div className="bg-white rounded-2xl p-3 border border-slate-200 shadow-sm space-y-1.5">
+                          <label className="block text-xs font-extrabold text-slate-700">
+                              ملاحظات الصورة (تُحفظ في بيانات الملف{useGeotagging ? ' والشريط العلوي للصورة' : ''})
+                          </label>
+                          <textarea
+                              value={commentText}
+                              onChange={(e) => setCommentText(e.target.value)}
+                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:border-blue-500 focus:bg-white transition min-h-[90px] resize-y font-bold text-slate-800 leading-relaxed"
+                              placeholder="اكتب ملاحظتك هنا أو استخدم «فحص بصري ذكي»..."
+                          />
+                      </div>
+                  </div>
+
+                  <div className="p-3 bg-white border-t border-slate-200 flex gap-2.5 shrink-0">
+                      <button
+                          type="button"
+                          onClick={() => processPendingUploads(commentText)}
+                          className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-extrabold hover:bg-blue-700 transition shadow-lg text-xs flex items-center justify-center gap-2"
+                      >
+                          <i className="fa-solid fa-cloud-arrow-up"></i>
+                          <span>{commentText.trim() ? 'حفظ ورفع مع الملاحظة' : 'رفع الصورة'}</span>
                       </button>
-                      <button onClick={() => processPendingUploads('')} className="bg-slate-100 text-slate-600 px-6 py-3 rounded-xl font-bold hover:bg-slate-200 transition text-xs">
-                          بدون تعليق
-                      </button>
+                      {commentText.trim() && (
+                          <button
+                              type="button"
+                              onClick={() => processPendingUploads('')}
+                              className="bg-slate-100 text-slate-600 px-4 py-3 rounded-xl font-bold hover:bg-slate-200 transition text-xs"
+                          >
+                              بدون ملاحظة
+                          </button>
+                      )}
                   </div>
               </div>
           </div>
@@ -1719,6 +2086,7 @@ export default function ProjectFolder() {
       {previewItem && (
           <FileViewer
               item={previewItem}
+              project={currentProject}
               siblings={(() => {
                   const isPreviewMedia = (f: FileItem) => {
                       const m = (f.mimeType || '').toLowerCase();
@@ -1727,6 +2095,10 @@ export default function ProjectFolder() {
                   };
                   return isPreviewMedia(previewItem) ? sortedItems.filter(isPreviewMedia) : [];
               })()}
+              onItemUpdated={(updated) => {
+                  setItems(prev => prev.map(i => (i.id === updated.id ? { ...i, ...updated } : i)));
+                  setPreviewItem(prev => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+              }}
               onClose={() => setPreviewItem(null)}
           />
       )}

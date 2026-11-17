@@ -405,6 +405,7 @@ export interface FileItem {
   folderCount?: number;
   createdTime: string;
   content?: string;
+  description?: string; // File / photo notes saved in file metadata
   isSystem?: boolean;
   projectName?: string;
   size?: number; // ADDED: File size in bytes

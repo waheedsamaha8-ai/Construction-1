@@ -6,6 +6,7 @@ import { ReportGenerator } from '../services/reportGenerator';
 import { printService } from '../services/printService';
 import { imageUtils } from '../services/imageUtils';
 import InteractiveReportViewer from './InteractiveReportViewer';
+import { extractPricingSummaryFromHtml } from '../services/reportCalculationEngine';
 import { MarketItem } from '../types';
 
 interface ProfessionalPricingModalProps {
@@ -1697,7 +1698,25 @@ const ProfessionalPricingModal: React.FC<ProfessionalPricingModalProps> = ({
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-2.5 sm:p-5">
                                 <InteractiveReportViewer
                                     htmlContent={reportHtml}
-                                    onContentChange={(newHtml) => setReportHtml(newHtml)}
+                                    onContentChange={(newHtml) => {
+                                        setReportHtml(newHtml);
+                                        const summary = extractPricingSummaryFromHtml(newHtml);
+                                        if (summary) {
+                                            setReportData((prev: any) =>
+                                                prev
+                                                    ? {
+                                                          ...prev,
+                                                          materialsCostPerUnit: summary.materialsCostPerUnit ?? prev.materialsCostPerUnit,
+                                                          laborCostPerUnit: summary.laborCostPerUnit ?? prev.laborCostPerUnit,
+                                                          equipmentCostPerUnit: summary.equipmentCostPerUnit ?? prev.equipmentCostPerUnit,
+                                                          directCostPerUnit: summary.directCostPerUnit ?? prev.directCostPerUnit,
+                                                          finalUnitPrice: summary.finalUnitPrice ?? prev.finalUnitPrice,
+                                                          totalItemPrice: summary.totalItemPrice ?? prev.totalItemPrice,
+                                                      }
+                                                    : prev
+                                            );
+                                        }
+                                    }}
                                     isDirectEditing={isDirectEditing}
                                     onDirectEditChange={setIsDirectEditing}
                                     showFloatingEditBar={false}

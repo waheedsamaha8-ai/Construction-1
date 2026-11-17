@@ -134,6 +134,16 @@ const FileItemRow: React.FC<FileItemRowProps> = ({ item, onClick, onDelete, onRe
             <span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-1.5 py-0.5 rounded">
                 {new Date(item.createdTime).toLocaleDateString('ar-EG')}
             </span>
+
+            {!isFolder && item.description && item.description.trim() && (
+                <span
+                    className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold flex items-center gap-1 max-w-[160px] truncate"
+                    title={item.description}
+                >
+                    <i className="fa-solid fa-note-sticky text-[9px] text-amber-500 shrink-0"></i>
+                    <span className="truncate">{item.description.split(/\r?\n/)[0]}</span>
+                </span>
+            )}
             
             {/* Folder Counters */}
             {isFolder && (

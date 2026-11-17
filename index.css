@@ -179,6 +179,19 @@ body {
     }
 }
 
+.compact-note-pill {
+    font-size: 9px !important;
+    line-height: 1.1 !important;
+    min-height: 0 !important;
+    min-width: 0 !important;
+    height: auto !important;
+    padding: 2px 5px !important;
+    white-space: nowrap !important;
+}
+.compact-note-pill i {
+    font-size: 8px !important;
+}
+
 table.pricing-compact-table th,
 table.pricing-compact-table th *,
 .prose table.pricing-compact-table th,

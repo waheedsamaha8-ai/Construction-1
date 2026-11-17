@@ -511,29 +511,34 @@ export const imageUtils = {
           ctx.fillText(weather, padding, line2Y);
       }
 
-      // 4. Draw Top Ribbon (Comment) - Only if exists
-      if (comment && comment.trim() !== '') {
+      // 4. Draw Top Ribbon (Comment) - Only if exists (keep concise single line so multi-line inspection notes stay readable)
+      const ribbonComment = (comment || '')
+          .split(/\r?\n/)
+          .map(l => l.trim())
+          .find(Boolean) || '';
+      if (ribbonComment) {
+          const conciseRibbonText = ribbonComment.length > 90 ? `${ribbonComment.slice(0, 87)}...` : ribbonComment;
           const topRibbonHeight = Math.round(ribbonHeight * 0.6); // Slightly smaller than bottom
           
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.5)';
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
           ctx.fillRect(0, 0, width, topRibbonHeight);
 
-          let topFontSize = Math.floor(topRibbonHeight * 0.6); 
+          let topFontSize = Math.floor(topRibbonHeight * 0.58); 
           ctx.font = `bold ${topFontSize}px ${fontFace}`;
           
-          const commentW = ctx.measureText(comment).width;
+          const commentW = ctx.measureText(conciseRibbonText).width;
           const maxCommentW = width - (padding * 2);
 
-          if (commentW > maxCommentW) {
+          if (commentW > maxCommentW && commentW > 0) {
               const cScale = maxCommentW / commentW;
-              topFontSize = Math.floor(topFontSize * cScale);
+              topFontSize = Math.max(11, Math.floor(topFontSize * cScale));
           }
 
           ctx.font = `bold ${topFontSize}px ${fontFace}`;
           ctx.fillStyle = '#fbbf24'; // Amber text
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(comment, width / 2, topRibbonHeight / 2);
+          ctx.fillText(conciseRibbonText, width / 2, topRibbonHeight / 2);
       }
   },
 
