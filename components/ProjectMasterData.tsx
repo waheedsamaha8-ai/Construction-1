@@ -27,27 +27,33 @@ interface ProjectMasterDataProps {
     onOpenAI: () => void;
 }
 
+const roundTo2 = (val: any): number => {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+};
+
 const normalizeBoqList = (items: any[] = []): BOQItem[] => {
     if (!Array.isArray(items)) return [];
     return items.filter(Boolean).map((b, idx) => {
         const code = b.itemCode !== undefined ? String(b.itemCode) : (b.itemNumber !== undefined ? String(b.itemNumber) : String(idx + 1));
-        const qty = Number(b.quantity) || 0;
-        const price = Number(b.unitPrice) || 0;
-        const execQty = Number(b.executedQuantity) || 0;
+        const qty = roundTo2(b.quantity);
+        const price = roundTo2(b.unitPrice);
+        const execQty = roundTo2(b.executedQuantity);
         return {
             ...b,
             id: b.id || `boq_${b.batchId || 'default'}_${idx}_${code.replace(/\s+/g, '_')}`,
             itemCode: code,
             quantity: qty,
             unitPrice: price,
-            total: b.total !== undefined && !isNaN(Number(b.total)) && Number(b.total) > 0 ? Number(b.total) : (qty * price),
+            total: b.total !== undefined && !isNaN(Number(b.total)) && Number(b.total) > 0 ? roundTo2(b.total) : roundTo2(qty * price),
             executedQuantity: execQty,
             executionBreakdown: Array.isArray(b.executionBreakdown)
                 ? b.executionBreakdown.filter(Boolean).map((row: any, rIdx: number) => ({
                     id: row.id || `bk_${idx}_${rIdx}`,
                     workDescription: String(row.workDescription || ''),
-                    executedQuantity: Number(row.executedQuantity) || 0,
-                    executedValue: Number(row.executedValue) || 0,
+                    executedQuantity: roundTo2(row.executedQuantity),
+                    executedValue: roundTo2(row.executedValue),
                     isCustomValue: Boolean(row.isCustomValue)
                 }))
                 : undefined
@@ -58,8 +64,8 @@ const normalizeBoqList = (items: any[] = []): BOQItem[] => {
 const normalizePaymentsList = (payments: any[] = []): ProjectPayment[] => {
     if (!Array.isArray(payments)) return [];
     return payments.filter(Boolean).map((p, idx) => {
-        const cum = Number(p.cumulativeAmount) || Number(p.amount) || Number(p.netAmount) || 0;
-        const net = p.netAmount !== undefined ? Number(p.netAmount) : (Number(p.amount) || cum);
+        const cum = roundTo2(Number(p.cumulativeAmount) || Number(p.amount) || Number(p.netAmount) || 0);
+        const net = p.netAmount !== undefined ? roundTo2(p.netAmount) : roundTo2(Number(p.amount) || cum);
         return {
             ...p,
             id: p.id || `pay_${p.date || 'nodate'}_${p.invoiceNumber || p.number || idx}`,
@@ -103,19 +109,33 @@ const toEnglishDigits = (val: string): string =>
   String(val || '')
     .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
     .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/٫/g, '.');
+    .replace(/[٫,،]/g, '.');
+
+const sanitizeDecimalTyping = (raw: string): string => {
+  const normalized = toEnglishDigits(raw);
+  let cleaned = normalized.replace(/[^0-9.]/g, '');
+  const dotIdx = cleaned.indexOf('.');
+  if (dotIdx !== -1) {
+    const intPart = cleaned.slice(0, dotIdx);
+    const decPart = cleaned.slice(dotIdx + 1).replace(/\./g, '').slice(0, 2);
+    cleaned = `${intPart}.${decPart}`;
+  }
+  return cleaned;
+};
 
 const WesternNumberInput: React.FC<{
   value: number;
   onChangeValue: (val: number) => void;
   className?: string;
   placeholder?: string;
-}> = ({ value, onChangeValue, className = '', placeholder = '0' }) => {
-  const safeVal = isNaN(Number(value)) ? 0 : Number(value);
+  min?: number;
+  max?: number;
+}> = ({ value, onChangeValue, className = '', placeholder = '0', min, max }) => {
+  const safeVal = isNaN(Number(value)) ? 0 : roundTo2(Number(value));
   const [text, setText] = useState<string>(() => toEnglishDigits(String(safeVal)));
 
   useEffect(() => {
-    const parsed = text === '' || text === '.' ? 0 : Number(toEnglishDigits(text));
+    const parsed = text === '' || text === '.' ? 0 : roundTo2(Number(toEnglishDigits(text)));
     if (isNaN(parsed) || parsed !== safeVal) {
       setText(toEnglishDigits(String(safeVal)));
     }
@@ -133,23 +153,25 @@ const WesternNumberInput: React.FC<{
       onFocus={(e) => e.target.select()}
       onBlur={() => {
         const parsed = text === '' || text === '.' ? 0 : Number(toEnglishDigits(text));
-        const finalNum = isNaN(parsed) ? 0 : parsed;
+        let finalNum = isNaN(parsed) ? 0 : roundTo2(parsed);
+        if (min !== undefined && finalNum < min) finalNum = min;
+        if (max !== undefined && finalNum > max) finalNum = max;
+        finalNum = roundTo2(finalNum);
         setText(String(finalNum));
+        if (finalNum !== safeVal) onChangeValue(finalNum);
       }}
       onChange={(e) => {
-        const normalized = toEnglishDigits(e.target.value);
-        // Keep digits and at most one decimal point
-        let cleaned = normalized.replace(/[^0-9.]/g, '');
-        const dotIdx = cleaned.indexOf('.');
-        if (dotIdx !== -1) {
-          cleaned = cleaned.slice(0, dotIdx + 1) + cleaned.slice(dotIdx + 1).replace(/./g, '');
-        }
+        const cleaned = sanitizeDecimalTyping(e.target.value);
         setText(cleaned);
         if (cleaned === '' || cleaned === '.') {
-          onChangeValue(0);
+          onChangeValue(min !== undefined && min > 0 ? min : 0);
         } else {
-          const num = Number(cleaned);
-          if (!isNaN(num)) onChangeValue(num);
+          let num = roundTo2(Number(cleaned));
+          if (!isNaN(num)) {
+            if (min !== undefined && num < min) num = min;
+            if (max !== undefined && num > max) num = max;
+            onChangeValue(roundTo2(num));
+          }
         }
       }}
     />
@@ -510,6 +532,20 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     const [smartIpcAdvancePercent, setSmartIpcAdvancePercent] = useState<number>(0);
     const [smartIpcTaxesPercent, setSmartIpcTaxesPercent] = useState<number>(0);
     const [smartIpcDraftItems, setSmartIpcDraftItems] = useState<PaymentItem[]>([]);
+    const [manualPaymentItemModal, setManualPaymentItemModal] = useState<{
+        targetMode: 'saved' | 'smart';
+        paymentId?: string;
+        batchName: string;
+        itemCode: string;
+        description: string;
+        unit: string;
+        contractQuantity: number;
+        prevQuantity: number;
+        currQuantity: number;
+        totalQuantity: number;
+        unitPrice: number;
+        completionRatio: number;
+    } | null>(null);
 
     // Specific States (BOQ)
     const [isAnalyzingBOQ, setIsAnalyzingBOQ] = useState(false);
@@ -1566,16 +1602,16 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         }
         
         // Normalize Arabic digits & clean formatting
-        const cleanAmountStr = rawAmount.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '');
-        let cumulativeAmount = parseFloat(cleanAmountStr);
+        const cleanAmountStr = sanitizeDecimalTyping(rawAmount);
+        let cumulativeAmount = roundTo2(parseFloat(cleanAmountStr));
         if (isNaN(cumulativeAmount)) cumulativeAmount = 0;
         
         let previousCumulative = 0;
         if (masterData.payments.length > 0) {
-            previousCumulative = Math.max(...masterData.payments.map(p => p.cumulativeAmount || (p as any).amount || 0));
+            previousCumulative = roundTo2(Math.max(...masterData.payments.map(p => p.cumulativeAmount || (p as any).amount || 0)));
         }
         
-        let netAmount = cumulativeAmount > 0 ? (cumulativeAmount - previousCumulative) : 0;
+        let netAmount = cumulativeAmount > 0 ? roundTo2(cumulativeAmount - previousCumulative) : 0;
         if (netAmount < 0 && cumulativeAmount > 0) {
             if (!confirm(`قيمة المستخلص التراكمي (${cumulativeAmount.toLocaleString()}) أقل من السابق (${previousCumulative.toLocaleString()}). الصافي سيكون بالسالب (${netAmount.toLocaleString()}). هل أنت متأكد؟`)) return;
         }
@@ -1602,8 +1638,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     const saveEditPayment = (id: string) => { 
-        const parsedNet = parseFloat(String(tempEditPayAmount || '0').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '')) || 0;
-        const parsedCum = parseFloat(String(tempEditPayCumulative || '0').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).replace(/,/g, '')) || parsedNet;
+        const parsedNet = roundTo2(parseFloat(sanitizeDecimalTyping(String(tempEditPayAmount || '0'))) || 0);
+        const parsedCum = roundTo2(parseFloat(sanitizeDecimalTyping(String(tempEditPayCumulative || '0'))) || parsedNet);
         const updatedPayments = masterData.payments.map(p => p.id === id ? {
             ...p,
             cumulativeAmount: parsedCum > 0 ? parsedCum : parsedNet,
@@ -1653,6 +1689,129 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         );
     };
 
+    const recalculatePaymentTotals = (payment: ProjectPayment, items: PaymentItem[]): ProjectPayment => {
+        const newCumulative = roundTo2(items.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0));
+        const newGrossCurrent = roundTo2(items.reduce((sum, item) => {
+            const currVal = (Number(item.currQuantity) || 0) * (Number(item.unitPrice) || 0) * ((Number(item.completionRatio) || 100) / 100);
+            return sum + roundTo2(currVal);
+        }, 0));
+
+        const retAmt = roundTo2(newGrossCurrent * ((Number(payment.retentionPercent) || 0) / 100));
+        const advAmt = roundTo2(newGrossCurrent * ((Number(payment.advanceDeductionPercent) || 0) / 100));
+        const taxAmt = roundTo2(newGrossCurrent * ((Number(payment.taxesAndOtherPercent) || 0) / 100));
+        const totalDed = roundTo2(retAmt + advAmt + taxAmt);
+        const netAfterDed = roundTo2(Math.max(0, newGrossCurrent - totalDed));
+
+        return {
+            ...payment,
+            items,
+            cumulativeAmount: newCumulative,
+            grossCurrentWork: newGrossCurrent,
+            retentionAmount: retAmt,
+            advanceDeductionAmount: advAmt,
+            taxesAndOtherAmount: taxAmt,
+            netPayableAfterDeductions: netAfterDed,
+            netAmount: netAfterDed,
+            amount: netAfterDed
+        };
+    };
+
+    const openManualPaymentItemModal = (targetMode: 'saved' | 'smart', defaultBatchName: string, paymentId?: string) => {
+        const existingItems = targetMode === 'saved'
+            ? (masterData.payments.find(p => p.id === paymentId)?.items || [])
+            : smartIpcDraftItems;
+        const resolvedBatch = (defaultBatchName || '').trim() || 'تشوينات بالموقع';
+        const batchCount = existingItems.filter(it => (it.batchName || '').trim() === resolvedBatch).length;
+        setManualPaymentItemModal({
+            targetMode,
+            paymentId,
+            batchName: resolvedBatch,
+            itemCode: String(batchCount + 1),
+            description: '',
+            unit: 'م3',
+            contractQuantity: 0,
+            prevQuantity: 0,
+            currQuantity: 0,
+            totalQuantity: 0,
+            unitPrice: 0,
+            completionRatio: resolvedBatch.includes('تشوين') ? 75 : 100
+        });
+    };
+
+    const handleManualModalFieldChange = (field: string, val: any) => {
+        setManualPaymentItemModal(prev => {
+            if (!prev) return null;
+            const next: any = { ...prev, [field]: val };
+            if (field === 'prevQuantity' || field === 'currQuantity') {
+                next.totalQuantity = roundTo2((Number(next.prevQuantity) || 0) + (Number(next.currQuantity) || 0));
+            } else if (field === 'totalQuantity') {
+                next.currQuantity = roundTo2((Number(next.totalQuantity) || 0) - (Number(next.prevQuantity) || 0));
+            }
+            return next;
+        });
+    };
+
+    const confirmAddManualPaymentItem = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!manualPaymentItemModal) return;
+        const desc = (manualPaymentItemModal.description || '').trim();
+        if (!desc) return;
+
+        const prevQ = roundTo2(manualPaymentItemModal.prevQuantity);
+        const currQ = roundTo2(manualPaymentItemModal.currQuantity);
+        const totalQ = roundTo2(manualPaymentItemModal.totalQuantity);
+        const price = roundTo2(manualPaymentItemModal.unitPrice);
+        const ratio = roundTo2(manualPaymentItemModal.completionRatio || 100);
+        const totalVal = roundTo2(totalQ * price * (ratio / 100));
+
+        const newItem: PaymentItem = {
+            batchName: (manualPaymentItemModal.batchName || 'المقايسة الأساسية').trim(),
+            itemCode: (manualPaymentItemModal.itemCode || '-').trim(),
+            description: desc,
+            unit: (manualPaymentItemModal.unit || 'عدد').trim(),
+            contractQuantity: roundTo2(manualPaymentItemModal.contractQuantity),
+            prevQuantity: prevQ,
+            currQuantity: currQ,
+            totalQuantity: totalQ,
+            unitPrice: price,
+            completionRatio: ratio,
+            totalValue: totalVal
+        };
+
+        if (manualPaymentItemModal.targetMode === 'smart') {
+            setSmartIpcDraftItems(prev => [...prev, newItem]);
+            setManualPaymentItemModal(null);
+            return;
+        }
+
+        const targetId = manualPaymentItemModal.paymentId;
+        if (!targetId) return;
+        const updatedPayments = masterData.payments.map(p => {
+            if (p.id !== targetId) return p;
+            const nextItems = [...(p.items || []), newItem];
+            return recalculatePaymentTotals(p, nextItems);
+        });
+        const newData = { ...masterData, payments: updatedPayments };
+        setMasterData(newData);
+        setExpandedPaymentId(targetId);
+        setPaymentGroupTabFilter('الكل');
+        setManualPaymentItemModal(null);
+        triggerAutoSave(newData);
+    };
+
+    const deletePaymentItem = (paymentId: string, itemIndex: number) => {
+        const updatedPayments = masterData.payments.map(p => {
+            if (p.id !== paymentId) return p;
+            const nextItems = (p.items || []).filter((_, idx) => idx !== itemIndex);
+            return recalculatePaymentTotals(p, nextItems);
+        });
+        const newData = { ...masterData, payments: updatedPayments };
+        setMasterData(newData);
+        setEditingPaymentItemIndex(null);
+        setTempPaymentItem(null);
+        triggerAutoSave(newData);
+    };
+
     const handleTempItemChange = (field: keyof PaymentItem, value: any) => {
         if (field === 'totalQuantity' || field === 'prevQuantity' || field === 'currQuantity') {
             setEditingQtySettlementMode('none');
@@ -1661,31 +1820,30 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             if (!prev) return null;
             const updated = { ...prev, [field]: value };
 
-            const prevQ = parseFloat(updated.prevQuantity as any) || 0;
-            const currQ = parseFloat(updated.currQuantity as any) || 0;
-            const price = parseFloat(updated.unitPrice as any) || 0;
-            const ratio = parseFloat(updated.completionRatio as any) || 100;
+            const prevQ = roundTo2(parseFloat(updated.prevQuantity as any) || 0);
+            const currQ = roundTo2(parseFloat(updated.currQuantity as any) || 0);
+            const price = roundTo2(parseFloat(updated.unitPrice as any) || 0);
+            const ratio = roundTo2(parseFloat(updated.completionRatio as any) || 100);
 
             // STRICT MATH: Reverse Calculation if Total is changed
             if (field === 'totalQuantity') {
-                const newTotal = parseFloat(value) || 0;
+                const newTotal = roundTo2(parseFloat(value) || 0);
                 // Current = Total - Previous
-                updated.currQuantity = newTotal - prevQ;
-                // Total is set explicitly by input
+                updated.currQuantity = roundTo2(newTotal - prevQ);
+                updated.totalQuantity = newTotal;
             } else if (field === 'currQuantity' || field === 'prevQuantity') {
                 // Forward Calculation: Total = Prev + Curr
-                updated.totalQuantity = prevQ + currQ;
+                updated.totalQuantity = roundTo2(prevQ + currQ);
             }
 
             if ((field === 'totalQuantity' || field === 'currQuantity' || field === 'prevQuantity') && (Number(updated.totalQuantity) || 0) > editingOriginalTotalQty) {
-                const nextMax = Number(updated.totalQuantity) || 0;
+                const nextMax = roundTo2(Number(updated.totalQuantity) || 0);
                 setEditingOriginalTotalQty(nextMax);
                 updated.originalTotalQuantity = nextMax;
             }
 
             // Recalculate Value: Value = Total Qty * Unit Price * (Ratio/100)
-            // Note: Total Quantity is already updated above based on which field changed
-            updated.totalValue = (updated.totalQuantity || 0) * price * (ratio / 100);
+            updated.totalValue = roundTo2((Number(updated.totalQuantity) || 0) * price * (ratio / 100));
 
             return updated;
         });
@@ -1693,30 +1851,30 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
     const applyPaymentQuantitySettlementOption = (mode: 'contract' | 'limit125' | 'splitOver125' | 'restore') => {
         if (!tempPaymentItem) return;
-        const contractQ = Number(tempPaymentItem.contractQuantity) || 0;
+        const contractQ = roundTo2(Number(tempPaymentItem.contractQuantity) || 0);
         if (contractQ <= 0 && mode !== 'restore') return;
 
-        const prevQ = Number(tempPaymentItem.prevQuantity) || 0;
-        const price = Number(tempPaymentItem.unitPrice) || 0;
-        const ratio = Number(tempPaymentItem.completionRatio) || 100;
-        const max125 = Number((contractQ * 1.25).toFixed(3));
-        const sourceTotal = Math.max(
+        const prevQ = roundTo2(Number(tempPaymentItem.prevQuantity) || 0);
+        const price = roundTo2(Number(tempPaymentItem.unitPrice) || 0);
+        const ratio = roundTo2(Number(tempPaymentItem.completionRatio) || 100);
+        const max125 = roundTo2(contractQ * 1.25);
+        const sourceTotal = roundTo2(Math.max(
             editingOriginalTotalQty,
             Number(tempPaymentItem.originalTotalQuantity) || 0,
             Number(tempPaymentItem.totalQuantity) || 0
-        );
+        ));
 
         let targetTotal = sourceTotal;
         if (mode === 'contract') {
-            targetTotal = Number(contractQ.toFixed(3));
+            targetTotal = contractQ;
         } else if (mode === 'limit125') {
-            targetTotal = sourceTotal > max125 ? max125 : Number(sourceTotal.toFixed(3));
+            targetTotal = sourceTotal > max125 ? max125 : sourceTotal;
         } else if (mode === 'splitOver125' || mode === 'restore') {
-            targetTotal = Number(sourceTotal.toFixed(3));
+            targetTotal = sourceTotal;
         }
 
-        const newCurr = Number((targetTotal - prevQ).toFixed(3));
-        const newVal = Math.round(targetTotal * price * (ratio / 100));
+        const newCurr = roundTo2(targetTotal - prevQ);
+        const newVal = roundTo2(targetTotal * price * (ratio / 100));
 
         setEditingQtySettlementMode(mode === 'restore' ? 'none' : mode);
         setTempPaymentItem(prev => prev ? ({
@@ -1742,30 +1900,30 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const payment = { ...updatedPayments[targetPaymentIndex] };
 
         let newItems = [...(payment.items || [])];
-        const contractQ = Number(tempPaymentItem.contractQuantity) || 0;
-        const max125 = Number((contractQ * 1.25).toFixed(3));
-        const fullTotal = Math.max(
+        const contractQ = roundTo2(Number(tempPaymentItem.contractQuantity) || 0);
+        const max125 = roundTo2(contractQ * 1.25);
+        const fullTotal = roundTo2(Math.max(
             editingOriginalTotalQty,
             Number(tempPaymentItem.originalTotalQuantity) || 0,
             Number(tempPaymentItem.totalQuantity) || 0
-        );
-        const currentTotal = Number(tempPaymentItem.totalQuantity) || 0;
-        const excessQty = Number((fullTotal - max125).toFixed(3));
+        ));
+        const currentTotal = roundTo2(Number(tempPaymentItem.totalQuantity) || 0);
+        const excessQty = roundTo2(fullTotal - max125);
 
         if (editingQtySettlementMode === 'splitOver125' && contractQ > 0 && excessQty > 0) {
-            const prevQ = Number(tempPaymentItem.prevQuantity) || 0;
-            const price = Number(tempPaymentItem.unitPrice) || 0;
-            const ratio = Number(tempPaymentItem.completionRatio) || 100;
+            const prevQ = roundTo2(Number(tempPaymentItem.prevQuantity) || 0);
+            const price = roundTo2(Number(tempPaymentItem.unitPrice) || 0);
+            const ratio = roundTo2(Number(tempPaymentItem.completionRatio) || 100);
 
-            const origPrev = Number(Math.min(prevQ, max125).toFixed(3));
+            const origPrev = roundTo2(Math.min(prevQ, max125));
             const origTotal = max125;
-            const origCurr = Number((origTotal - origPrev).toFixed(3));
-            const origVal = Math.round(origTotal * price * (ratio / 100));
+            const origCurr = roundTo2(origTotal - origPrev);
+            const origVal = roundTo2(origTotal * price * (ratio / 100));
 
-            const excessPrev = Number(Math.max(0, prevQ - max125).toFixed(3));
+            const excessPrev = roundTo2(Math.max(0, prevQ - max125));
             const excessTotal = excessQty;
-            const excessCurr = Number((excessTotal - excessPrev).toFixed(3));
-            const excessVal = Math.round(excessTotal * price * (ratio / 100));
+            const excessCurr = roundTo2(excessTotal - excessPrev);
+            const excessVal = roundTo2(excessTotal * price * (ratio / 100));
 
             const matchedBoqForBatch = tempPaymentItem.boqItemId
                 ? masterData.boqItems.find(b => b.id === tempPaymentItem.boqItemId)
@@ -1809,9 +1967,16 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 newItems.push(excessItem);
             }
         } else {
-            const preservedSource = Math.max(fullTotal, currentTotal);
+            const preservedSource = roundTo2(Math.max(fullTotal, currentTotal));
             newItems[itemIndex] = {
                 ...tempPaymentItem,
+                contractQuantity: contractQ,
+                prevQuantity: roundTo2(tempPaymentItem.prevQuantity),
+                currQuantity: roundTo2(tempPaymentItem.currQuantity),
+                totalQuantity: currentTotal,
+                unitPrice: roundTo2(tempPaymentItem.unitPrice),
+                completionRatio: roundTo2(tempPaymentItem.completionRatio || 100),
+                totalValue: roundTo2(tempPaymentItem.totalValue),
                 originalTotalQuantity: preservedSource,
                 settlementMode: editingQtySettlementMode
             };
@@ -1826,36 +1991,13 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
             }
         }
 
-        payment.items = newItems;
-
         // 2. Recalculate Payment Totals (Cumulative & Gross Current Work)
-        const newCumulative = newItems.reduce((sum, item) => sum + (item.totalValue || 0), 0);
-        payment.cumulativeAmount = newCumulative;
-
-        const newGrossCurrent = newItems.reduce((sum, item) => {
-            const currVal = (item.currQuantity || 0) * (item.unitPrice || 0) * ((item.completionRatio || 100) / 100);
-            return sum + Math.round(currVal);
-        }, 0);
-
-        payment.grossCurrentWork = newGrossCurrent;
-        const retAmt = Math.round(newGrossCurrent * ((payment.retentionPercent || 0) / 100));
-        const advAmt = Math.round(newGrossCurrent * ((payment.advanceDeductionPercent || 0) / 100));
-        const taxAmt = Math.round(newGrossCurrent * ((payment.taxesAndOtherPercent || 0) / 100));
-        const totalDed = retAmt + advAmt + taxAmt;
-        const netAfterDed = Math.max(0, newGrossCurrent - totalDed);
-
-        payment.retentionAmount = retAmt;
-        payment.advanceDeductionAmount = advAmt;
-        payment.taxesAndOtherAmount = taxAmt;
-        payment.netPayableAfterDeductions = netAfterDed;
-        payment.netAmount = netAfterDed;
-
-        updatedPayments[targetPaymentIndex] = payment;
+        updatedPayments[targetPaymentIndex] = recalculatePaymentTotals(payment, newItems);
 
         // Also sync executedQuantity to BOQ if linked (preserve max executed qty)
         const updatedBoqItems = masterData.boqItems.map(b => {
             if (tempPaymentItem.boqItemId && b.id === tempPaymentItem.boqItemId) {
-                return { ...b, executedQuantity: Math.max(Number(b.executedQuantity) || 0, fullTotal, currentTotal) };
+                return { ...b, executedQuantity: roundTo2(Math.max(Number(b.executedQuantity) || 0, fullTotal, currentTotal)) };
             }
             return b;
         });
@@ -1928,15 +2070,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
 
         const draftItems: PaymentItem[] = linkableBoqItems.map(bItem => {
             const codeKey = `${String(bItem.itemCode).trim()}_${(bItem.description || '').slice(0, 25)}`;
-            const prevQty = prevQtyByBoqId.has(bItem.id)
+            const prevQty = roundTo2(prevQtyByBoqId.has(bItem.id)
                 ? prevQtyByBoqId.get(bItem.id)!
-                : (prevQtyByCode.get(codeKey) || 0);
-            const boqExecQty = Number(bItem.executedQuantity) || 0;
-            const totalQty = Math.max(boqExecQty, prevQty);
-            const currQty = Math.max(0, Number((totalQty - prevQty).toFixed(3)));
-            const price = Number(bItem.unitPrice) || 0;
+                : (prevQtyByCode.get(codeKey) || 0));
+            const boqExecQty = roundTo2(Number(bItem.executedQuantity) || 0);
+            const totalQty = roundTo2(Math.max(boqExecQty, prevQty));
+            const currQty = roundTo2(Math.max(0, totalQty - prevQty));
+            const price = roundTo2(Number(bItem.unitPrice) || 0);
             const ratio = 100;
-            const totalVal = Math.round(totalQty * price * (ratio / 100));
+            const totalVal = roundTo2(totalQty * price * (ratio / 100));
 
             return {
                 boqItemId: bItem.id,
@@ -1944,7 +2086,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                 itemCode: bItem.itemCode,
                 description: bItem.description,
                 unit: bItem.unit || 'م',
-                contractQuantity: Number(bItem.quantity) || 0,
+                contractQuantity: roundTo2(Number(bItem.quantity) || 0),
                 prevQuantity: prevQty,
                 currQuantity: currQty,
                 totalQuantity: totalQty,
@@ -1970,32 +2112,32 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         setSmartIpcDraftItems(prev => {
             const next = [...prev];
             const item = { ...next[index] };
-            const numVal = Math.max(0, parseFloat(String(rawVal || '0')) || 0);
+            const numVal = roundTo2(Math.max(0, parseFloat(String(rawVal ?? '0')) || 0));
 
-            let prevQ = Number(item.prevQuantity) || 0;
-            let currQ = Number(item.currQuantity) || 0;
-            let totalQ = Number(item.totalQuantity) || 0;
-            let ratio = Number(item.completionRatio) || 100;
-            const price = Number(item.unitPrice) || 0;
+            let prevQ = roundTo2(Number(item.prevQuantity) || 0);
+            let currQ = roundTo2(Number(item.currQuantity) || 0);
+            let totalQ = roundTo2(Number(item.totalQuantity) || 0);
+            let ratio = roundTo2(Number(item.completionRatio) || 100);
+            const price = roundTo2(Number(item.unitPrice) || 0);
 
             if (field === 'prevQuantity') {
                 prevQ = numVal;
-                totalQ = Number((prevQ + currQ).toFixed(3));
+                totalQ = roundTo2(prevQ + currQ);
             } else if (field === 'currQuantity') {
                 currQ = numVal;
-                totalQ = Number((prevQ + currQ).toFixed(3));
+                totalQ = roundTo2(prevQ + currQ);
             } else if (field === 'totalQuantity') {
                 totalQ = numVal;
-                currQ = Math.max(0, Number((totalQ - prevQ).toFixed(3)));
+                currQ = roundTo2(Math.max(0, totalQ - prevQ));
             } else if (field === 'completionRatio') {
-                ratio = Math.min(100, Math.max(0, numVal));
+                ratio = roundTo2(Math.min(100, Math.max(0, numVal)));
             }
 
             item.prevQuantity = prevQ;
             item.currQuantity = currQ;
             item.totalQuantity = totalQ;
             item.completionRatio = ratio;
-            item.totalValue = Math.round(totalQ * price * (ratio / 100));
+            item.totalValue = roundTo2(totalQ * price * (ratio / 100));
 
             next[index] = item;
             return next;
@@ -2003,24 +2145,24 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
 
     const smartIpcCalculations = useMemo(() => {
-        const itemsCumulativeValue = smartIpcDraftItems.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0);
-        const itemsCurrentPeriodValue = smartIpcDraftItems.reduce((sum, item) => {
+        const itemsCumulativeValue = roundTo2(smartIpcDraftItems.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0));
+        const itemsCurrentPeriodValue = roundTo2(smartIpcDraftItems.reduce((sum, item) => {
             const currQ = Number(item.currQuantity) || 0;
             const price = Number(item.unitPrice) || 0;
             const ratio = Number(item.completionRatio) || 100;
-            return sum + Math.round(currQ * price * (ratio / 100));
-        }, 0);
+            return sum + roundTo2(currQ * price * (ratio / 100));
+        }, 0));
 
-        const cumulativeAmount = Math.max(itemsCumulativeValue, previousTotalPayments + itemsCurrentPeriodValue);
+        const cumulativeAmount = roundTo2(Math.max(itemsCumulativeValue, previousTotalPayments + itemsCurrentPeriodValue));
         const grossCurrentWork = itemsCurrentPeriodValue > 0
             ? itemsCurrentPeriodValue
-            : Math.max(0, cumulativeAmount - previousTotalPayments);
+            : roundTo2(Math.max(0, cumulativeAmount - previousTotalPayments));
 
-        const retentionAmount = Math.round(grossCurrentWork * ((Number(smartIpcRetentionPercent) || 0) / 100));
-        const advanceDeductionAmount = Math.round(grossCurrentWork * ((Number(smartIpcAdvancePercent) || 0) / 100));
-        const taxesAndOtherAmount = Math.round(grossCurrentWork * ((Number(smartIpcTaxesPercent) || 0) / 100));
-        const totalDeductions = retentionAmount + advanceDeductionAmount + taxesAndOtherAmount;
-        const netPayableAfterDeductions = Math.max(0, grossCurrentWork - totalDeductions);
+        const retentionAmount = roundTo2(grossCurrentWork * ((Number(smartIpcRetentionPercent) || 0) / 100));
+        const advanceDeductionAmount = roundTo2(grossCurrentWork * ((Number(smartIpcAdvancePercent) || 0) / 100));
+        const taxesAndOtherAmount = roundTo2(grossCurrentWork * ((Number(smartIpcTaxesPercent) || 0) / 100));
+        const totalDeductions = roundTo2(retentionAmount + advanceDeductionAmount + taxesAndOtherAmount);
+        const netPayableAfterDeductions = roundTo2(Math.max(0, grossCurrentWork - totalDeductions));
 
         const activeItemsCount = smartIpcDraftItems.filter(i => (i.totalQuantity || 0) > 0 || (i.currQuantity || 0) > 0).length;
         const linkedLogsCount = smartIpcDraftItems.reduce((acc, i) => {
@@ -2426,28 +2568,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
     };
     const saveBOQItemEdit = () => {
         if (!editingBoqItem) return;
-        const qty = Number(editingBoqItem.quantity) || 0;
-        const price = Number(editingBoqItem.unitPrice) || 0;
+        const qty = roundTo2(editingBoqItem.quantity);
+        const price = roundTo2(editingBoqItem.unitPrice);
         const cleanedBreakdown = Array.isArray(editingBoqItem.executionBreakdown)
             ? editingBoqItem.executionBreakdown
                 .filter(row => row && (row.workDescription.trim() !== '' || Number(row.executedQuantity) > 0 || Number(row.executedValue) > 0))
                 .map(row => ({
                     ...row,
                     workDescription: row.workDescription || '',
-                    executedQuantity: Number(row.executedQuantity) || 0,
-                    executedValue: Number(row.executedValue) || 0
+                    executedQuantity: roundTo2(row.executedQuantity),
+                    executedValue: roundTo2(row.executedValue)
                 }))
             : undefined;
         const execQty = cleanedBreakdown && cleanedBreakdown.length > 0
-            ? Math.round(cleanedBreakdown.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000
-            : (Number(editingBoqItem.executedQuantity) || 0);
+            ? roundTo2(cleanedBreakdown.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0))
+            : roundTo2(editingBoqItem.executedQuantity);
         const updatedItem: BOQItem = {
             ...editingBoqItem,
             quantity: qty,
             unitPrice: price,
             executedQuantity: execQty,
             executionBreakdown: cleanedBreakdown && cleanedBreakdown.length > 0 ? cleanedBreakdown : undefined,
-            total: qty * price
+            total: roundTo2(qty * price)
         };
         const newData = {
             ...masterData,
@@ -3756,8 +3898,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
         const batchOrder: string[] = []; 
         const boqList = masterData.boqItems || [];
         boqList.forEach(item => { const bId = item.batchId || 'default'; if (!groupedItems[bId]) { groupedItems[bId] = []; batchOrder.push(bId); } groupedItems[bId].push(item); }); 
-        const grandTotalValue = boqList.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0); 
-        const grandExecutedValue = boqList.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0);
+        const grandTotalValue = roundTo2(boqList.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0)); 
+        const grandExecutedValue = roundTo2(boqList.reduce((sum, item) => sum + ((Number(item.executedQuantity) || 0) * (Number(item.unitPrice) || 0)), 0));
         return { groupedItems, batchOrder, grandTotalValue, grandExecutedValue };
     }, [masterData.boqItems]);
 
@@ -3990,8 +4132,8 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
               const isDefault = bId === 'default'; 
               const isCollapsed = collapsedBatches.has(bId); 
               const isRenaming = renamingBatchId === bId; 
-              const batchTotal = groupItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0); 
-              const batchExecutedTotal = groupItems.reduce((sum, item) => sum + (item.executedQuantity * item.unitPrice), 0); 
+              const batchTotal = roundTo2(groupItems.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)), 0)); 
+              const batchExecutedTotal = roundTo2(groupItems.reduce((sum, item) => sum + ((Number(item.executedQuantity) || 0) * (Number(item.unitPrice) || 0)), 0)); 
               
               return ( 
               <React.Fragment key={bId}>
@@ -4170,7 +4312,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                               <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الوحدة</span><span className="text-sm sm:text-base font-bold">{item.unit}</span></div> 
                                               <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الكمية</span><span className="text-sm sm:text-base font-bold font-mono">{item.quantity}</span></div> 
                                               <div className="flex flex-col border-l border-slate-200"><span className="text-xs text-slate-500 font-bold">الفئة</span><span className="text-sm sm:text-base font-bold font-mono">{item.unitPrice}</span></div> 
-                                              <div className="flex flex-col"><span className="text-xs text-slate-500 font-bold">الإجمالي</span><span className="text-sm sm:text-base font-bold font-mono">{Math.round(item.quantity * item.unitPrice)}</span></div> 
+                                              <div className="flex flex-col"><span className="text-xs text-slate-500 font-bold">الإجمالي</span><span className="text-sm sm:text-base font-bold font-mono">{roundTo2((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span></div> 
                                           </div>
                                           <div className="flex items-center justify-between gap-2 pt-1">
                                               {linkedLogs.length > 0 ? (
@@ -4697,12 +4839,12 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     <div className="flex flex-col gap-2 w-1/3">
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[7px] font-light text-slate-400">إجمالي الأعمال</label>
-                                            <input type="number" className="w-full p-2 text-xs rounded-lg border border-green-200 outline-none text-slate-900 font-bold h-9" placeholder="0.00" value={masterData.newPaymentCumulative} onChange={(e) => setMasterData({...masterData, newPaymentCumulative: e.target.value})} />
+                                            <input type="text" inputMode="decimal" lang="en" dir="ltr" className="w-full p-2 text-xs rounded-lg border border-green-200 outline-none text-slate-900 font-bold h-9 text-center font-mono" placeholder="0.00" value={masterData.newPaymentCumulative} onChange={(e) => setMasterData({...masterData, newPaymentCumulative: sanitizeDecimalTyping(e.target.value)})} />
                                         </div>
                                         
                                         <div className="text-[7px] text-green-700 font-light bg-green-50 px-2 py-1 rounded border border-green-100 flex flex-col justify-center h-full min-h-[36px]">
                                             <span className="opacity-70">صافي المستخلص:</span>
-                                            <span className="text-xs font-bold">{Math.max(0, (parseFloat(masterData.newPaymentCumulative) || 0) - previousTotalPayments).toLocaleString()}</span>
+                                            <span className="text-xs font-bold">{roundTo2(Math.max(0, (parseFloat(sanitizeDecimalTyping(masterData.newPaymentCumulative)) || 0) - previousTotalPayments)).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
                                         </div>
                                     </div>
                                     <div className="flex flex-col gap-1 flex-1">
@@ -4728,11 +4870,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </div>
                                                     <div className="flex flex-col">
                                                         <label className="text-[9px] font-bold text-slate-500 mb-0.5">إجمالي الأعمال</label>
-                                                        <input type="number" className="w-full p-2 text-xs rounded-lg border bg-white font-bold" value={tempEditPayCumulative} onChange={(e) => { setTempEditPayCumulative(e.target.value); setTempEditPayAmount(e.target.value); }} />
+                                                        <input type="text" inputMode="decimal" lang="en" dir="ltr" className="w-full p-2 text-xs rounded-lg border bg-white font-bold font-mono text-center" value={tempEditPayCumulative} onChange={(e) => { const v = sanitizeDecimalTyping(e.target.value); setTempEditPayCumulative(v); setTempEditPayAmount(v); }} />
                                                     </div>
                                                     <div className="flex flex-col">
                                                         <label className="text-[9px] font-bold text-green-700 mb-0.5">صافي المستخلص</label>
-                                                        <input type="number" className="w-full p-2 text-xs rounded-lg border bg-white font-bold text-green-800" value={tempEditPayAmount} onChange={(e) => setTempEditPayAmount(e.target.value)} />
+                                                        <input type="text" inputMode="decimal" lang="en" dir="ltr" className="w-full p-2 text-xs rounded-lg border bg-white font-bold font-mono text-center text-green-800" value={tempEditPayAmount} onChange={(e) => setTempEditPayAmount(sanitizeDecimalTyping(e.target.value))} />
                                                     </div>
                                                 </div>
                                                 <textarea className="w-full p-2 text-xs rounded-lg border bg-white font-bold" value={tempEditPayNote} onChange={(e) => setTempEditPayNote(e.target.value)} placeholder="البيان..." />
@@ -4799,7 +4941,20 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     </div>
                                                     <p className="text-slate-900 text-sm leading-relaxed font-bold whitespace-pre-wrap mt-1 opacity-80">{pay.note}</p>
                                                 </div>
-                                                {pay.items && pay.items.length > 0 && <button onClick={() => { setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id); setPaymentGroupTabFilter('الكل'); }} className="w-full bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600 mt-1">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>}
+                                                <div className="flex items-center gap-1.5 mt-1">
+                                                    {pay.items && pay.items.length > 0 ? (
+                                                        <button onClick={() => { setExpandedPaymentId(expandedPaymentId === pay.id ? null : pay.id); setPaymentGroupTabFilter('الكل'); }} className="flex-1 bg-white/30 hover:bg-white/60 p-1 rounded-lg transition flex items-center justify-center gap-1 text-[10px] font-bold text-slate-600">{expandedPaymentId === pay.id ? 'إخفاء التفاصيل' : `عرض البنود (${pay.items.length} بند)`}</button>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openManualPaymentItemModal('saved', 'تشوينات بالموقع', pay.id)}
+                                                            className="flex-1 bg-white/50 hover:bg-white/80 p-1.5 rounded-lg transition flex items-center justify-center gap-1.5 text-[10px] font-bold text-emerald-800 border border-emerald-300/60"
+                                                        >
+                                                            <i className="fa-solid fa-plus text-[9px]"></i>
+                                                            <span>إضافة بند يدوي للمستخلص (مثل تشوينات)</span>
+                                                        </button>
+                                                    )}
+                                                </div>
                                                 {expandedPaymentId === pay.id && pay.items && (() => {
                                                     // Group payment items by BOQ (تقسيم البنود في المستخلص طبقا للمقايسات)
                                                     const groupedPaymentItems: {
@@ -4886,32 +5041,49 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 return (
                                                                 <div key={group.batchName} className={`bg-white rounded-xl border-2 overflow-hidden shadow-xs ${isOver125Group ? 'border-rose-300' : 'border-indigo-200/80'}`}>
                                                                     {/* BOQ Group Header */}
-                                                                    <div className={`px-3 py-2 border-b flex flex-wrap items-center justify-between gap-2 ${
+                                                                    <div className={`px-3 py-2 border-b flex items-center justify-between gap-2 ${
                                                                         isOver125Group
                                                                             ? 'bg-gradient-to-r from-rose-50 via-amber-50 to-rose-50 border-rose-200'
                                                                             : 'bg-gradient-to-r from-indigo-50 via-blue-50 to-indigo-50 border-indigo-200'
                                                                     }`}>
-                                                                        <div className="flex items-center gap-2 min-w-0">
-                                                                            <div className={`w-6 h-6 rounded-lg text-white flex items-center justify-center shrink-0 shadow-2xs ${isOver125Group ? 'bg-rose-600' : 'bg-indigo-600'}`}>
-                                                                                <i className={`fa-solid ${isOver125Group ? 'fa-triangle-exclamation' : 'fa-layer-group'} text-[10px]`}></i>
+                                                                        <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                                <div className={`w-6 h-6 rounded-lg text-white flex items-center justify-center shrink-0 shadow-2xs ${isOver125Group ? 'bg-rose-600' : 'bg-indigo-600'}`}>
+                                                                                    <i className={`fa-solid ${isOver125Group ? 'fa-triangle-exclamation' : 'fa-layer-group'} text-[10px]`}></i>
+                                                                                </div>
+                                                                                <span className={`font-black text-xs sm:text-sm truncate ${isOver125Group ? 'text-rose-950' : 'text-indigo-950'}`}>
+                                                                                    {group.batchName}
+                                                                                </span>
+                                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 border ${
+                                                                                    isOver125Group
+                                                                                        ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                                                                        : 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                                                                                }`}>
+                                                                                    {group.entries.length} بند
+                                                                                </span>
                                                                             </div>
-                                                                            <span className={`font-black text-xs sm:text-sm truncate ${isOver125Group ? 'text-rose-950' : 'text-indigo-950'}`}>
-                                                                                {group.batchName}
-                                                                            </span>
-                                                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 border ${
-                                                                                isOver125Group
-                                                                                    ? 'bg-rose-100 text-rose-800 border-rose-200'
-                                                                                    : 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                                                                            <div className={`self-start bg-white px-2.5 py-1 rounded-lg border text-[10px] font-bold shadow-2xs shrink-0 ${
+                                                                                isOver125Group ? 'border-rose-200 text-rose-900' : 'border-indigo-200 text-indigo-900'
                                                                             }`}>
-                                                                                {group.entries.length} بند
-                                                                            </span>
+                                                                                <span className="text-slate-500 ml-1">{isOver125Group ? 'إجمالي التجاوز:' : 'إجمالي المقايسة:'}</span>
+                                                                                <span className={`font-mono font-black ${isOver125Group ? 'text-rose-800' : 'text-indigo-800'}`}>{roundTo2(group.subtotalValue).toLocaleString('en-US', { maximumFractionDigits: 2 })} ج.م</span>
+                                                                            </div>
                                                                         </div>
-                                                                        <div className={`bg-white px-2.5 py-1 rounded-lg border text-[10px] font-bold shadow-2xs shrink-0 ${
-                                                                            isOver125Group ? 'border-rose-200 text-rose-900' : 'border-indigo-200 text-indigo-900'
-                                                                        }`}>
-                                                                            <span className="text-slate-500 ml-1">{isOver125Group ? 'إجمالي التجاوز:' : 'إجمالي المقايسة:'}</span>
-                                                                            <span className={`font-mono font-black ${isOver125Group ? 'text-rose-800' : 'text-indigo-800'}`}>{group.subtotalValue.toLocaleString()} ج.م</span>
-                                                                        </div>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                openManualPaymentItemModal('saved', group.batchName, pay.id);
+                                                                            }}
+                                                                            className={`!min-h-0 w-9 h-9 rounded-full flex items-center justify-center shadow-sm border-2 transition active:scale-90 shrink-0 ${
+                                                                                isOver125Group
+                                                                                    ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-200'
+                                                                                    : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-200'
+                                                                            }`}
+                                                                            title="إضافة بند يدوي للمستخلص (مثل بند تشوينات)"
+                                                                        >
+                                                                            <i className="fa-solid fa-plus text-sm"></i>
+                                                                        </button>
                                                                     </div>
 
                                                                     {/* Items in this BOQ Group */}
@@ -4921,15 +5093,15 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                             const quantityColorClass = getQuantityStatusColor(item.totalQuantity || 0, item.contractQuantity || 0);
                                                                             const itemLinkedLogs = matchedBoq ? (logsByBoqItemId.get(matchedBoq.id) || []) : [];
 
-                                                                            const editContractQ = Number(tempPaymentItem?.contractQuantity) || 0;
-                                                                            const editCurrentTotalQ = Number(tempPaymentItem?.totalQuantity) || 0;
-                                                                            const editSourceTotalQ = Math.max(
+                                                                            const editContractQ = roundTo2(Number(tempPaymentItem?.contractQuantity) || 0);
+                                                                            const editCurrentTotalQ = roundTo2(Number(tempPaymentItem?.totalQuantity) || 0);
+                                                                            const editSourceTotalQ = roundTo2(Math.max(
                                                                                 editingOriginalTotalQty,
                                                                                 Number(tempPaymentItem?.originalTotalQuantity) || 0,
                                                                                 editCurrentTotalQ
-                                                                            );
-                                                                            const editMax125Q = Number((editContractQ * 1.25).toFixed(3));
-                                                                            const editExcessOver125 = Number(Math.max(0, editSourceTotalQ - editMax125Q).toFixed(3));
+                                                                            ));
+                                                                            const editMax125Q = roundTo2(editContractQ * 1.25);
+                                                                            const editExcessOver125 = roundTo2(Math.max(0, editSourceTotalQ - editMax125Q));
                                                                             const showExceedSettlementOptions = isEditingThisItem && editContractQ > 0 && (
                                                                                 editSourceTotalQ > editContractQ || editingQtySettlementMode !== 'none'
                                                                             );
@@ -4945,19 +5117,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                                             <input type="text" className="w-full p-1.5 border rounded-lg" value={tempPaymentItem.description} onChange={(e) => handleTempItemChange('description', e.target.value)} />
                                                                                             
                                                                                             <div className="grid grid-cols-2 gap-2 text-center bg-slate-100 p-1.5 rounded-lg border border-slate-200 mb-1">
-                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">التعاقدية</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.contractQuantity} onChange={(e) => handleTempItemChange('contractQuantity', e.target.value)} /></div>
-                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">السابقة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.prevQuantity} onChange={(e) => handleTempItemChange('prevQuantity', e.target.value)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">التعاقدية</label><WesternNumberInput className="w-full p-1 border rounded text-center font-bold bg-white font-mono" value={Number(tempPaymentItem.contractQuantity) || 0} onChangeValue={(val) => handleTempItemChange('contractQuantity', val)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-500">السابقة</label><WesternNumberInput className="w-full p-1 border rounded text-center font-bold bg-white font-mono" value={Number(tempPaymentItem.prevQuantity) || 0} onChangeValue={(val) => handleTempItemChange('prevQuantity', val)} /></div>
                                                                                             </div>
 
                                                                                             <div className="grid grid-cols-3 gap-1 text-center">
-                                                                                                <div className="flex flex-col"><label className="text-[8px] text-blue-600 font-bold">الإجمالية (تلقائي)</label><input type="number" className="w-full p-1 border rounded text-center font-black text-blue-700 border-blue-200 bg-blue-50" value={tempPaymentItem.totalQuantity} onChange={(e) => handleTempItemChange('totalQuantity', e.target.value)} /></div>
-                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">الفئة</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.unitPrice} onChange={(e) => handleTempItemChange('unitPrice', e.target.value)} /></div>
-                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">نسبة %</label><input type="number" className="w-full p-1 border rounded text-center font-bold" value={tempPaymentItem.completionRatio} onChange={(e) => handleTempItemChange('completionRatio', e.target.value)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-blue-600 font-bold">الإجمالية (تلقائي)</label><WesternNumberInput className="w-full p-1 border rounded text-center font-black text-blue-700 border-blue-200 bg-blue-50 font-mono" value={Number(tempPaymentItem.totalQuantity) || 0} onChangeValue={(val) => handleTempItemChange('totalQuantity', val)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">الفئة</label><WesternNumberInput className="w-full p-1 border rounded text-center font-bold bg-white font-mono" value={Number(tempPaymentItem.unitPrice) || 0} onChangeValue={(val) => handleTempItemChange('unitPrice', val)} /></div>
+                                                                                                <div className="flex flex-col"><label className="text-[8px] text-slate-400">نسبة %</label><WesternNumberInput min={0} max={100} className="w-full p-1 border rounded text-center font-bold bg-white font-mono" value={tempPaymentItem.completionRatio ?? 100} onChangeValue={(val) => handleTempItemChange('completionRatio', val)} /></div>
                                                                                             </div>
                                                                                             
                                                                                             <div className="flex justify-between items-center bg-white p-1.5 rounded-lg border border-slate-200 mt-1">
-                                                                                                <span className="text-[9px] text-slate-400">الحالية (ناتج): {tempPaymentItem.currQuantity?.toLocaleString()}</span>
-                                                                                                <span className="font-black text-blue-800 font-mono">{(tempPaymentItem.totalValue || 0).toLocaleString()}</span>
+                                                                                                <span className="text-[9px] text-slate-400">الحالية (ناتج): {roundTo2(tempPaymentItem.currQuantity).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                                                                                                <span className="font-black text-blue-800 font-mono">{roundTo2(tempPaymentItem.totalValue || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
                                                                                             </div>
 
                                                                                             {showExceedSettlementOptions && (
@@ -5037,6 +5209,7 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                                             <div className="flex gap-2 mt-1">
                                                                                                 <button onClick={saveItemEdit} className="flex-1 bg-green-600 text-white py-1.5 rounded-lg font-bold hover:bg-green-700">حفظ فوري</button>
                                                                                                 <button onClick={() => { setEditingPaymentItemIndex(null); setTempPaymentItem(null); setEditingQtySettlementMode('none'); setEditingOriginalTotalQty(0); }} className="flex-1 bg-slate-200 text-slate-700 py-1.5 rounded-lg font-bold hover:bg-slate-300">إلغاء</button>
+                                                                                                <button type="button" onClick={() => deletePaymentItem(pay.id, i)} className="px-2.5 bg-red-50 text-red-600 border border-red-200 py-1.5 rounded-lg font-bold hover:bg-red-100" title="حذف البند من المستخلص"><i className="fa-solid fa-trash-can"></i></button>
                                                                                             </div>
                                                                                         </div>
                                                                                     ) : (
@@ -5092,6 +5265,14 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                 </div>
                                                                 );
                                                             })}
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openManualPaymentItemModal('saved', 'تشوينات بالموقع', pay.id)}
+                                                                className="w-full py-2 px-3 rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50/60 hover:bg-emerald-100 text-emerald-800 text-xs font-black flex items-center justify-center gap-1.5 transition"
+                                                            >
+                                                                <i className="fa-solid fa-plus text-[11px]"></i>
+                                                                <span>إضافة بند يدوي جديد للمستخلص (تشوينات / مستجد)</span>
+                                                            </button>
                                                         </div>
                                                     );
                                                 })()}
@@ -5381,11 +5562,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                             {(() => {
                                                 const rows: BOQBreakdownEntry[] = Array.isArray(editingBoqItem.executionBreakdown) ? editingBoqItem.executionBreakdown : [];
                                                 const unitPriceVal = Number(editingBoqItem.unitPrice) || 0;
-                                                const totalBreakdownQty = Math.round(rows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000;
-                                                const totalBreakdownValue = Math.round(rows.reduce((sum, r) => sum + (Number(r.executedValue) || 0), 0) * 100) / 100;
+                                                const totalBreakdownQty = roundTo2(rows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0));
+                                                const totalBreakdownValue = roundTo2(rows.reduce((sum, r) => sum + (Number(r.executedValue) || 0), 0));
 
                                                 const updateRows = (nextRows: BOQBreakdownEntry[], syncExecQty: boolean = true) => {
-                                                    const sumQty = Math.round(nextRows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0) * 1000) / 1000;
+                                                    const sumQty = roundTo2(nextRows.reduce((sum, r) => sum + (Number(r.executedQuantity) || 0), 0));
                                                     setEditingBoqItem({
                                                         ...editingBoqItem,
                                                         executionBreakdown: nextRows,
@@ -6661,18 +6842,28 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                 </span>
                                             )}
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => setSmartIpcShowAllBoq(!smartIpcShowAllBoq)}
-                                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 shadow-2xs ${
-                                                smartIpcShowAllBoq
-                                                    ? 'bg-indigo-600 text-white border-indigo-600'
-                                                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                                            }`}
-                                        >
-                                            <i className="fa-solid fa-filter text-[10px]"></i>
-                                            <span>{smartIpcShowAllBoq ? 'عرض البنود المنفذة فقط' : `عرض جميع بنود المقايسة (${smartIpcDraftItems.length})`}</span>
-                                        </button>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                            <button
+                                                type="button"
+                                                onClick={() => openManualPaymentItemModal('smart', 'تشوينات بالموقع')}
+                                                className="px-3 py-1.5 rounded-xl text-xs font-bold border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 transition flex items-center gap-1.5 shadow-2xs"
+                                            >
+                                                <i className="fa-solid fa-plus text-[10px]"></i>
+                                                <span>بند يدوي / تشوينات</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSmartIpcShowAllBoq(!smartIpcShowAllBoq)}
+                                                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 shadow-2xs ${
+                                                    smartIpcShowAllBoq
+                                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                                                }`}
+                                            >
+                                                <i className="fa-solid fa-filter text-[10px]"></i>
+                                                <span>{smartIpcShowAllBoq ? 'عرض البنود المنفذة فقط' : `عرض جميع بنود المقايسة (${smartIpcDraftItems.length})`}</span>
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
 
@@ -6730,9 +6921,19 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                             {group.entries.length} بند
                                                         </span>
                                                     </div>
-                                                    <div className="bg-white/10 border border-white/20 px-3 py-1 rounded-xl text-[11px] font-bold text-white shrink-0">
-                                                        <span className="text-indigo-200 ml-1">إجمالي المقايسة:</span>
-                                                        <span className="font-mono font-black text-amber-300">{group.subtotalValue.toLocaleString()} ج.م</span>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <div className="bg-white/10 border border-white/20 px-3 py-1 rounded-xl text-[11px] font-bold text-white">
+                                                            <span className="text-indigo-200 ml-1">إجمالي المقايسة:</span>
+                                                            <span className="font-mono font-black text-amber-300">{roundTo2(group.subtotalValue).toLocaleString('en-US', { maximumFractionDigits: 2 })} ج.م</span>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openManualPaymentItemModal('smart', group.batchName)}
+                                                            className="!min-h-0 w-8 h-8 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white flex items-center justify-center shadow-sm border border-white/30 transition active:scale-90"
+                                                            title="إضافة بند يدوي تحت هذا الباب (مثل تشوينات)"
+                                                        >
+                                                            <i className="fa-solid fa-plus text-xs"></i>
+                                                        </button>
                                                     </div>
                                                 </div>
 
@@ -6801,42 +7002,35 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                                     </div>
                                                                     <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
                                                                         <span className="text-[9px] font-bold text-slate-500 block mb-0.5">السابقة</span>
-                                                                        <input
-                                                                            type="number"
-                                                                            step="any"
-                                                                            value={item.prevQuantity ?? 0}
-                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'prevQuantity', e.target.value)}
+                                                                        <WesternNumberInput
+                                                                            value={Number(item.prevQuantity) || 0}
+                                                                            onChangeValue={(val) => handleSmartDraftItemChange(idx, 'prevQuantity', val)}
                                                                             className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-blue-500"
                                                                         />
                                                                     </div>
                                                                     <div className="bg-emerald-50 rounded-xl p-1.5 border border-emerald-300">
                                                                         <span className="text-[9px] font-black text-emerald-800 block mb-0.5">الحالية (الفترة)</span>
-                                                                        <input
-                                                                            type="number"
-                                                                            step="any"
-                                                                            value={item.currQuantity ?? 0}
-                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'currQuantity', e.target.value)}
+                                                                        <WesternNumberInput
+                                                                            value={Number(item.currQuantity) || 0}
+                                                                            onChangeValue={(val) => handleSmartDraftItemChange(idx, 'currQuantity', val)}
                                                                             className="w-full bg-white border border-emerald-400 rounded-lg text-center font-mono font-black text-xs text-emerald-900 py-1 outline-none focus:ring-1 focus:ring-emerald-500"
                                                                         />
                                                                     </div>
                                                                     <div className={`rounded-xl p-1.5 border ${isOverContract ? 'bg-amber-50 border-amber-300' : 'bg-blue-50 border-blue-200'}`}>
                                                                         <span className="text-[9px] font-black text-blue-800 block mb-0.5">الإجمالية التراكمية</span>
-                                                                        <input
-                                                                            type="number"
-                                                                            step="any"
-                                                                            value={item.totalQuantity ?? 0}
-                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'totalQuantity', e.target.value)}
+                                                                        <WesternNumberInput
+                                                                            value={Number(item.totalQuantity) || 0}
+                                                                            onChangeValue={(val) => handleSmartDraftItemChange(idx, 'totalQuantity', val)}
                                                                             className="w-full bg-white border border-blue-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 py-1 outline-none focus:ring-1 focus:ring-blue-500"
                                                                         />
                                                                     </div>
                                                                     <div className="bg-slate-50 rounded-xl p-1.5 border border-slate-200">
                                                                         <span className="text-[9px] font-bold text-slate-600 block mb-0.5">نسبة الصرف %</span>
-                                                                        <input
-                                                                            type="number"
+                                                                        <WesternNumberInput
                                                                             min={0}
                                                                             max={100}
                                                                             value={item.completionRatio ?? 100}
-                                                                            onChange={(e) => handleSmartDraftItemChange(idx, 'completionRatio', e.target.value)}
+                                                                            onChangeValue={(val) => handleSmartDraftItemChange(idx, 'completionRatio', val)}
                                                                             className="w-full bg-white border border-slate-300 rounded-lg text-center font-mono font-bold text-xs text-slate-800 py-1 outline-none focus:border-indigo-500"
                                                                         />
                                                                     </div>
@@ -6891,13 +7085,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     ))}
                                                 </div>
                                                 <div className="flex items-center gap-1 shrink-0">
-                                                    <input
-                                                        type="number"
+                                                    <WesternNumberInput
                                                         min={0}
                                                         max={100}
-                                                        step="any"
                                                         value={smartIpcRetentionPercent}
-                                                        onChange={(e) => setSmartIpcRetentionPercent(parseFloat(e.target.value) || 0)}
+                                                        onChangeValue={(val) => setSmartIpcRetentionPercent(val)}
                                                         className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
                                                     />
                                                     <span className="text-xs font-black text-slate-500">%</span>
@@ -6934,13 +7126,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     ))}
                                                 </div>
                                                 <div className="flex items-center gap-1 shrink-0">
-                                                    <input
-                                                        type="number"
+                                                    <WesternNumberInput
                                                         min={0}
                                                         max={100}
-                                                        step="any"
                                                         value={smartIpcAdvancePercent}
-                                                        onChange={(e) => setSmartIpcAdvancePercent(parseFloat(e.target.value) || 0)}
+                                                        onChangeValue={(val) => setSmartIpcAdvancePercent(val)}
                                                         className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
                                                     />
                                                     <span className="text-xs font-black text-slate-500">%</span>
@@ -6977,13 +7167,11 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                                     ))}
                                                 </div>
                                                 <div className="flex items-center gap-1 shrink-0">
-                                                    <input
-                                                        type="number"
+                                                    <WesternNumberInput
                                                         min={0}
                                                         max={100}
-                                                        step="any"
                                                         value={smartIpcTaxesPercent}
-                                                        onChange={(e) => setSmartIpcTaxesPercent(parseFloat(e.target.value) || 0)}
+                                                        onChangeValue={(val) => setSmartIpcTaxesPercent(val)}
                                                         className="w-16 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono font-black text-center text-slate-900 outline-none focus:border-emerald-500"
                                                     />
                                                     <span className="text-xs font-black text-slate-500">%</span>
@@ -7040,6 +7228,194 @@ export default function ProjectMasterData({ projectId, isOpen, onClose, onReport
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Manual Payment Item Modal (e.g. تشوينات / بند مستجد) */}
+                {manualPaymentItemModal && (
+                    <div className="fixed inset-0 z-[1780] bg-slate-900/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in" onClick={() => setManualPaymentItemModal(null)}>
+                        <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-scale-in flex flex-col max-h-[92vh]" onClick={(e) => e.stopPropagation()}>
+                            <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center">
+                                        <i className="fa-solid fa-plus text-sm text-amber-300"></i>
+                                    </div>
+                                    <div>
+                                        <h3 className="font-black text-sm text-white">إضافة بند يدوي للمستخلص</h3>
+                                        <p className="text-[10px] text-emerald-100 font-bold">إضافة تشوينات بالموقع أو بنود أعمال مستجدة بأرقام عشرية دقيقة</p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setManualPaymentItemModal(null)}
+                                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition"
+                                >
+                                    <i className="fa-solid fa-times text-xs"></i>
+                                </button>
+                            </div>
+
+                            <form onSubmit={confirmAddManualPaymentItem} className="p-4 space-y-3 overflow-y-auto custom-scrollbar flex-1">
+                                {/* Quick Presets */}
+                                <div className="flex items-center gap-2 flex-wrap bg-slate-50 p-2 rounded-xl border border-slate-200">
+                                    <span className="text-[10px] font-black text-slate-600 ml-1">قوالب سريعة:</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setManualPaymentItemModal(prev => prev ? ({
+                                            ...prev,
+                                            batchName: 'تشوينات بالموقع',
+                                            itemCode: prev.itemCode || 'تشوين-1',
+                                            description: 'تشوينات خامات ومواد بالموقع طبقاً للمعاينة',
+                                            unit: 'م3',
+                                            completionRatio: 75
+                                        }) : null)}
+                                        className="px-2.5 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-[10px] font-black transition"
+                                    >
+                                        + بند تشوينات (75%)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setManualPaymentItemModal(prev => prev ? ({
+                                            ...prev,
+                                            batchName: 'بنود مستجدة وإضافية',
+                                            itemCode: prev.itemCode || 'مستجد-1',
+                                            description: 'بند أعمال مستجد / إضافي بالموقع',
+                                            completionRatio: 100
+                                        }) : null)}
+                                        className="px-2.5 py-1 rounded-lg bg-indigo-100 hover:bg-indigo-200 text-indigo-900 border border-indigo-300 text-[10px] font-black transition"
+                                    >
+                                        + بند مستجد (100%)
+                                    </button>
+                                </div>
+
+                                {/* Batch / Section Name */}
+                                <div>
+                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">اسم الباب / المقايسة التابع لها البند:</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={manualPaymentItemModal.batchName}
+                                        onChange={(e) => handleManualModalFieldChange('batchName', e.target.value)}
+                                        placeholder="مثال: تشوينات بالموقع / البدرشين اعتيادي"
+                                        className="w-full p-2 text-xs font-bold border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:border-emerald-500 outline-none"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 mb-1">كود / رقم البند</label>
+                                        <input
+                                            type="text"
+                                            value={manualPaymentItemModal.itemCode}
+                                            onChange={(e) => handleManualModalFieldChange('itemCode', toEnglishDigits(e.target.value))}
+                                            className="w-full p-2 text-xs font-bold font-mono text-center border border-slate-300 rounded-xl bg-slate-50 focus:bg-white outline-none"
+                                            placeholder="1.1"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 mb-1">الوحدة</label>
+                                        <input
+                                            type="text"
+                                            value={manualPaymentItemModal.unit}
+                                            onChange={(e) => handleManualModalFieldChange('unit', e.target.value)}
+                                            className="w-full p-2 text-xs font-bold text-center border border-slate-300 rounded-xl bg-slate-50 focus:bg-white outline-none"
+                                            placeholder="م3 / طن / عدد"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 mb-1">الكمية التعاقدية</label>
+                                        <WesternNumberInput
+                                            value={manualPaymentItemModal.contractQuantity}
+                                            onChangeValue={(val) => handleManualModalFieldChange('contractQuantity', val)}
+                                            className="w-full p-2 text-xs font-bold font-mono text-center border border-slate-300 rounded-xl bg-slate-50 focus:bg-white outline-none"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-[11px] font-bold text-slate-700 mb-1">منطوق البند / بيان الأعمال:</label>
+                                    <textarea
+                                        required
+                                        rows={2}
+                                        value={manualPaymentItemModal.description}
+                                        onChange={(e) => handleManualModalFieldChange('description', e.target.value)}
+                                        placeholder="مثال: تشوين حديد تسليح / طوب / أسمنت بالموقع..."
+                                        className="w-full p-2 text-xs font-bold border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:border-emerald-500 outline-none resize-none"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-2xl border border-slate-200">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 text-center mb-1">الكمية السابقة</label>
+                                        <WesternNumberInput
+                                            value={manualPaymentItemModal.prevQuantity}
+                                            onChangeValue={(val) => handleManualModalFieldChange('prevQuantity', val)}
+                                            className="w-full p-1.5 text-xs font-bold font-mono text-center border border-slate-300 rounded-xl bg-white outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-emerald-700 text-center mb-1">الكمية الحالية</label>
+                                        <WesternNumberInput
+                                            value={manualPaymentItemModal.currQuantity}
+                                            onChangeValue={(val) => handleManualModalFieldChange('currQuantity', val)}
+                                            className="w-full p-1.5 text-xs font-black font-mono text-center border border-emerald-400 rounded-xl bg-white text-emerald-900 outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-blue-700 text-center mb-1">الإجمالية التراكمية</label>
+                                        <WesternNumberInput
+                                            value={manualPaymentItemModal.totalQuantity}
+                                            onChangeValue={(val) => handleManualModalFieldChange('totalQuantity', val)}
+                                            className="w-full p-1.5 text-xs font-black font-mono text-center border border-blue-300 rounded-xl bg-blue-50 text-blue-900 outline-none"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 text-center mb-1">الفئة (سعر الوحدة ج.م)</label>
+                                        <WesternNumberInput
+                                            value={manualPaymentItemModal.unitPrice}
+                                            onChangeValue={(val) => handleManualModalFieldChange('unitPrice', val)}
+                                            className="w-full p-2 text-xs font-bold font-mono text-center border border-slate-300 rounded-xl bg-slate-50 focus:bg-white outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-600 text-center mb-1">نسبة الصرف % (75% للتشوينات)</label>
+                                        <WesternNumberInput
+                                            min={0}
+                                            max={100}
+                                            value={manualPaymentItemModal.completionRatio}
+                                            onChangeValue={(val) => handleManualModalFieldChange('completionRatio', val)}
+                                            className="w-full p-2 text-xs font-bold font-mono text-center border border-slate-300 rounded-xl bg-slate-50 focus:bg-white outline-none"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="bg-indigo-950 text-white rounded-2xl p-3 flex items-center justify-between">
+                                    <span className="text-xs font-bold text-indigo-200">إجمالي قيمة البند المحسوبة:</span>
+                                    <span className="font-mono font-black text-base text-amber-300">
+                                        {roundTo2((Number(manualPaymentItemModal.totalQuantity) || 0) * (Number(manualPaymentItemModal.unitPrice) || 0) * ((Number(manualPaymentItemModal.completionRatio) || 100) / 100)).toLocaleString('en-US', { maximumFractionDigits: 2 })} ج.م
+                                    </span>
+                                </div>
+
+                                <div className="flex gap-2 pt-1">
+                                    <button
+                                        type="submit"
+                                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl font-black text-xs shadow-md transition flex items-center justify-center gap-1.5"
+                                    >
+                                        <i className="fa-solid fa-check"></i>
+                                        <span>إضافة البند للمستخلص</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setManualPaymentItemModal(null)}
+                                        className="px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-bold text-xs transition"
+                                    >
+                                        إلغاء
+                                    </button>
+                                </div>
+                            </form>
                         </div>
                     </div>
                 )}

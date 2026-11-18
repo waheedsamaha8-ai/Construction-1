@@ -25,6 +25,15 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
   const [isFullScreen, setIsFullScreen] = useState(!!document.fullscreenElement);
   const [showConfirmClear, setShowConfirmClear] = useState(false); // State for confirm modal
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showAiRotationModal, setShowAiRotationModal] = useState(false);
+  const [aiRotationStatus, setAiRotationStatus] = useState<{
+    smartRotationEnabled: boolean;
+    totalConfiguredKeys: number;
+    healthyKeysCount: number;
+    cooldownKeysCount: number;
+    deadKeysCount: number;
+  } | null>(null);
+  const [loadingAiStatus, setLoadingAiStatus] = useState(false);
   
   // PWA Install State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -151,6 +160,23 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setShowSyncTroubleshoot(false);
   };
 
+  const openAiRotationStatusModal = async () => {
+      setShowSettingsMenu(false);
+      setShowAiRotationModal(true);
+      setLoadingAiStatus(true);
+      try {
+          const res = await fetch('/api/gemini/rotation-status');
+          if (res.ok) {
+              const data = await res.json();
+              setAiRotationStatus(data);
+          }
+      } catch (e) {
+          console.warn('Could not fetch AI rotation status:', e);
+      } finally {
+          setLoadingAiStatus(false);
+      }
+  };
+
   return (
     // MAIN ARCHITECTURE CHANGE: Fixed height container (100dvh) with Flex Column.
     // The main content area scrolls internally (overflow-y-auto).
@@ -211,6 +237,22 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                         <div className="text-right">
                           <div className="text-xs font-bold text-white">{isFullScreen ? 'إنهاء ملء الشاشة' : 'وضع ملء الشاشة'}</div>
                           <div className="text-[10px] text-slate-400">عرض التطبيق بكامل الشاشة</div>
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* AI Smart Rotation Server Status (Read-Only, Zero Client Secrets) */}
+                    <button
+                      onClick={openAiRotationStatusModal}
+                      className="w-full px-3 py-2.5 rounded-xl flex items-center justify-between hover:bg-white/10 transition text-xs font-bold"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-indigo-600/80 text-amber-300 flex items-center justify-center">
+                          <i className="fa-solid fa-arrows-spin text-xs"></i>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs font-bold text-white">التدوير الذكي للذكاء الاصطناعي</div>
+                          <div className="text-[10px] text-slate-400">حالة الخادم وتوزيع المفاتيح الآمن</div>
                         </div>
                       </div>
                     </button>
@@ -342,6 +384,83 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                   <p className="text-[9px] text-slate-400 mt-3 font-bold">
                       ملاحظة: البيانات المحفوظة محلياً لن تتأثر، ولكن التعديلات الأخيرة التي لم ترفع للسحابة قد لا تظهر للمستخدمين الآخرين.
                   </p>
+              </div>
+          </div>
+      )}
+
+      {/* AI Smart Rotation Status Modal (No API Keys Exposed/Entered in UI) */}
+      {showAiRotationModal && (
+          <div className="fixed inset-0 bg-slate-900/65 z-[1000] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" onClick={() => setShowAiRotationModal(false)}>
+              <div className="bg-white rounded-3xl shadow-2xl p-5 w-full max-w-md animate-scale-in border border-slate-200" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                      <div className="flex items-center gap-2.5">
+                          <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center border border-indigo-200">
+                              <i className="fa-solid fa-shield-halved text-lg"></i>
+                          </div>
+                          <div>
+                              <h3 className="text-sm font-black text-slate-900">التدوير الذكي للذكاء الاصطناعي</h3>
+                              <p className="text-[10px] font-bold text-slate-500">مراقبة وتوزيع الطلبات على مستوى الخادم الآمن</p>
+                          </div>
+                      </div>
+                      <button
+                          onClick={() => setShowAiRotationModal(false)}
+                          className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition"
+                      >
+                          <i className="fa-solid fa-times text-xs"></i>
+                      </button>
+                  </div>
+
+                  {loadingAiStatus ? (
+                      <div className="py-8 flex flex-col items-center justify-center text-slate-500 gap-2">
+                          <i className="fa-solid fa-circle-notch fa-spin text-2xl text-indigo-600"></i>
+                          <span className="text-xs font-bold">جاري فحص حالة الخادم...</span>
+                      </div>
+                  ) : (
+                      <div className="space-y-3">
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                              <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-3">
+                                  <span className="text-[10px] font-bold text-indigo-700 block">إجمالي المنافذ</span>
+                                  <span className="font-mono font-black text-xl text-indigo-900">{aiRotationStatus?.totalConfiguredKeys ?? '-'}</span>
+                              </div>
+                              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
+                                  <span className="text-[10px] font-bold text-emerald-700 block">نشط وجاهز</span>
+                                  <span className="font-mono font-black text-xl text-emerald-800">{aiRotationStatus?.healthyKeysCount ?? '-'}</span>
+                              </div>
+                              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3">
+                                  <span className="text-[10px] font-bold text-amber-700 block">تهدئة مؤقتة</span>
+                                  <span className="font-mono font-black text-xl text-amber-800">{aiRotationStatus?.cooldownKeysCount ?? 0}</span>
+                              </div>
+                          </div>
+
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 text-xs text-slate-700 leading-relaxed space-y-1.5">
+                              <div className="font-black text-slate-900 flex items-center gap-1.5">
+                                  <i className="fa-solid fa-circle-check text-emerald-600"></i>
+                                  <span>التدوير التلقائي (Round-Robin + Cooldown) مفعّل بالخادم</span>
+                              </div>
+                              <p className="text-[11px] font-semibold text-slate-600">
+                                  لحماية مفاتيحك من التسريب، لا تُخزَّن أو تُدخل مفاتيح API داخل المتصفح. يمكنك إضافة أكثر من مفتاح بشكل آمن في إعدادات بيئة الخادم ضمن المتغير <span dir="ltr" className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-indigo-700">GEMINI_API_KEY</span> (مفصولة بفاصلة <span className="font-mono">,</span>)، وسيقوم الخادم تلقائياً بتوزيع الأحمال وتبديل أي مفتاح يصل للحد الأقصى فوراً.
+                              </p>
+                          </div>
+
+                          <div className="flex gap-2">
+                              <button
+                                  type="button"
+                                  onClick={openAiRotationStatusModal}
+                                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5"
+                              >
+                                  <i className="fa-solid fa-rotate text-[11px]"></i>
+                                  <span>تحديث الحالة</span>
+                              </button>
+                              <button
+                                  type="button"
+                                  onClick={() => setShowAiRotationModal(false)}
+                                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-bold text-xs transition"
+                              >
+                                  إغلاق
+                              </button>
+                          </div>
+                      </div>
+                  )}
               </div>
           </div>
       )}

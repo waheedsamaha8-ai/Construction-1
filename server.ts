@@ -31,12 +31,15 @@ if (fs.existsSync('.env')) {
   }
 }
 
-// --- SERVER-ONLY GEMINI API KEY MANAGEMENT ---
+// --- SERVER-ONLY GEMINI API KEY MANAGEMENT (SMART ROTATION & COOLDOWN) ---
 const deadKeysSet = new Set<string>();
+const rateLimitedUntilMap = new Map<string, number>();
+let currentKeyIndex = 0;
 
-const collectServerEnvKeys = (): string[] => {
+const collectAllConfiguredServerKeys = (): string[] => {
   const candidates = [
     process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEYS,
     process.env.GOOGLE_API_KEY,
     process.env.API_KEY,
   ];
@@ -44,15 +47,22 @@ const collectServerEnvKeys = (): string[] => {
   for (const cand of candidates) {
     if (!cand) continue;
     const parts = cand
-      .split(',')
-      .map(k => k.trim())
-      .filter(k => k.length > 0 && !deadKeysSet.has(k));
+      .split(/[,;\n\r]+/)
+      .map(k => k.trim().replace(/^["']|["']$/g, ''))
+      .filter(k => k.length > 0);
     keys.push(...parts);
   }
   return [...new Set(keys)];
 };
 
-let currentKeyIndex = 0;
+const collectServerEnvKeys = (): string[] => {
+  const now = Date.now();
+  const alive = collectAllConfiguredServerKeys().filter(k => !deadKeysSet.has(k));
+  const healthy = alive.filter(k => (rateLimitedUntilMap.get(k) || 0) <= now);
+  if (healthy.length > 0) return healthy;
+  // If all alive keys are temporarily cooled down, sort by earliest cooldown expiry
+  return [...alive].sort((a, b) => (rateLimitedUntilMap.get(a) || 0) - (rateLimitedUntilMap.get(b) || 0));
+};
 
 const getActiveServerKey = (): string => {
   const keys = collectServerEnvKeys();
@@ -60,9 +70,20 @@ const getActiveServerKey = (): string => {
   return keys[currentKeyIndex % keys.length];
 };
 
-const rotateServerKey = (): boolean => {
+const markKeyCooldown = (key: string, cooldownMs: number) => {
+  if (!key) return;
+  rateLimitedUntilMap.set(key, Date.now() + cooldownMs);
+};
+
+const rotateServerKey = (failedKey?: string, cooldownMs: number = 0): boolean => {
+  if (failedKey && cooldownMs > 0) {
+    markKeyCooldown(failedKey, cooldownMs);
+  }
   const keys = collectServerEnvKeys();
-  if (keys.length <= 1) return false;
+  if (keys.length === 0) return false;
+  if (keys.length === 1) {
+    return keys[0] !== failedKey;
+  }
   currentKeyIndex = (currentKeyIndex + 1) % keys.length;
   return true;
 };
@@ -176,6 +197,22 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', serverTime: new Date().toISOString() });
 });
 
+// Non-secret Smart Rotation Status (never exposes key strings or prefixes)
+app.get('/api/gemini/rotation-status', (_req: Request, res: Response) => {
+  const now = Date.now();
+  const allConfigured = collectAllConfiguredServerKeys();
+  const aliveKeys = allConfigured.filter(k => !deadKeysSet.has(k));
+  const cooldownKeysCount = aliveKeys.filter(k => (rateLimitedUntilMap.get(k) || 0) > now).length;
+  const healthyKeysCount = Math.max(0, aliveKeys.length - cooldownKeysCount);
+  res.json({
+    smartRotationEnabled: true,
+    totalConfiguredKeys: allConfigured.length,
+    healthyKeysCount,
+    cooldownKeysCount,
+    deadKeysCount: deadKeysSet.size,
+  });
+});
+
 // High-Speed HTTP Range Proxy for Google Drive Video & Media Streaming
 app.get('/api/drive/stream/:fileId', async (req: Request, res: Response) => {
   const fileId = String(req.params.fileId || '').trim();
@@ -265,6 +302,11 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
   let lastErrInfo = { status: 500, message: 'Failed to generate content' };
 
+  // Advance round-robin index slightly per incoming request when multiple healthy keys exist
+  if (serverKeys.length > 1) {
+    currentKeyIndex = (currentKeyIndex + 1) % serverKeys.length;
+  }
+
   for (const model of modelSequence) {
     const activeKeys = collectServerEnvKeys();
     const maxAttempts = Math.max(1, activeKeys.length);
@@ -335,18 +377,19 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
           ) {
             if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
               deadKeysSet.add(currentKey);
-              rotateServerKey();
+              rotateServerKey(currentKey);
               continue;
             }
             break;
           }
 
           if (lastErrInfo.status === 429 || lastErrInfo.status === 503) {
-            if (rotateServerKey()) {
-              await new Promise(r => setTimeout(r, 250));
+            const cooldownMs = lastErrInfo.status === 429 ? 60000 : 15000;
+            if (rotateServerKey(currentKey, cooldownMs)) {
+              await new Promise(r => setTimeout(r, 200));
               continue;
             }
-            await new Promise(r => setTimeout(r, 350));
+            await new Promise(r => setTimeout(r, 300));
             break;
           }
 
@@ -425,16 +468,17 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
 
         if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
           deadKeysSet.add(currentKey);
-          rotateServerKey();
+          rotateServerKey(currentKey);
           continue;
         }
         if (lastErrInfo.status === 429 || lastErrInfo.status === 503) {
-          if (rotateServerKey()) continue;
+          const cooldownMs = lastErrInfo.status === 429 ? 60000 : 15000;
+          if (rotateServerKey(currentKey, cooldownMs)) continue;
         }
         if (lastErrInfo.status === 400 || lastErrInfo.status === 403) {
           break;
         }
-        rotateServerKey();
+        rotateServerKey(currentKey);
       }
     }
   }
@@ -490,55 +534,93 @@ wss.on('connection', (clientWs: WebSocket, req) => {
         systemInstruction,
       };
 
-  const client = getAiClient();
-  const sessionPromise = client.live.connect({
-    model: requestedModel,
-    config: liveConfig,
-    callbacks: {
-      onmessage: (message: LiveServerMessage) => {
-        if (clientWs.readyState !== WebSocket.OPEN) return;
+  const connectLiveWithRotation = async () => {
+    const keysToTry = collectServerEnvKeys();
+    let lastError: any = null;
+    for (let i = 0; i < Math.max(1, keysToTry.length); i++) {
+      if (clientClosed) return null;
+      const candidateKey = getActiveServerKey();
+      if (!candidateKey) break;
+      try {
+        const client = getAiClient(candidateKey);
+        const session = await client.live.connect({
+          model: requestedModel,
+          config: liveConfig,
+          callbacks: {
+            onmessage: (message: LiveServerMessage) => {
+              if (clientWs.readyState !== WebSocket.OPEN) return;
 
-        const content = message.serverContent;
-        for (const part of content?.modelTurn?.parts ?? []) {
-          if (part.inlineData?.data) {
-            clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
-          }
-          if (part.text) {
-            clientWs.send(JSON.stringify({ text: part.text }));
-          }
+              const content = message.serverContent;
+              for (const part of content?.modelTurn?.parts ?? []) {
+                if (part.inlineData?.data) {
+                  clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
+                }
+                if (part.text) {
+                  clientWs.send(JSON.stringify({ text: part.text }));
+                }
+              }
+              if (content?.inputTranscription?.text) {
+                clientWs.send(JSON.stringify({ inputTranscript: content.inputTranscription.text }));
+              }
+              if (content?.outputTranscription?.text) {
+                clientWs.send(JSON.stringify({ outputTranscript: content.outputTranscription.text }));
+              }
+              if (content?.interrupted) {
+                clientWs.send(JSON.stringify({ interrupted: true }));
+              }
+              if (content?.turnComplete) {
+                clientWs.send(JSON.stringify({ turnComplete: true }));
+              }
+              if (message.toolCall) {
+                clientWs.send(JSON.stringify({ toolCall: message.toolCall }));
+              }
+            },
+            onclose: () => {
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify({ status: 'session_closed' }));
+              }
+            },
+            onerror: (err: any) => {
+              console.error('Gemini Live session error:', err);
+              const { status, message } = extractErrorInfo(err);
+              const msgLower = (message || '').toLowerCase();
+              if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
+                deadKeysSet.add(candidateKey);
+                rotateServerKey(candidateKey);
+              } else if (status === 429 || status === 503) {
+                rotateServerKey(candidateKey, status === 429 ? 60000 : 15000);
+              }
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify({ error: message || 'Live session error' }));
+              }
+            },
+          },
+        });
+        return session;
+      } catch (err: any) {
+        lastError = err;
+        const { status, message } = extractErrorInfo(err);
+        const msgLower = (message || '').toLowerCase();
+        if (msgLower.includes('api_key_invalid') || msgLower.includes('api key not valid') || msgLower.includes('leaked')) {
+          deadKeysSet.add(candidateKey);
+          rotateServerKey(candidateKey);
+          continue;
         }
-        if (content?.inputTranscription?.text) {
-          clientWs.send(JSON.stringify({ inputTranscript: content.inputTranscription.text }));
+        if (status === 429 || status === 503) {
+          rotateServerKey(candidateKey, status === 429 ? 60000 : 15000);
+          continue;
         }
-        if (content?.outputTranscription?.text) {
-          clientWs.send(JSON.stringify({ outputTranscript: content.outputTranscription.text }));
-        }
-        if (content?.interrupted) {
-          clientWs.send(JSON.stringify({ interrupted: true }));
-        }
-        if (content?.turnComplete) {
-          clientWs.send(JSON.stringify({ turnComplete: true }));
-        }
-        if (message.toolCall) {
-          clientWs.send(JSON.stringify({ toolCall: message.toolCall }));
-        }
-      },
-      onclose: () => {
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(JSON.stringify({ status: 'session_closed' }));
-        }
-      },
-      onerror: (err: any) => {
-        console.error('Gemini Live session error:', err);
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(JSON.stringify({ error: err?.message || 'Live session error' }));
-        }
-      },
-    },
-  });
+        rotateServerKey(candidateKey);
+      }
+    }
+    throw lastError || new Error('Failed to connect Live session');
+  };
+
+  const sessionPromise = connectLiveWithRotation();
 
   sessionPromise
     .then((session) => {
+      if (!session) return;
       activeSession = session;
       if (clientClosed) {
         try {
