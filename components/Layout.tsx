@@ -4,6 +4,7 @@ import React, { ReactNode, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useMobileBack } from '../hooks/useMobileBack';
 import { GOOGLE_DRIVE_TARGET_ID, api } from '../services/api';
+import { fetchBackendJson } from '../services/ai/core';
 import ConfirmModal from './ConfirmModal'; // Import the new modal
 
 interface LayoutProps {
@@ -178,16 +179,15 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setLoadingAiStatus(true);
       setAiRotationError(null);
       try {
-          const res = await fetch('/api/gemini/rotation-status');
-          if (res.ok) {
-              const data = await res.json();
-              setAiRotationStatus(data);
-          } else {
-              setAiRotationError('تعذر جلب حالة المنافذ من الخادم');
-          }
-      } catch (e) {
+          const { data } = await fetchBackendJson('/api/gemini/rotation-status');
+          setAiRotationStatus(data);
+      } catch (e: any) {
           console.warn('Could not fetch AI rotation status:', e);
-          setAiRotationError('تعذر الاتصال بالخادم');
+          setAiRotationError(
+              navigator.onLine
+                  ? (e?.message || 'تعذر جلب حالة المنافذ من الخادم')
+                  : 'أنت غير متصل بالإنترنت حالياً'
+          );
       } finally {
           setLoadingAiStatus(false);
       }
@@ -197,19 +197,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setBusySlotIndex(slotIndex);
       setAiRotationError(null);
       try {
-          const res = await fetch('/api/gemini/rotation-activate-slot', {
+          const { data } = await fetchBackendJson('/api/gemini/rotation-activate-slot', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ slotIndex }),
           });
-          const data = await res.json();
-          if (res.ok) {
-              setAiRotationStatus(data);
-          } else {
-              setAiRotationError(data?.error || 'تعذر تنشيط المنفذ');
-          }
-      } catch {
-          setAiRotationError('تعذر الاتصال بالخادم لتنشيط المنفذ');
+          setAiRotationStatus(data);
+      } catch (e: any) {
+          setAiRotationError(e?.message || 'تعذر الاتصال بالخادم لتنشيط المنفذ');
       } finally {
           setBusySlotIndex(null);
       }
@@ -219,19 +214,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setBusySlotIndex(slotIndex);
       setAiRotationError(null);
       try {
-          const res = await fetch('/api/gemini/rotation-toggle-slot', {
+          const { data } = await fetchBackendJson('/api/gemini/rotation-toggle-slot', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ slotIndex }),
           });
-          const data = await res.json();
-          if (res.ok) {
-              setAiRotationStatus(data);
-          } else {
-              setAiRotationError(data?.error || 'تعذر تغيير حالة المنفذ');
-          }
-      } catch {
-          setAiRotationError('تعذر الاتصال بالخادم لتحديث حالة المنفذ');
+          setAiRotationStatus(data);
+      } catch (e: any) {
+          setAiRotationError(e?.message || 'تعذر الاتصال بالخادم لتحديث حالة المنفذ');
       } finally {
           setBusySlotIndex(null);
       }
@@ -241,17 +231,12 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setCheckingAllSlots(true);
       setAiRotationError(null);
       try {
-          const res = await fetch('/api/gemini/rotation-reset-all', {
+          const { data } = await fetchBackendJson('/api/gemini/rotation-reset-all', {
               method: 'POST',
           });
-          const data = await res.json();
-          if (res.ok) {
-              setAiRotationStatus(data);
-          } else {
-              setAiRotationError(data?.error || 'تعذر فحص المنافذ على الخادم');
-          }
-      } catch {
-          setAiRotationError('تعذر الاتصال بالخادم لفحص المنافذ');
+          setAiRotationStatus(data);
+      } catch (e: any) {
+          setAiRotationError(e?.message || 'تعذر الاتصال بالخادم لفحص المنافذ');
       } finally {
           setCheckingAllSlots(false);
       }
@@ -524,9 +509,18 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                       </div>
 
                       {aiRotationError && (
-                          <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-3.5 py-2.5 text-xs font-bold flex items-center gap-2">
-                              <i className="fa-solid fa-circle-exclamation shrink-0"></i>
-                              <span>{aiRotationError}</span>
+                          <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-3.5 py-2.5 text-xs font-bold flex items-center justify-between gap-2">
+                              <button
+                                  type="button"
+                                  onClick={openAiRotationStatusModal}
+                                  className="px-2.5 py-1 rounded-lg bg-white border border-red-200 text-red-700 hover:bg-red-100 text-[11px] font-black shrink-0 transition"
+                              >
+                                  إعادة المحاولة
+                              </button>
+                              <div className="flex items-center gap-2 text-right">
+                                  <span>{aiRotationError}</span>
+                                  <i className="fa-solid fa-circle-exclamation shrink-0"></i>
+                              </div>
                           </div>
                       )}
 

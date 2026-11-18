@@ -227,14 +227,66 @@ export const createContextCache = async (_model: string, _systemInstruction: str
 export const isStaticHost = (): boolean => {
     if (typeof window === 'undefined') return false;
     const host = window.location.hostname.toLowerCase();
-    return host.endsWith('github.io') || host.endsWith('gitlab.io') || host.endsWith('pages.dev');
+    return (
+        host.endsWith('github.io') ||
+        host.endsWith('gitlab.io') ||
+        host.endsWith('pages.dev') ||
+        window.location.protocol === 'file:'
+    );
 };
 
-const getApiBaseUrl = (): string => {
+export const getCandidateBackendEndpoints = (apiPath: string): string[] => {
+    const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
     if (isStaticHost()) {
-        return CLOUD_RUN_BACKENDS[0];
+        return CLOUD_RUN_BACKENDS.map((b) => `${b}${normalizedPath}`);
     }
-    return '';
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const fallbacks = CLOUD_RUN_BACKENDS
+        .filter((b) => !currentOrigin || b.toLowerCase() !== currentOrigin.toLowerCase())
+        .map((b) => `${b}${normalizedPath}`);
+    return [normalizedPath, ...fallbacks];
+};
+
+export const fetchBackendJson = async <T = any>(
+    apiPath: string,
+    init?: RequestInit
+): Promise<{ data: T; endpoint: string }> => {
+    const endpoints = getCandidateBackendEndpoints(apiPath);
+    let lastErrorMessage = 'تعذر الاتصال بالخادم';
+
+    for (const endpoint of endpoints) {
+        try {
+            const res = await fetch(endpoint, init);
+            const contentType = (res.headers.get('content-type') || '').toLowerCase();
+
+            // Ignore HTML SPA fallbacks returned by static hosts or SW navigation fallback
+            if (contentType.includes('text/html')) {
+                lastErrorMessage = 'نقطة الاتصال غير متوفرة على هذا النطاق';
+                continue;
+            }
+
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                lastErrorMessage = data?.error || `خطأ من الخادم (${res.status})`;
+                if (res.status === 404 || res.status >= 500) {
+                    continue;
+                }
+                return Promise.reject(new Error(lastErrorMessage));
+            }
+
+            if (data) {
+                return { data: data as T, endpoint };
+            }
+        } catch (err: any) {
+            if (err instanceof Error && err.message && !err.message.includes('Failed to fetch')) {
+                lastErrorMessage = err.message;
+            } else {
+                lastErrorMessage = 'تعذر الوصول إلى خادم الذكاء الاصطناعي';
+            }
+        }
+    }
+
+    throw new Error(lastErrorMessage);
 };
 
 // --- SERVER-SIDE GENERATION CALL ---
@@ -246,10 +298,7 @@ export const safeGenerateContent = async (
         ? MODEL_SMART
         : primaryModel;
 
-    const endpoints = isStaticHost()
-        ? CLOUD_RUN_BACKENDS.map(b => `${b}/api/gemini/generate`)
-        : ['/api/gemini/generate'];
-
+    const endpoints = getCandidateBackendEndpoints('/api/gemini/generate');
     let lastError: Error | null = null;
 
     for (const endpoint of endpoints) {
@@ -266,6 +315,12 @@ export const safeGenerateContent = async (
                     cachedContent: params.cachedContent,
                 }),
             });
+
+            const contentType = (res.headers.get('content-type') || '').toLowerCase();
+            if (contentType.includes('text/html')) {
+                lastError = new Error('Endpoint returned HTML instead of JSON');
+                continue;
+            }
 
             const data = await res.json().catch(() => null);
 
@@ -304,20 +359,40 @@ export const safeGenerateStream = async (
         ? MODEL_SMART
         : primaryModel;
 
-    const streamEndpoint = `${getApiBaseUrl()}/api/gemini/stream`;
-    let fullText = '';
+    const endpoints = getCandidateBackendEndpoints('/api/gemini/stream');
+    let res: globalThis.Response | null = null;
+    let lastStreamErr = 'Streaming failed';
 
-    const res = await fetch(streamEndpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            model,
-            contents: params.contents,
-            config: params.config,
-        }),
-    });
+    for (const streamEndpoint of endpoints) {
+        try {
+            const candidateRes = await fetch(streamEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model,
+                    contents: params.contents,
+                    config: params.config,
+                }),
+            });
+            const ct = (candidateRes.headers.get('content-type') || '').toLowerCase();
+            if (ct.includes('text/html') || candidateRes.status === 404) {
+                lastStreamErr = `Streaming endpoint unavailable (${candidateRes.status})`;
+                continue;
+            }
+            res = candidateRes;
+            break;
+        } catch (err: any) {
+            lastStreamErr = err?.message || 'Streaming network error';
+        }
+    }
+
+    if (!res) {
+        throw new Error(lastStreamErr);
+    }
+
+    let fullText = '';
 
     if (!res.ok) {
         const errData = await res.json().catch(() => null);
