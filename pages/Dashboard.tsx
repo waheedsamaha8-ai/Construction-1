@@ -44,45 +44,167 @@ const SkeletonCard = () => (
     </div>
 );
 
-const getRandomUniqueTip = (
+const TIP_HISTORY_STORAGE_KEY = 'construction_pro_tip_history_v2';
+
+interface TipHistoryState {
+    seenTips: string[];
+    lastCategoryKey: string;
+    lastShownTip: string;
+}
+
+interface ResolvedTipItem {
+    tip: string;
+    category: string;
+    key: string;
+    isAiGenerated: boolean;
+}
+
+const normalizeTipText = (text: string) => text.trim().replace(/\s+/g, ' ');
+
+const readTipHistory = (): TipHistoryState => {
+    try {
+        const raw = localStorage.getItem(TIP_HISTORY_STORAGE_KEY);
+        if (!raw) return { seenTips: [], lastCategoryKey: '', lastShownTip: '' };
+        const parsed = JSON.parse(raw);
+        return {
+            seenTips: Array.isArray(parsed?.seenTips) ? parsed.seenTips.filter((x: any) => typeof x === 'string') : [],
+            lastCategoryKey: typeof parsed?.lastCategoryKey === 'string' ? parsed.lastCategoryKey : '',
+            lastShownTip: typeof parsed?.lastShownTip === 'string' ? parsed.lastShownTip : '',
+        };
+    } catch {
+        return { seenTips: [], lastCategoryKey: '', lastShownTip: '' };
+    }
+};
+
+const recordShownTipInHistory = (tipText: string, categoryKey: string) => {
+    try {
+        const norm = normalizeTipText(tipText);
+        if (!norm) return;
+        const history = readTipHistory();
+        const deduped = history.seenTips.filter(t => t !== norm);
+        deduped.push(norm);
+        // Keep up to 600 recent entries
+        const trimmed = deduped.slice(-600);
+        localStorage.setItem(
+            TIP_HISTORY_STORAGE_KEY,
+            JSON.stringify({
+                seenTips: trimmed,
+                lastCategoryKey: categoryKey || history.lastCategoryKey,
+                lastShownTip: norm,
+            })
+        );
+    } catch {}
+};
+
+const pickNextDiverseTip = (
     availableTips: Record<string, string[]>,
     aiTips: StoredAiTip[] = [],
-    excludeTipText?: string
-): { tip: string; category: string; key: string; isAiGenerated: boolean } => {
-    const staticPool: { tip: string; category: string; key: string; isAiGenerated: boolean }[] = [];
+    options?: { excludeTipText?: string; filterKey?: string; record?: boolean }
+): ResolvedTipItem => {
+    const filterKey = options?.filterKey && options.filterKey !== 'all' ? options.filterKey : undefined;
+    const allPool: ResolvedTipItem[] = [];
+    const seenNormalizedInPool = new Set<string>();
+
     for (const k of Object.keys(availableTips)) {
+        if (filterKey && k !== filterKey) continue;
         const catLabel = getCategoryLabel(k);
         for (const t of availableTips[k] || []) {
-            staticPool.push({ tip: t, category: catLabel, key: k, isAiGenerated: false });
+            const norm = normalizeTipText(t);
+            if (!norm || seenNormalizedInPool.has(norm)) continue;
+            seenNormalizedInPool.add(norm);
+            allPool.push({ tip: t, category: catLabel, key: k, isAiGenerated: false });
         }
     }
 
-    const aiPool = (aiTips || []).map((item) => ({
-        tip: item.tip,
-        category: item.category || getCategoryLabel(item.key),
-        key: item.key,
-        isAiGenerated: true,
-    }));
-
-    const filteredAi = excludeTipText && aiPool.length > 1 ? aiPool.filter(x => x.tip !== excludeTipText) : aiPool;
-    const filteredStatic = excludeTipText && staticPool.length > 1 ? staticPool.filter(x => x.tip !== excludeTipText) : staticPool;
-
-    if (filteredAi.length > 0 && (filteredStatic.length === 0 || Math.random() < 0.4)) {
-        return filteredAi[Math.floor(Math.random() * filteredAi.length)];
+    for (const item of aiTips || []) {
+        if (!item?.tip) continue;
+        if (filterKey && item.key !== filterKey) continue;
+        const norm = normalizeTipText(item.tip);
+        if (!norm || seenNormalizedInPool.has(norm)) continue;
+        seenNormalizedInPool.add(norm);
+        allPool.push({
+            tip: item.tip,
+            category: item.category || getCategoryLabel(item.key),
+            key: item.key,
+            isAiGenerated: true,
+        });
     }
 
-    if (filteredStatic.length > 0) {
-        return filteredStatic[Math.floor(Math.random() * filteredStatic.length)];
+    if (allPool.length === 0) {
+        return { tip: "مرحباً بك في مدير المشروعات", category: "عام", key: "general", isAiGenerated: false };
     }
 
-    return { tip: "مرحباً بك في مدير المشروعات", category: "عام", key: "general", isAiGenerated: false };
+    const history = readTipHistory();
+    const excludeNorm = options?.excludeTipText ? normalizeTipText(options.excludeTipText) : '';
+    const seenSet = new Set(history.seenTips);
+
+    // 1. Prefer completely unseen tips
+    let candidates = allPool.filter(item => {
+        const norm = normalizeTipText(item.tip);
+        if (excludeNorm && norm === excludeNorm) return false;
+        if (history.lastShownTip && norm === history.lastShownTip) return false;
+        return !seenSet.has(norm);
+    });
+
+    // 2. If all tips in this scope were seen, reset cycle while protecting last 20 shown tips
+    if (candidates.length === 0) {
+        const recentGuard = new Set(history.seenTips.slice(-Math.min(20, Math.max(1, allPool.length - 1))));
+        if (excludeNorm) recentGuard.add(excludeNorm);
+        if (history.lastShownTip) recentGuard.add(history.lastShownTip);
+
+        candidates = allPool.filter(item => !recentGuard.has(normalizeTipText(item.tip)));
+        if (candidates.length === 0) {
+            candidates = allPool.filter(item => normalizeTipText(item.tip) !== excludeNorm);
+        }
+        if (candidates.length === 0) candidates = allPool;
+
+        if (options?.record !== false && !filterKey) {
+            try {
+                localStorage.setItem(
+                    TIP_HISTORY_STORAGE_KEY,
+                    JSON.stringify({
+                        seenTips: history.seenTips.slice(-15),
+                        lastCategoryKey: history.lastCategoryKey,
+                        lastShownTip: history.lastShownTip,
+                    })
+                );
+            } catch {}
+        }
+    }
+
+    // 3. Rotate specialty so we don't show the same engineering discipline twice in a row
+    if (!filterKey && history.lastCategoryKey) {
+        const differentCategory = candidates.filter(item => item.key !== history.lastCategoryKey);
+        if (differentCategory.length > 0) {
+            candidates = differentCategory;
+        }
+    }
+
+    // 4. Pick a random specialty first for balanced diversity across all 19 disciplines, then a random tip within it
+    const byKey = new Map<string, ResolvedTipItem[]>();
+    for (const c of candidates) {
+        const arr = byKey.get(c.key) || [];
+        arr.push(c);
+        byKey.set(c.key, arr);
+    }
+    const keysList = Array.from(byKey.keys());
+    const chosenKey = keysList[Math.floor(Math.random() * keysList.length)];
+    const bucket = byKey.get(chosenKey) || candidates;
+    const picked = bucket[Math.floor(Math.random() * bucket.length)];
+
+    if (options?.record !== false) {
+        recordShownTipInHistory(picked.tip, picked.key);
+    }
+
+    return picked;
 };
 
 const Dashboard: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => api.isAuthenticated());
   const [projects, setProjects] = useState<Project[]>(() => api.getSyncProjects());
   const [aiTipsPool, setAiTipsPool] = useState<StoredAiTip[]>(() => aiHelper.getStoredAiTips());
-  const [currentTip] = useState(() => getRandomUniqueTip(ENGINEERING_TIPS_DB, aiHelper.getStoredAiTips()));
+  const [currentTip] = useState(() => pickNextDiverseTip(ENGINEERING_TIPS_DB, aiHelper.getStoredAiTips(), { record: false }));
+  const recordedInitialTipRef = React.useRef(false);
   const hasUserSwitchedTipRef = React.useRef(false);
   const hasCloudDataRef = React.useRef(false);
   
@@ -103,6 +225,7 @@ const Dashboard: React.FC = () => {
   // Delete States
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
 
+  const [selectedTipCategory, setSelectedTipCategory] = useState<string>('all');
   const [tipOfTheDay, setTipOfTheDay] = useState(currentTip.tip);
   const [tipCategory, setTipCategory] = useState(currentTip.category);
   const [tipKey, setTipKey] = useState(currentTip.key);
@@ -115,6 +238,7 @@ const Dashboard: React.FC = () => {
   const [isTipReportMenuOpen, setIsTipReportMenuOpen] = useState(false);
   
   const [isGeneratingFreshTip, setIsGeneratingFreshTip] = useState(false);
+  const [isGeneratingAiTip, setIsGeneratingAiTip] = useState(false);
   const [isOpeningArchive, setIsOpeningArchive] = useState(false);
   const [isSavingToArchive, setIsSavingToArchive] = useState(false);
   
@@ -207,7 +331,12 @@ const Dashboard: React.FC = () => {
 
       checkAuth();
 
-      // Periodic quota-safe AI engineering tip sync & generation (once every 3 days)
+      if (!recordedInitialTipRef.current) {
+          recordedInitialTipRef.current = true;
+          recordShownTipInHistory(currentTip.tip, currentTip.key);
+      }
+
+      // Periodic quota-safe AI engineering tip sync & generation
       const periodicTipTimer = setTimeout(() => {
           aiHelper.syncAndEnsurePeriodicAiTip()
               .then(({ tips, newTip }) => {
@@ -219,6 +348,7 @@ const Dashboard: React.FC = () => {
                       setTipCategory(newTip.category);
                       setTipKey(newTip.key);
                       setIsTipAiGenerated(true);
+                      recordShownTipInHistory(newTip.tip, newTip.key);
                       const localMap = getSavedTipsMap();
                       setIsTipSaved(Boolean(localMap[newTip.tip]));
                       setSavedTipFile(null);
@@ -493,11 +623,16 @@ const Dashboard: React.FC = () => {
       }
   };
   
-  const handleGenerateFreshTip = async () => { 
+  const handleGenerateFreshTip = async (overrideCategoryKey?: string) => { 
       hasUserSwitchedTipRef.current = true;
       setIsGeneratingFreshTip(true); 
+      const targetFilter = typeof overrideCategoryKey === 'string' ? overrideCategoryKey : selectedTipCategory;
       try { 
-          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB, aiTipsPool, tipOfTheDay); 
+          const selected = pickNextDiverseTip(ENGINEERING_TIPS_DB, aiTipsPool, {
+              excludeTipText: tipOfTheDay,
+              filterKey: targetFilter,
+              record: true,
+          });
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 
           setTipKey(selected.key);
@@ -506,7 +641,11 @@ const Dashboard: React.FC = () => {
           setIsTipSaved(Boolean(localMap[selected.tip]));
           setSavedTipFile(null);
       } catch(e) { 
-          const selected = getRandomUniqueTip(ENGINEERING_TIPS_DB, aiTipsPool, tipOfTheDay); 
+          const selected = pickNextDiverseTip(ENGINEERING_TIPS_DB, aiTipsPool, {
+              excludeTipText: tipOfTheDay,
+              filterKey: targetFilter,
+              record: true,
+          });
           setTipOfTheDay(selected.tip); 
           setTipCategory(selected.category); 
           setTipKey(selected.key);
@@ -514,6 +653,35 @@ const Dashboard: React.FC = () => {
       } finally { 
           setIsGeneratingFreshTip(false); 
       } 
+  };
+
+  const handleGenerateAiTipNow = async () => {
+      if (isGeneratingAiTip) return;
+      hasUserSwitchedTipRef.current = true;
+      setIsGeneratingAiTip(true);
+      try {
+          const preferred = selectedTipCategory !== 'all' ? selectedTipCategory : undefined;
+          const { tips, newTip } = await aiHelper.generateAndStoreInstantAiTip(preferred);
+          if (Array.isArray(tips)) {
+              setAiTipsPool(tips);
+          }
+          if (newTip) {
+              setTipOfTheDay(newTip.tip);
+              setTipCategory(newTip.category);
+              setTipKey(newTip.key);
+              setIsTipAiGenerated(true);
+              recordShownTipInHistory(newTip.tip, newTip.key);
+              const localMap = getSavedTipsMap();
+              setIsTipSaved(Boolean(localMap[newTip.tip]));
+              setSavedTipFile(null);
+          } else {
+              await handleGenerateFreshTip();
+          }
+      } catch {
+          await handleGenerateFreshTip();
+      } finally {
+          setIsGeneratingAiTip(false);
+      }
   };
   
   const handleExportBackup = async () => {
@@ -779,25 +947,64 @@ const Dashboard: React.FC = () => {
                              ? 'bg-gradient-to-br from-emerald-600 via-emerald-700 to-green-800 border border-emerald-400/40'
                              : 'bg-gradient-to-br from-indigo-600 to-purple-700'
                      }`}>
-                         <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
-                         <div className="flex justify-between items-start gap-2 mb-3 relative z-10">
+                         <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+                         <div className="flex justify-between items-center gap-2 mb-2.5 relative z-10">
                              <h3 className="font-bold text-sm flex items-center gap-2 shrink-0">
-                                 <i className="fa-solid fa-lightbulb text-yellow-300"></i> معلومة هندسية
+                                 <i className="fa-solid fa-lightbulb text-yellow-300"></i>
+                                 <span>معلومة هندسية</span>
                                  {isTipAiGenerated && (
-                                     <span className="text-[10px] font-bold text-amber-200 flex items-center gap-1" title="معلومة مولدة تلقائياً بالذكاء الاصطناعي">
+                                     <span className="text-[10px] font-bold text-amber-200 flex items-center gap-1" title="معلومة مولدة بالذكاء الاصطناعي">
                                          <i className="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
                                          <span>AI</span>
                                      </span>
                                  )}
                              </h3>
-                             <span className="bg-white/20 text-[10px] px-2 py-0.5 rounded-full truncate">{tipCategory}</span>
+                             <span className="text-[11px] font-bold text-white/90 truncate">{tipCategory}</span>
                          </div>
-                         <p className="text-xs font-medium leading-relaxed mb-4 min-h-[50px] opacity-90 relative z-10">{tipOfTheDay}</p>
-                         <div className="flex gap-2 relative z-10">
-                             <button onClick={handleGenerateFreshTip} disabled={isGeneratingFreshTip} className="flex-1 bg-white/15 hover:bg-white/25 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1 transition"><i className={`fa-solid ${isGeneratingFreshTip ? 'fa-circle-notch fa-spin' : 'fa-rotate'}`}></i> معلومة جديدة</button>
+
+                         {/* Specialty Diversity Selector */}
+                         <div className="mb-3 relative z-10">
+                             <select
+                                 value={selectedTipCategory}
+                                 onChange={(e) => {
+                                     const nextCat = e.target.value;
+                                     setSelectedTipCategory(nextCat);
+                                     handleGenerateFreshTip(nextCat);
+                                 }}
+                                 className="w-full bg-white/15 hover:bg-white/20 border border-white/20 text-white rounded-xl px-2.5 py-1.5 text-[11px] font-bold outline-none cursor-pointer transition"
+                                 aria-label="تصفية التخصص الهندسي"
+                             >
+                                 <option value="all" className="text-slate-900 bg-white">تنوع تلقائي شامل ({Object.keys(ENGINEERING_TIPS_DB).length} تخصصاً)</option>
+                                 {Object.keys(ENGINEERING_TIPS_DB).map((catKey) => (
+                                     <option key={catKey} value={catKey} className="text-slate-900 bg-white">
+                                         {getCategoryLabel(catKey)}
+                                     </option>
+                                 ))}
+                             </select>
+                         </div>
+
+                         <p className="text-xs font-medium leading-relaxed mb-4 min-h-[54px] opacity-95 relative z-10">{tipOfTheDay}</p>
+                         <div className="flex gap-1.5 relative z-10">
+                             <button
+                                 onClick={() => handleGenerateFreshTip()}
+                                 disabled={isGeneratingFreshTip || isGeneratingAiTip}
+                                 className="flex-1 bg-white/15 hover:bg-white/25 text-white font-bold py-2 px-2 rounded-xl text-xs flex items-center justify-center gap-1 transition whitespace-nowrap"
+                             >
+                                 <i className={`fa-solid ${isGeneratingFreshTip ? 'fa-circle-notch fa-spin' : 'fa-rotate'}`}></i>
+                                 <span>معلومة جديدة</span>
+                             </button>
+                             <button
+                                 onClick={handleGenerateAiTipNow}
+                                 disabled={isGeneratingAiTip || isGeneratingFreshTip}
+                                 className="bg-amber-400/20 hover:bg-amber-400/35 border border-amber-300/30 text-amber-100 font-bold py-2 px-2.5 rounded-xl text-xs flex items-center justify-center gap-1 transition whitespace-nowrap"
+                                 title="توليد معلومة حصرية جديدة بالذكاء الاصطناعي"
+                             >
+                                 <i className={`fa-solid ${isGeneratingAiTip ? 'fa-circle-notch fa-spin' : 'fa-wand-magic-sparkles'}`}></i>
+                                 <span>AI</span>
+                             </button>
                              <button
                                  onClick={handleExplainTip}
-                                 className={`flex-1 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition ${
+                                 className={`flex-1 font-bold py-2 px-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition whitespace-nowrap ${
                                      isTipSaved
                                          ? 'bg-white text-emerald-800 hover:bg-emerald-50 shadow-md'
                                          : 'bg-white/20 hover:bg-white/30 text-white'

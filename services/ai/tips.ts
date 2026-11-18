@@ -19,21 +19,30 @@ interface AiTipsLocalState {
 }
 
 const AI_TIPS_LOCAL_KEY = 'construction_pro_ai_tips_v1';
-const AUTO_TIP_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // Every 3 days to protect free quota
-const AUTO_TIP_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6-hour backoff if API unavailable
-const MAX_STORED_AI_TIPS = 150;
+const AUTO_TIP_INTERVAL_MS = 12 * 60 * 60 * 1000; // Every 12 hours to continuously grow diverse pool safely
+const AUTO_TIP_RETRY_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3-hour backoff if API unavailable
+const MAX_STORED_AI_TIPS = 300;
 
 const VALID_TIP_KEYS = [
     'civil_concrete',
+    'structural_steel',
+    'foundations_dewatering',
     'architecture_finishing',
     'interior_design_rules',
     'space_planning',
+    'feng_shui',
     'mep_systems',
+    'roads_infrastructure',
+    'surveying_geotech',
+    'quantity_surveying',
     'project_management',
     'contract_claims',
     'hse_safety',
-    'surveying_geotech',
+    'sustainability_green',
+    'maintenance_retrofitting',
     'codes_standards',
+    'bim_digital',
+    'site_secrets',
 ];
 
 let inFlightPeriodicPromise: Promise<{ tips: StoredAiTip[]; newTip: StoredAiTip | null }> | null = null;
@@ -160,15 +169,19 @@ export const tipsService = {
         }
     },
 
-    async generateEngineeringTip(recentTips: string[] = []): Promise<{category: string, tip: string, key: string} | null> {
+    async generateEngineeringTip(recentTips: string[] = [], preferredKey?: string): Promise<{category: string, tip: string, key: string} | null> {
+        const targetKey = preferredKey && VALID_TIP_KEYS.includes(preferredKey)
+            ? preferredKey
+            : VALID_TIP_KEYS[Math.floor(Math.random() * VALID_TIP_KEYS.length)];
+        const targetLabel = getCategoryLabel(targetKey);
         const avoidBlock = recentTips.length > 0
-            ? `\nتجنب تكرار هذه المواضيع السابقة:\n- ${recentTips.slice(0, 6).map(t => t.slice(0, 65)).join('\n- ')}`
+            ? `\nتجنب تماماً تكرار أي من هذه المواضيع السابقة:\n- ${recentTips.slice(0, 12).map(t => t.slice(0, 70)).join('\n- ')}`
             : '';
 
-        const prompt = `أنت استشاري هندسي خبير. ولّد "معلومة هندسية" واحدة جديدة وعملية ومفيدة (2 إلى 3 أسطر فقط، بأرقام أو قيم كودية دقيقة عند اللزوم) في أحد التخصصات:
-مدني وخرسانات (civil_concrete)، عمارة وتشطيبات (architecture_finishing)، تصميم داخلي (interior_design_rules)، تخطيط مساحات (space_planning)، كهرباء وميكانيكا (mep_systems)، إدارة مشروعات (project_management)، عقود ومطالبات (contract_claims)، سلامة وصحة مهنية (hse_safety)، مساحة وتربة (surveying_geotech)، أو أكواد ومواصفات (codes_standards).${avoidBlock}
+        const prompt = `أنت استشاري هندسي خبير. ولّد "معلومة هندسية" واحدة جديدة ونادرة وعملية ومفيدة (2 إلى 3 أسطر فقط، بأرقام أو قيم كودية دقيقة أو قاعدة تنفيذية احترافية) في التخصص المحدد التالي:
+التخصص المطلوب: ${targetLabel} (key: "${targetKey}")${avoidBlock}
 أرجع JSON فقط بالشكل:
-{"key":"civil_concrete","category":"هندسة مدنية وخرسانات","tip":"نص المعلومة هنا"}`;
+{"key":"${targetKey}","category":"${targetLabel}","tip":"نص المعلومة هنا"}`;
 
         try {
             const result = await safeGenerateContent(MODEL_SMART, {
@@ -194,7 +207,7 @@ export const tipsService = {
             }
 
             const rawKey = typeof parsed?.key === 'string' ? parsed.key.trim() : '';
-            const normalizedKey = VALID_TIP_KEYS.includes(rawKey) ? rawKey : 'codes_standards';
+            const normalizedKey = VALID_TIP_KEYS.includes(rawKey) ? rawKey : targetKey;
             const categoryLabel = typeof parsed?.category === 'string' && parsed.category.trim()
                 ? parsed.category.trim()
                 : getCategoryLabel(normalizedKey);
@@ -298,5 +311,37 @@ export const tipsService = {
         });
 
         return inFlightPeriodicPromise;
+    },
+
+    async generateAndStoreInstantAiTip(preferredKey?: string): Promise<{ tips: StoredAiTip[]; newTip: StoredAiTip | null }> {
+        const localState = readLocalAiTipsState();
+        const recentSnippets = localState.tips.slice(0, 10).map(t => t.tip);
+        const generated = await tipsService.generateEngineeringTip(recentSnippets, preferredKey);
+        if (!generated) {
+            return { tips: localState.tips, newTip: null };
+        }
+        const now = Date.now();
+        const newTip: StoredAiTip = {
+            id: `ai_${now}_${Math.random().toString(36).slice(2, 6)}`,
+            key: generated.key,
+            category: generated.category,
+            tip: generated.tip,
+            generatedAt: now,
+            isAiGenerated: true,
+        };
+        const mergedTips = mergeAiTipsLists([newTip], localState.tips);
+        writeLocalAiTipsState({
+            tips: mergedTips,
+            lastGeneratedAt: Math.max(localState.lastGeneratedAt || 0, now),
+            lastAttemptAt: now,
+        });
+        try {
+            await setDoc(doc(db, 'market_data', 'ai_engineering_tips'), {
+                tips: mergedTips,
+                lastGeneratedAt: Math.max(localState.lastGeneratedAt || 0, now),
+                updatedAt: new Date(now).toISOString(),
+            });
+        } catch {}
+        return { tips: mergedTips, newTip };
     }
 };

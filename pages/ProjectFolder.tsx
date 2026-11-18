@@ -21,6 +21,7 @@ import { ReportGenerator } from '../services/reportGenerator'; // IMPORT GENERAT
 import VideoThumbnail from '../components/VideoThumbnail';
 import InteractiveReportViewer from '../components/InteractiveReportViewer';
 import { SitePhotoInspectionData } from '../services/photoReportExport';
+import DocumentScannerModal from '../components/DocumentScannerModal';
 
 // ... (ArchiveSummaryCard, CategoryCard, FileGridCard, ArchiveFullViewer, SkeletonRow components remain unchanged) ...
 const ArchiveSummaryCard: React.FC<{ item: FileItem, onClick: () => void, onDelete: () => void, onRename: () => void, onMove: () => void, onShare: () => void }> = ({ item, onClick, onDelete, onRename, onMove, onShare }) => {
@@ -535,6 +536,7 @@ export default function ProjectFolder() {
   const currentGeoDataRef = useRef<GeoData | null>(null);
   const [showMediaChoice, setShowMediaChoice] = useState(false);
   const [showVideoRecorder, setShowVideoRecorder] = useState(false);
+  const [showDocumentScanner, setShowDocumentScanner] = useState(false);
   const [videoQuality, setVideoQuality] = useState<'hd' | 'sd'>('sd'); 
   const [isVideoRecording, setIsVideoRecording] = useState(false);
   const [videoTimer, setVideoTimer] = useState(0);
@@ -1045,6 +1047,27 @@ export default function ProjectFolder() {
       setPendingVideoFile(null);
       setCaptureInspectionResult(null);
       setCaptureInspectionError(null);
+  };
+
+  const handleSaveScannedFiles = async (files: File[], statusLabel: string) => {
+      if (!files.length) return;
+      setIsUploading(true);
+      setUploadProgress(0);
+      setUploadStatusMsg(statusLabel || 'جاري حفظ المستند الممسوح...');
+      try {
+          for (let i = 0; i < files.length; i++) {
+              const file = files[i];
+              setUploadStatusMsg(`جاري حفظ ${i + 1} من ${files.length}: ${file.name}`);
+              await api.uploadFile(currentFolderId, file, (p) => {
+                  setUploadProgress(Math.round(((i + p / 100) / files.length) * 100));
+              });
+          }
+          await fetchContents();
+      } finally {
+          setIsUploading(false);
+          setUploadStatusMsg('');
+          setUploadProgress(0);
+      }
   };
 
   const handlePdfChoice = async (mode: 'file' | 'images') => { setShowPdfModeModal(false); if (!pendingPdfFile) return; if (mode === 'file') { setIsUploading(true); setUploadStatusMsg("جاري رفع ملف PDF..."); await performUpload(pendingPdfFile, true, false, '', 0); } else { setIsUploading(true); setUploadStatusMsg("جاري تحويل PDF إلى صور..."); try { const folderName = pendingPdfFile.name.replace('.pdf', ''); const newFolder = await api.createFolder(currentFolderId, folderName); const images = await imageUtils.convertPdfToImages(pendingPdfFile, (curr, total) => { setUploadStatusMsg(`جاري تحويل صفحة ${curr} من ${total}`); setUploadProgress((curr/total)*50); }); for (let i = 0; i < images.length; i++) { setUploadStatusMsg(`جاري رفع صورة ${i + 1} من ${images.length}`); await api.uploadFile(newFolder.id, images[i], (p) => { setUploadProgress(50 + ((i / images.length) * 50) + (p * 0.5 / images.length)); }); } fetchContents(); } catch (e) { alert("فشل معالجة ملف PDF"); console.error(e); } finally { setIsUploading(false); setUploadStatusMsg(''); } } setPendingPdfFile(null); };
@@ -1886,7 +1909,48 @@ export default function ProjectFolder() {
           </div>
       )}
       {modalMode === 'move' && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col max-h-[80vh] animate-scale-in border border-slate-200 overflow-hidden"> <div className="p-4 bg-slate-100 border-b border-slate-200 flex justify-between items-center shrink-0"> <div> <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2"><i className="fa-solid fa-arrow-right-to-bracket text-orange-500"></i> نقل "{selectedItem?.name}" إلى...</h3> </div> <button onClick={() => setModalMode('none')} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-500 transition"><i className="fa-solid fa-times"></i></button> </div> <div className="px-3 py-2 bg-white border-b border-slate-100 flex items-center gap-1 overflow-x-auto text-xs whitespace-nowrap hide-scrollbar"> {(moveBreadcrumbs.length > 1 || (moveTargetId !== projectId)) && ( <button onClick={handleMoveBack} className="w-6 h-6 flex items-center justify-center bg-slate-100 rounded-full hover:bg-slate-200 mr-1 shrink-0"> <i className="fa-solid fa-arrow-right text-[10px] text-slate-600 rtl:rotate-180"></i> </button> )} {moveBreadcrumbs.map((crumb, idx) => ( <div key={crumb.id} className="flex items-center"> {idx > 0 && <span className="text-slate-300 mx-1">/</span>} <span className={`font-bold ${idx === moveBreadcrumbs.length - 1 ? 'text-orange-600' : 'text-slate-500'}`}>{crumb.name}</span> </div> ))} </div> <div className="flex-1 overflow-y-auto p-2 bg-slate-50 min-h-[200px]"> {loadingMove ? ( <div className="text-center py-10"><div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div><p className="text-xs text-slate-400">جاري التحميل...</p></div> ) : moveFolderItems.length === 0 ? ( <div className="text-center py-10 text-slate-400"><i className="fa-solid fa-folder-open text-3xl mb-2 opacity-30"></i><p className="text-xs font-bold">لا توجد مجلدات فرعية</p></div> ) : ( <div className="space-y-1"> {moveFolderItems.map(item => ( <div key={item.id} onClick={() => handleMoveNavigate(item)} className="flex items-center gap-3 p-3 rounded-xl cursor-pointer border bg-white border-slate-100 hover:bg-yellow-50 transition group"> <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-yellow-100 text-yellow-600"><i className="fa-solid fa-folder text-sm"></i></div> <div className="flex-1 min-w-0"><h4 className="text-xs font-bold text-slate-700 truncate group-hover:text-blue-700">{item.name}</h4></div> <i className="fa-solid fa-chevron-left text-slate-300 text-xs group-hover:text-blue-400"></i> </div> ))} </div> )} </div> <div className="p-3 bg-white border-t border-slate-200 shrink-0 flex gap-2"> <button onClick={confirmMove} className="flex-1 bg-orange-600 text-white py-3 rounded-xl font-bold hover:bg-orange-700 transition shadow-lg flex items-center justify-center gap-2 text-xs"> <i className="fa-solid fa-check"></i> نقل إلى هنا </button> <button onClick={() => setModalMode('none')} className="bg-slate-100 text-slate-600 px-6 py-3 rounded-xl font-bold hover:bg-slate-200 transition text-xs"> إلغاء </button> </div> </div> </div> )}
-      {showMediaChoice && ( <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"> <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-6 text-center animate-scale-in"> <h3 className="text-slate-800 font-bold mb-4">التصوير الهندسي</h3> <div className="grid grid-cols-2 gap-3"> <button onClick={() => { setShowMediaChoice(false); triggerFileInput(cameraInputRef); }} className="bg-indigo-50 text-indigo-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs"> <i className="fa-solid fa-camera text-xl"></i> صورة </button> <button onClick={() => { setShowMediaChoice(false); setShowVideoRecorder(true); }} className="bg-purple-50 text-purple-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs"> <i className="fa-solid fa-video text-xl"></i> فيديو </button> </div> <button onClick={() => setShowMediaChoice(false)} className="mt-4 text-slate-400 font-bold">إلغاء</button> </div> </div> )}
+      {showMediaChoice && (
+        <div className="fixed inset-0 z-[1200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-6 text-center animate-scale-in">
+            <h3 className="text-slate-800 font-bold mb-4">التصوير الهندسي</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => { setShowMediaChoice(false); triggerFileInput(cameraInputRef); }}
+                className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs transition"
+              >
+                <i className="fa-solid fa-camera text-xl"></i>
+                <span>صورة</span>
+              </button>
+              <button
+                onClick={() => { setShowMediaChoice(false); setShowVideoRecorder(true); }}
+                className="bg-purple-50 hover:bg-purple-100 text-purple-700 p-4 rounded-2xl flex flex-col items-center gap-2 font-bold text-xs transition"
+              >
+                <i className="fa-solid fa-video text-xl"></i>
+                <span>فيديو</span>
+              </button>
+              <button
+                onClick={() => { setShowMediaChoice(false); setShowDocumentScanner(true); }}
+                className="col-span-2 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 p-3.5 rounded-2xl flex items-center justify-center gap-3 font-extrabold text-xs transition"
+              >
+                <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <i className="fa-solid fa-file-invoice text-base"></i>
+                </div>
+                <div className="text-right">
+                  <div className="font-extrabold text-slate-900 text-xs">مسح مستند احترافي (PDF)</div>
+                  <div className="text-[10px] text-sky-700 font-bold">قص منظور · تحسين الورق · مسح متعدد</div>
+                </div>
+              </button>
+            </div>
+            <button onClick={() => setShowMediaChoice(false)} className="mt-4 text-slate-400 font-bold text-xs hover:text-slate-600 transition">إلغاء</button>
+          </div>
+        </div>
+      )}
+      <DocumentScannerModal
+        isOpen={showDocumentScanner}
+        projectName={currentProject?.name}
+        onClose={() => setShowDocumentScanner(false)}
+        onSaveFiles={handleSaveScannedFiles}
+      />
       {showVideoRecorder && ( <div className="fixed inset-0 z-[1300] bg-black flex flex-col"> <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center"> <video ref={videoPreviewRef} className="absolute inset-0 w-full h-full object-cover" autoPlay playsInline muted></video> <canvas ref={canvasRef} className="hidden"></canvas> <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-10"> <div className="bg-black/50 text-white px-3 py-1 rounded-full text-xs font-bold border border-white/20"> {isVideoRecording ? <span className="text-red-500 animate-pulse">● REC {Math.floor(videoTimer/60)}:{(videoTimer%60).toString().padStart(2,'0')}</span> : 'جاهز'} </div> <button onClick={() => setVideoQuality(videoQuality === 'hd' ? 'sd' : 'hd')} className="bg-black/40 text-white px-3 py-1 rounded-full text-[10px] font-bold border border-white/20"> {videoQuality === 'hd' ? 'HD 720p' : 'SD 480p'} </button> </div> </div> <div className="bg-slate-900 p-6 flex justify-between items-center text-white shrink-0 safe-bottom"> <button onClick={() => setShowVideoRecorder(false)} className="font-bold">إلغاء</button> <button onClick={isVideoRecording ? stopRecordingVideo : startRecordingVideo} className={`w-16 h-16 rounded-full border-4 flex items-center justify-center transition ${isVideoRecording ? 'border-red-500 scale-110' : 'border-white bg-red-600'}`}> {isVideoRecording ? <div className="w-6 h-6 bg-red-500 rounded-sm"></div> : <div className="w-16 h-16 rounded-full bg-red-600"></div>} </button> <div className="w-10"></div> </div> </div> )}
       
       {/* Post-Capture Smart Visual Inspection & Photo Note Modal */}

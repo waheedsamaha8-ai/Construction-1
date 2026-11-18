@@ -33,8 +33,15 @@ if (fs.existsSync('.env')) {
 
 // --- SERVER-ONLY GEMINI API KEY MANAGEMENT (SMART ROTATION & COOLDOWN) ---
 const deadKeysSet = new Set<string>();
+const disabledKeysSet = new Set<string>();
 const rateLimitedUntilMap = new Map<string, number>();
+const keyUsageCountMap = new Map<string, number>();
 let currentKeyIndex = 0;
+
+const incrementKeyUsage = (key: string) => {
+  if (!key) return;
+  keyUsageCountMap.set(key, (keyUsageCountMap.get(key) || 0) + 1);
+};
 
 const collectAllConfiguredServerKeys = (): string[] => {
   const candidates = [
@@ -57,7 +64,9 @@ const collectAllConfiguredServerKeys = (): string[] => {
 
 const collectServerEnvKeys = (): string[] => {
   const now = Date.now();
-  const alive = collectAllConfiguredServerKeys().filter(k => !deadKeysSet.has(k));
+  const alive = collectAllConfiguredServerKeys().filter(
+    k => !deadKeysSet.has(k) && !disabledKeysSet.has(k)
+  );
   const healthy = alive.filter(k => (rateLimitedUntilMap.get(k) || 0) <= now);
   if (healthy.length > 0) return healthy;
   // If all alive keys are temporarily cooled down, sort by earliest cooldown expiry
@@ -82,10 +91,63 @@ const rotateServerKey = (failedKey?: string, cooldownMs: number = 0): boolean =>
   const keys = collectServerEnvKeys();
   if (keys.length === 0) return false;
   if (keys.length === 1) {
+    currentKeyIndex = 0;
     return keys[0] !== failedKey;
   }
   currentKeyIndex = (currentKeyIndex + 1) % keys.length;
   return true;
+};
+
+const buildRotationStatusPayload = () => {
+  const now = Date.now();
+  const allConfigured = collectAllConfiguredServerKeys();
+  const eligibleKeys = collectServerEnvKeys();
+  const activeKey = eligibleKeys.length > 0 ? eligibleKeys[currentKeyIndex % eligibleKeys.length] : '';
+
+  let healthyKeysCount = 0;
+  let cooldownKeysCount = 0;
+  let disabledKeysCount = 0;
+  let deadKeysCount = 0;
+
+  const slots = allConfigured.map((key, idx) => {
+    const isDead = deadKeysSet.has(key);
+    const isDisabled = disabledKeysSet.has(key);
+    const cooldownUntil = rateLimitedUntilMap.get(key) || 0;
+    const cooldownRemainingSec = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+
+    let status: 'active' | 'cooldown' | 'disabled' | 'dead' = 'active';
+    if (isDead) {
+      status = 'dead';
+      deadKeysCount++;
+    } else if (isDisabled) {
+      status = 'disabled';
+      disabledKeysCount++;
+    } else if (cooldownRemainingSec > 0) {
+      status = 'cooldown';
+      cooldownKeysCount++;
+    } else {
+      healthyKeysCount++;
+    }
+
+    return {
+      slotIndex: idx + 1,
+      label: `منفذ الخادم الآمن #${idx + 1}`,
+      status,
+      isCurrentActive: activeKey === key && !isDead && !isDisabled,
+      cooldownRemainingSec,
+      usageCount: keyUsageCountMap.get(key) || 0,
+    };
+  });
+
+  return {
+    smartRotationEnabled: true,
+    totalConfiguredKeys: allConfigured.length,
+    healthyKeysCount,
+    cooldownKeysCount,
+    disabledKeysCount,
+    deadKeysCount,
+    slots,
+  };
 };
 
 const getAiClient = (apiKeyOverride?: string) => {
@@ -197,20 +259,81 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', serverTime: new Date().toISOString() });
 });
 
-// Non-secret Smart Rotation Status (never exposes key strings or prefixes)
+// Non-secret Smart Rotation Status & Slot Controls (never exposes key strings or prefixes)
 app.get('/api/gemini/rotation-status', (_req: Request, res: Response) => {
-  const now = Date.now();
+  res.json(buildRotationStatusPayload());
+});
+
+app.post('/api/gemini/rotation-activate-slot', (req: Request, res: Response) => {
+  const slotIndex = Number(req.body?.slotIndex);
   const allConfigured = collectAllConfiguredServerKeys();
-  const aliveKeys = allConfigured.filter(k => !deadKeysSet.has(k));
-  const cooldownKeysCount = aliveKeys.filter(k => (rateLimitedUntilMap.get(k) || 0) > now).length;
-  const healthyKeysCount = Math.max(0, aliveKeys.length - cooldownKeysCount);
-  res.json({
-    smartRotationEnabled: true,
-    totalConfiguredKeys: allConfigured.length,
-    healthyKeysCount,
-    cooldownKeysCount,
-    deadKeysCount: deadKeysSet.size,
-  });
+  if (!Number.isInteger(slotIndex) || slotIndex < 1 || slotIndex > allConfigured.length) {
+    return res.status(400).json({ error: 'رقم المنفذ غير صحيح' });
+  }
+  const targetKey = allConfigured[slotIndex - 1];
+  disabledKeysSet.delete(targetKey);
+  deadKeysSet.delete(targetKey);
+  rateLimitedUntilMap.delete(targetKey);
+
+  const eligibleKeys = collectServerEnvKeys();
+  const idx = eligibleKeys.indexOf(targetKey);
+  currentKeyIndex = idx >= 0 ? idx : 0;
+  return res.json(buildRotationStatusPayload());
+});
+
+app.post('/api/gemini/rotation-toggle-slot', (req: Request, res: Response) => {
+  const slotIndex = Number(req.body?.slotIndex);
+  const allConfigured = collectAllConfiguredServerKeys();
+  if (!Number.isInteger(slotIndex) || slotIndex < 1 || slotIndex > allConfigured.length) {
+    return res.status(400).json({ error: 'رقم المنفذ غير صحيح' });
+  }
+  const targetKey = allConfigured[slotIndex - 1];
+  if (disabledKeysSet.has(targetKey)) {
+    disabledKeysSet.delete(targetKey);
+  } else {
+    const remainingEnabled = allConfigured.filter(
+      k => k !== targetKey && !disabledKeysSet.has(k) && !deadKeysSet.has(k)
+    );
+    if (remainingEnabled.length === 0) {
+      return res.status(400).json({ error: 'يجب إبقاء منفذ واحد نشط على الأقل لتشغيل الذكاء الاصطناعي' });
+    }
+    disabledKeysSet.add(targetKey);
+    currentKeyIndex = 0;
+  }
+  return res.json(buildRotationStatusPayload());
+});
+
+app.post('/api/gemini/rotation-reset-all', async (_req: Request, res: Response) => {
+  rateLimitedUntilMap.clear();
+  deadKeysSet.clear();
+  const allConfigured = collectAllConfiguredServerKeys();
+
+  await Promise.all(
+    allConfigured.map(async (key) => {
+      if (disabledKeysSet.has(key)) return;
+      try {
+        const client = getAiClient(key);
+        await client.models.list({ config: { pageSize: 1 } });
+      } catch (err: any) {
+        const { status, message } = extractErrorInfo(err);
+        const msgLower = (message || '').toLowerCase();
+        if (
+          msgLower.includes('api_key_invalid') ||
+          msgLower.includes('api key not valid') ||
+          msgLower.includes('leaked') ||
+          status === 403
+        ) {
+          deadKeysSet.add(key);
+        } else if (status === 429) {
+          markKeyCooldown(key, 60000);
+        } else if (status === 503) {
+          markKeyCooldown(key, 15000);
+        }
+      }
+    })
+  );
+
+  return res.json(buildRotationStatusPayload());
 });
 
 // High-Speed HTTP Range Proxy for Google Drive Video & Media Streaming
@@ -302,11 +425,6 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
   let lastErrInfo = { status: 500, message: 'Failed to generate content' };
 
-  // Advance round-robin index slightly per incoming request when multiple healthy keys exist
-  if (serverKeys.length > 1) {
-    currentKeyIndex = (currentKeyIndex + 1) % serverKeys.length;
-  }
-
   for (const model of modelSequence) {
     const activeKeys = collectServerEnvKeys();
     const maxAttempts = Math.max(1, activeKeys.length);
@@ -336,7 +454,11 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
             requestParams.cachedContent = cachedContent;
           }
 
+          incrementKeyUsage(currentKey);
           const response = await client.models.generateContent(requestParams);
+          if (activeKeys.length > 1) {
+            currentKeyIndex = (currentKeyIndex + 1) % activeKeys.length;
+          }
           const hasText = typeof response?.text === 'string' && response.text.length > 0;
           const hasFunctionCalls = Array.isArray(response?.functionCalls) && response.functionCalls.length > 0;
 
@@ -447,6 +569,7 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
       try {
         const client = getAiClient(currentKey);
         const sanitized = sanitizeConfigForModel(model, config);
+        incrementKeyUsage(currentKey);
         const responseStream = await client.models.generateContentStream({
           model,
           contents,
@@ -458,6 +581,9 @@ app.post('/api/gemini/stream', async (req: Request, res: Response) => {
           if (chunk.text) {
             res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
           }
+        }
+        if (activeKeys.length > 1) {
+          currentKeyIndex = (currentKeyIndex + 1) % activeKeys.length;
         }
         streamedSuccessfully = true;
         break;
@@ -543,6 +669,7 @@ wss.on('connection', (clientWs: WebSocket, req) => {
       if (!candidateKey) break;
       try {
         const client = getAiClient(candidateKey);
+        incrementKeyUsage(candidateKey);
         const session = await client.live.connect({
           model: requestedModel,
           config: liveConfig,

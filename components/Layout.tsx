@@ -31,9 +31,21 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
     totalConfiguredKeys: number;
     healthyKeysCount: number;
     cooldownKeysCount: number;
+    disabledKeysCount?: number;
     deadKeysCount: number;
+    slots?: Array<{
+      slotIndex: number;
+      label: string;
+      status: 'active' | 'cooldown' | 'disabled' | 'dead';
+      isCurrentActive: boolean;
+      cooldownRemainingSec: number;
+      usageCount: number;
+    }>;
   } | null>(null);
   const [loadingAiStatus, setLoadingAiStatus] = useState(false);
+  const [checkingAllSlots, setCheckingAllSlots] = useState(false);
+  const [busySlotIndex, setBusySlotIndex] = useState<number | null>(null);
+  const [aiRotationError, setAiRotationError] = useState<string | null>(null);
   
   // PWA Install State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -164,16 +176,84 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setShowSettingsMenu(false);
       setShowAiRotationModal(true);
       setLoadingAiStatus(true);
+      setAiRotationError(null);
       try {
           const res = await fetch('/api/gemini/rotation-status');
           if (res.ok) {
               const data = await res.json();
               setAiRotationStatus(data);
+          } else {
+              setAiRotationError('تعذر جلب حالة المنافذ من الخادم');
           }
       } catch (e) {
           console.warn('Could not fetch AI rotation status:', e);
+          setAiRotationError('تعذر الاتصال بالخادم');
       } finally {
           setLoadingAiStatus(false);
+      }
+  };
+
+  const handleActivateSlot = async (slotIndex: number) => {
+      setBusySlotIndex(slotIndex);
+      setAiRotationError(null);
+      try {
+          const res = await fetch('/api/gemini/rotation-activate-slot', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slotIndex }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+              setAiRotationStatus(data);
+          } else {
+              setAiRotationError(data?.error || 'تعذر تنشيط المنفذ');
+          }
+      } catch {
+          setAiRotationError('تعذر الاتصال بالخادم لتنشيط المنفذ');
+      } finally {
+          setBusySlotIndex(null);
+      }
+  };
+
+  const handleToggleSlot = async (slotIndex: number) => {
+      setBusySlotIndex(slotIndex);
+      setAiRotationError(null);
+      try {
+          const res = await fetch('/api/gemini/rotation-toggle-slot', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slotIndex }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+              setAiRotationStatus(data);
+          } else {
+              setAiRotationError(data?.error || 'تعذر تغيير حالة المنفذ');
+          }
+      } catch {
+          setAiRotationError('تعذر الاتصال بالخادم لتحديث حالة المنفذ');
+      } finally {
+          setBusySlotIndex(null);
+      }
+  };
+
+  const handleCheckAllSlots = async () => {
+      setCheckingAllSlots(true);
+      setAiRotationError(null);
+      try {
+          const res = await fetch('/api/gemini/rotation-reset-all', {
+              method: 'POST',
+          });
+          const data = await res.json();
+          if (res.ok) {
+              setAiRotationStatus(data);
+          } else {
+              setAiRotationError(data?.error || 'تعذر فحص المنافذ على الخادم');
+          }
+      } catch {
+          setAiRotationError('تعذر الاتصال بالخادم لفحص المنافذ');
+      } finally {
+          setCheckingAllSlots(false);
       }
   };
 
@@ -388,79 +468,195 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
           </div>
       )}
 
-      {/* AI Smart Rotation Status Modal (No API Keys Exposed/Entered in UI) */}
+      {/* AI Smart Rotation Manager Modal (Server-Slot Control, Zero Client Key Exposure/Inputs) */}
       {showAiRotationModal && (
-          <div className="fixed inset-0 bg-slate-900/65 z-[1000] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" onClick={() => setShowAiRotationModal(false)}>
-              <div className="bg-white rounded-3xl shadow-2xl p-5 w-full max-w-md animate-scale-in border border-slate-200" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
-                      <div className="flex items-center gap-2.5">
-                          <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center border border-indigo-200">
-                              <i className="fa-solid fa-shield-halved text-lg"></i>
-                          </div>
-                          <div>
-                              <h3 className="text-sm font-black text-slate-900">التدوير الذكي للذكاء الاصطناعي</h3>
-                              <p className="text-[10px] font-bold text-slate-500">مراقبة وتوزيع الطلبات على مستوى الخادم الآمن</p>
-                          </div>
-                      </div>
+          <div className="fixed inset-0 bg-slate-900/65 z-[1000] flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-fade-in" onClick={() => setShowAiRotationModal(false)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[90dvh] flex flex-col overflow-hidden animate-scale-in border border-slate-200" onClick={(e) => e.stopPropagation()}>
+                  {/* Teal Gradient Header matching requested layout */}
+                  <div className="bg-gradient-to-l from-teal-700 via-teal-600 to-cyan-700 text-white px-5 py-4 flex items-center justify-between shrink-0">
                       <button
+                          type="button"
                           onClick={() => setShowAiRotationModal(false)}
-                          className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition"
+                          className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition"
+                          aria-label="إغلاق"
                       >
-                          <i className="fa-solid fa-times text-xs"></i>
+                          <i className="fa-solid fa-times text-sm"></i>
                       </button>
+                      <h3 className="text-base font-black tracking-tight">إدارة التدوير الذكي للذكاء الاصطناعي</h3>
                   </div>
 
-                  {loadingAiStatus ? (
-                      <div className="py-8 flex flex-col items-center justify-center text-slate-500 gap-2">
-                          <i className="fa-solid fa-circle-notch fa-spin text-2xl text-indigo-600"></i>
-                          <span className="text-xs font-bold">جاري فحص حالة الخادم...</span>
+                  {/* Scrollable Body */}
+                  <div className="p-4 sm:p-5 overflow-y-auto custom-scrollbar space-y-4">
+                      {/* Mint Summary Banner */}
+                      <div className="bg-emerald-50/80 border border-emerald-300/80 rounded-2xl p-4 space-y-2.5">
+                          <div className="flex items-start justify-between gap-3">
+                              <span className="bg-teal-700 text-white text-xs font-black px-3 py-1.5 rounded-xl shrink-0 tabular-nums shadow-sm">
+                                  {aiRotationStatus ? `${aiRotationStatus.healthyKeysCount} نشط / ${aiRotationStatus.totalConfiguredKeys} مسجل` : '...'}
+                              </span>
+                              <div className="flex items-center gap-2 text-right">
+                                  <div>
+                                      <h4 className="text-sm font-black text-slate-900 leading-snug">التدوير التلقائي الذكي على الخادم</h4>
+                                  </div>
+                                  <div className="w-7 h-7 rounded-lg bg-emerald-100 text-teal-700 flex items-center justify-center shrink-0">
+                                      <i className="fa-solid fa-arrows-rotate text-xs"></i>
+                                  </div>
+                              </div>
+                          </div>
+                          <p className="text-xs font-semibold text-slate-600 leading-relaxed text-right">
+                              عند انتهاء الحصة اليومية أو وصول أي منفذ للحد الأقصى للطلبات، ينتقل الخادم تلقائياً وبأمان للمنفذ المتاح التالي دون توقف أو كشف أي مفاتيح في المتصفح.
+                          </p>
                       </div>
-                  ) : (
-                      <div className="space-y-3">
-                          <div className="grid grid-cols-3 gap-2 text-center">
-                              <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-3">
-                                  <span className="text-[10px] font-bold text-indigo-700 block">إجمالي المنافذ</span>
-                                  <span className="font-mono font-black text-xl text-indigo-900">{aiRotationStatus?.totalConfiguredKeys ?? '-'}</span>
-                              </div>
-                              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
-                                  <span className="text-[10px] font-bold text-emerald-700 block">نشط وجاهز</span>
-                                  <span className="font-mono font-black text-xl text-emerald-800">{aiRotationStatus?.healthyKeysCount ?? '-'}</span>
-                              </div>
-                              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3">
-                                  <span className="text-[10px] font-bold text-amber-700 block">تهدئة مؤقتة</span>
-                                  <span className="font-mono font-black text-xl text-amber-800">{aiRotationStatus?.cooldownKeysCount ?? 0}</span>
-                              </div>
-                          </div>
 
-                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 text-xs text-slate-700 leading-relaxed space-y-1.5">
-                              <div className="font-black text-slate-900 flex items-center gap-1.5">
-                                  <i className="fa-solid fa-circle-check text-emerald-600"></i>
-                                  <span>التدوير التلقائي (Round-Robin + Cooldown) مفعّل بالخادم</span>
+                      {/* Server Environment Configuration Guidance (No key inputs in UI) */}
+                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-1.5 text-right">
+                          <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md">
+                                  حماية كاملة للأسرار
+                              </span>
+                              <div className="flex items-center gap-1.5 text-xs font-black text-slate-800">
+                                  <span>تهيئة منافذ متعددة بأمان</span>
+                                  <i className="fa-solid fa-shield-halved text-teal-600 text-xs"></i>
                               </div>
-                              <p className="text-[11px] font-semibold text-slate-600">
-                                  لحماية مفاتيحك من التسريب، لا تُخزَّن أو تُدخل مفاتيح API داخل المتصفح. يمكنك إضافة أكثر من مفتاح بشكل آمن في إعدادات بيئة الخادم ضمن المتغير <span dir="ltr" className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-indigo-700">GEMINI_API_KEY</span> (مفصولة بفاصلة <span className="font-mono">,</span>)، وسيقوم الخادم تلقائياً بتوزيع الأحمال وتبديل أي مفتاح يصل للحد الأقصى فوراً.
-                              </p>
                           </div>
-
-                          <div className="flex gap-2">
-                              <button
-                                  type="button"
-                                  onClick={openAiRotationStatusModal}
-                                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5"
-                              >
-                                  <i className="fa-solid fa-rotate text-[11px]"></i>
-                                  <span>تحديث الحالة</span>
-                              </button>
-                              <button
-                                  type="button"
-                                  onClick={() => setShowAiRotationModal(false)}
-                                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-bold text-xs transition"
-                              >
-                                  إغلاق
-                              </button>
-                          </div>
+                          <p className="text-[11px] font-semibold text-slate-600 leading-relaxed">
+                              لأمانك، يُمنع إدخال أو عرض مفاتيح API داخل المتصفح. لإضافة أكثر من مفتاح، أضفها في متغيرات بيئة الخادم ضمن <span dir="ltr" className="font-mono text-teal-800 bg-white px-1.5 py-0.5 rounded border border-slate-200">GEMINI_API_KEY</span> مفصولة بفاصلة (<span className="font-mono font-bold">,</span>)، وستظهر هنا تلقائياً كمنافذ قابلة للتبديل والتحكم.
+                          </p>
                       </div>
-                  )}
+
+                      {aiRotationError && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-3.5 py-2.5 text-xs font-bold flex items-center gap-2">
+                              <i className="fa-solid fa-circle-exclamation shrink-0"></i>
+                              <span>{aiRotationError}</span>
+                          </div>
+                      )}
+
+                      {loadingAiStatus ? (
+                          <div className="py-8 flex flex-col items-center justify-center text-slate-500 gap-2">
+                              <i className="fa-solid fa-circle-notch fa-spin text-2xl text-teal-600"></i>
+                              <span className="text-xs font-bold">جاري تحميل قائمة المنافذ المسجلة...</span>
+                          </div>
+                      ) : (
+                          <div className="space-y-2.5">
+                              {/* Slots List Header */}
+                              <div className="flex items-center justify-between">
+                                  <button
+                                      type="button"
+                                      onClick={handleCheckAllSlots}
+                                      disabled={checkingAllSlots}
+                                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-60"
+                                  >
+                                      <i className={`fa-solid ${checkingAllSlots ? 'fa-circle-notch fa-spin' : 'fa-arrows-rotate'} text-[11px] text-teal-700`}></i>
+                                      <span>{checkingAllSlots ? 'جاري الفحص...' : 'فحص الكل'}</span>
+                                  </button>
+                                  <h4 className="text-sm font-black text-slate-900">
+                                      المنافذ المسجلة ({aiRotationStatus?.totalConfiguredKeys ?? 0})
+                                  </h4>
+                              </div>
+
+                              {/* Slots Cards */}
+                              {(aiRotationStatus?.slots && aiRotationStatus.slots.length > 0) ? (
+                                  <div className="space-y-2.5">
+                                      {aiRotationStatus.slots.map((slot) => {
+                                          const isBusy = busySlotIndex === slot.slotIndex || checkingAllSlots;
+                                          const statusBadge =
+                                              slot.status === 'active'
+                                                  ? { text: 'متاح', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+                                                  : slot.status === 'cooldown'
+                                                    ? { text: `تهدئة ${slot.cooldownRemainingSec}ث`, cls: 'bg-amber-50 text-amber-700 border-amber-200' }
+                                                    : slot.status === 'disabled'
+                                                      ? { text: 'متوقف مؤقتاً', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+                                                      : { text: 'غير صالح', cls: 'bg-red-50 text-red-700 border-red-200' };
+
+                                          return (
+                                              <div
+                                                  key={slot.slotIndex}
+                                                  className={`rounded-2xl p-3.5 border transition ${
+                                                      slot.isCurrentActive
+                                                          ? 'bg-emerald-50/40 border-emerald-300 shadow-sm'
+                                                          : slot.status === 'disabled'
+                                                            ? 'bg-slate-50 border-slate-200 opacity-80'
+                                                            : 'bg-white border-slate-200'
+                                                  }`}
+                                              >
+                                                  {/* Top Row: Actions on left, Index + Badges + Anonymous Label on right */}
+                                                  <div className="flex items-center justify-between gap-2">
+                                                      {/* Controls */}
+                                                      <div className="flex items-center gap-1.5 shrink-0">
+                                                          <button
+                                                              type="button"
+                                                              onClick={() => handleToggleSlot(slot.slotIndex)}
+                                                              disabled={isBusy}
+                                                              title={slot.status === 'disabled' ? 'تشغيل المنفذ' : 'إيقاف المنفذ مؤقتاً'}
+                                                              className={`w-9 h-9 rounded-xl border flex items-center justify-center transition disabled:opacity-50 ${
+                                                                  slot.status === 'disabled'
+                                                                      ? 'bg-slate-100 border-slate-300 text-slate-500 hover:bg-emerald-50 hover:text-emerald-700'
+                                                                      : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-amber-50 hover:text-amber-700'
+                                                              }`}
+                                                          >
+                                                              <i className="fa-solid fa-power-off text-xs"></i>
+                                                          </button>
+                                                          <button
+                                                              type="button"
+                                                              onClick={() => handleActivateSlot(slot.slotIndex)}
+                                                              disabled={isBusy}
+                                                              title="تعيين كمنفذ نشط الآن"
+                                                              className={`w-9 h-9 rounded-xl border flex items-center justify-center transition disabled:opacity-50 ${
+                                                                  slot.isCurrentActive
+                                                                      ? 'bg-sky-50 border-sky-200 text-sky-700'
+                                                                      : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200'
+                                                              }`}
+                                                          >
+                                                              <i className={`fa-solid ${busySlotIndex === slot.slotIndex ? 'fa-circle-notch fa-spin' : 'fa-arrows-rotate'} text-xs`}></i>
+                                                          </button>
+                                                      </div>
+
+                                                      {/* Slot Badges & Index */}
+                                                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-lg border ${statusBadge.cls}`}>
+                                                              {statusBadge.text}
+                                                          </span>
+                                                          {slot.isCurrentActive && (
+                                                              <span className="bg-teal-700 text-white text-[11px] font-black px-2.5 py-0.5 rounded-lg shadow-xs">
+                                                                  المنفذ النشط
+                                                              </span>
+                                                          )}
+                                                          <span className="text-xs font-black text-slate-900 tabular-nums mr-1">
+                                                              {slot.slotIndex}
+                                                          </span>
+                                                      </div>
+                                                  </div>
+
+                                                  {/* Middle Row: Anonymous Server Slot Identifier */}
+                                                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                                                      <span className="text-[11px] font-semibold text-slate-400">
+                                                          مشفّر على الخادم
+                                                      </span>
+                                                      <span className="font-bold text-slate-700 bg-slate-100/90 border border-slate-200 px-2.5 py-1 rounded-lg text-[11px]">
+                                                          {slot.label}
+                                                      </span>
+                                                  </div>
+
+                                                  {/* Footer Divider + Usage Counter */}
+                                                  <div className="mt-2.5 pt-2 border-t border-slate-200/70 flex items-center justify-between text-[11px] font-bold text-slate-500">
+                                                      <span className="text-slate-400">
+                                                          {slot.isCurrentActive ? 'يستقبل الطلبات الحالية' : 'احتياطي للتدوير'}
+                                                      </span>
+                                                      <span className="tabular-nums">
+                                                          عدد الاستخدامات: {slot.usageCount}
+                                                      </span>
+                                                  </div>
+                                              </div>
+                                          );
+                                      })}
+                                  </div>
+                              ) : (
+                                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-center text-xs font-bold text-amber-800">
+                                      لم يتم رصد منافذ مفاتيح مهيأة في بيئة الخادم حالياً.
+                                  </div>
+                              )}
+                          </div>
+                      )}
+                  </div>
               </div>
           </div>
       )}
