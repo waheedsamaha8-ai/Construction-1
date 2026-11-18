@@ -4,7 +4,12 @@ import React, { ReactNode, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useMobileBack } from '../hooks/useMobileBack';
 import { GOOGLE_DRIVE_TARGET_ID, api } from '../services/api';
-import { fetchBackendJson } from '../services/ai/core';
+import {
+  fetchBackendJson,
+  getCustomBackendUrl,
+  isStaticHost,
+  setCustomBackendUrl,
+} from '../services/ai/core';
 import ConfirmModal from './ConfirmModal'; // Import the new modal
 
 interface LayoutProps {
@@ -47,6 +52,9 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
   const [checkingAllSlots, setCheckingAllSlots] = useState(false);
   const [busySlotIndex, setBusySlotIndex] = useState<number | null>(null);
   const [aiRotationError, setAiRotationError] = useState<string | null>(null);
+  const [backendUrlInput, setBackendUrlInput] = useState(() => getCustomBackendUrl());
+  const [connectedBackend, setConnectedBackend] = useState<string | null>(null);
+  const runningOnStaticHost = isStaticHost();
   
   // PWA Install State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -178,19 +186,41 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
       setShowAiRotationModal(true);
       setLoadingAiStatus(true);
       setAiRotationError(null);
+      setBackendUrlInput(getCustomBackendUrl());
       try {
-          const { data } = await fetchBackendJson('/api/gemini/rotation-status');
+          const { data, endpoint } = await fetchBackendJson('/api/gemini/rotation-status');
           setAiRotationStatus(data);
+          setConnectedBackend(endpoint.startsWith('http') ? new URL(endpoint).origin : window.location.origin);
       } catch (e: any) {
           console.warn('Could not fetch AI rotation status:', e);
+          setConnectedBackend(null);
           setAiRotationError(
               navigator.onLine
-                  ? (e?.message || 'تعذر جلب حالة المنافذ من الخادم')
+                  ? (runningOnStaticHost
+                      ? 'نسخة GitHub Pages ثابتة ولا تتضمن خادماً؛ يرجى ربط رابط الخادم (Cloud Run / Node) أو فتح التطبيق من رابط AI Studio المنشور'
+                      : (e?.message || 'تعذر جلب حالة المنافذ من الخادم'))
                   : 'أنت غير متصل بالإنترنت حالياً'
           );
       } finally {
           setLoadingAiStatus(false);
       }
+  };
+
+  const handleSaveBackendUrl = async (e: React.FormEvent) => {
+      e.preventDefault();
+      try {
+          const saved = setCustomBackendUrl(backendUrlInput);
+          setBackendUrlInput(saved);
+          await openAiRotationStatusModal();
+      } catch (err: any) {
+          setAiRotationError(err?.message || 'رابط الخادم غير صالح، يجب أن يبدأ بـ https://');
+      }
+  };
+
+  const handleClearBackendUrl = async () => {
+      setCustomBackendUrl('');
+      setBackendUrlInput('');
+      await openAiRotationStatusModal();
   };
 
   const handleActivateSlot = async (slotIndex: number) => {
@@ -492,20 +522,58 @@ const Layout: React.FC<LayoutProps> = ({ children, title, actions, navActions, s
                           </p>
                       </div>
 
-                      {/* Server Environment Configuration Guidance (No key inputs in UI) */}
-                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-1.5 text-right">
+                      {/* Server Connection & Environment Guidance (No API key inputs in UI) */}
+                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2.5 text-right">
                           <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md">
-                                  حماية كاملة للأسرار
+                                  {connectedBackend ? 'متصل بالخادم الآمن' : runningOnStaticHost ? 'استضافة ثابتة (GitHub Pages)' : 'حماية كاملة للأسرار'}
                               </span>
                               <div className="flex items-center gap-1.5 text-xs font-black text-slate-800">
-                                  <span>تهيئة منافذ متعددة بأمان</span>
+                                  <span>ربط الخادم وإعداد المفاتيح</span>
                                   <i className="fa-solid fa-shield-halved text-teal-600 text-xs"></i>
                               </div>
                           </div>
                           <p className="text-[11px] font-semibold text-slate-600 leading-relaxed">
-                              لأمانك، يُمنع إدخال أو عرض مفاتيح API داخل المتصفح. لإضافة أكثر من مفتاح، أضفها في متغيرات بيئة الخادم ضمن <span dir="ltr" className="font-mono text-teal-800 bg-white px-1.5 py-0.5 rounded border border-slate-200">GEMINI_API_KEY</span> مفصولة بفاصلة (<span className="font-mono font-bold">,</span>)، وستظهر هنا تلقائياً كمنافذ قابلة للتبديل والتحكم.
+                              لأمانك، يُمنع إدخال مفاتيح API في المتصفح وتُحفظ فقط في متغيرات الخادم (<span dir="ltr" className="font-mono text-teal-800 bg-white px-1 py-0.5 rounded border border-slate-200">GEMINI_API_KEY</span>).
+                              {runningOnStaticHost && (
+                                  <> لأن <span className="font-bold text-slate-800">GitHub Pages</span> يستضيف الواجهة فقط دون تشغيل <span dir="ltr" className="font-mono">server.ts</span>، افتح التطبيق من رابط <span className="font-bold text-teal-700">Cloud Run / Shared App</span> المنشور أو اربط رابط خادمك الخلفي هنا:</>
+                              )}
                           </p>
+                          <form onSubmit={handleSaveBackendUrl} className="space-y-2 pt-1">
+                              <label className="block text-[10px] font-black text-slate-500">
+                                  رابط خادم الباك إند (Cloud Run / Node.js URL - اختياري)
+                              </label>
+                              <div className="flex items-center gap-1.5" dir="ltr">
+                                  <input
+                                      type="url"
+                                      value={backendUrlInput}
+                                      onChange={(e) => setBackendUrlInput(e.target.value)}
+                                      placeholder="https://your-server.run.app"
+                                      className="flex-1 min-w-0 bg-white border border-slate-300 focus:border-teal-600 focus:outline-none rounded-xl px-3 py-2 text-xs font-mono text-slate-800"
+                                  />
+                                  <button
+                                      type="submit"
+                                      className="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold shrink-0 transition"
+                                  >
+                                      ربط
+                                  </button>
+                                  {getCustomBackendUrl() && (
+                                      <button
+                                          type="button"
+                                          onClick={handleClearBackendUrl}
+                                          title="إلغاء الربط"
+                                          className="px-2.5 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold shrink-0 transition"
+                                      >
+                                          <i className="fa-solid fa-xmark"></i>
+                                      </button>
+                                  )}
+                              </div>
+                              {connectedBackend && (
+                                  <div className="text-[10px] font-mono text-emerald-700 truncate text-left" dir="ltr">
+                                      Connected: {connectedBackend}
+                                  </div>
+                              )}
+                          </form>
                       </div>
 
                       {aiRotationError && (

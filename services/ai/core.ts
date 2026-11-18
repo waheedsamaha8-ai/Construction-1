@@ -224,6 +224,41 @@ export const createContextCache = async (_model: string, _systemInstruction: str
     return null;
 };
 
+const CUSTOM_BACKEND_STORAGE_KEY = 'construction_pro_backend_url';
+
+export const getCustomBackendUrl = (): string => {
+    if (typeof window === 'undefined') return '';
+    try {
+        const raw = (localStorage.getItem(CUSTOM_BACKEND_STORAGE_KEY) || '').trim();
+        if (!raw) return '';
+        const normalized = raw.replace(/\/+$/, '');
+        if (/^https?:\/\/[^/\s]+/i.test(normalized)) {
+            return normalized;
+        }
+    } catch {}
+    return '';
+};
+
+export const setCustomBackendUrl = (url: string): string => {
+    if (typeof window === 'undefined') return '';
+    const trimmed = (url || '').trim().replace(/\/+$/, '');
+    if (!trimmed) {
+        localStorage.removeItem(CUSTOM_BACKEND_STORAGE_KEY);
+        return '';
+    }
+    if (/^(AIza|sk-|AQ\.)/i.test(trimmed) || (!trimmed.includes('.') && !/^https?:\/\/localhost(:\d+)?$/i.test(trimmed))) {
+        throw new Error('هذا الحقل مخصص لرابط الخادم (مثل https://example.run.app) وليس لمفتاح API');
+    }
+    const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(withProto);
+    if (!/^https?:$/i.test(parsed.protocol) || !parsed.hostname.includes('.') && parsed.hostname !== 'localhost') {
+        throw new Error('رابط الخادم غير صالح، يجب أن يبدأ بـ https://');
+    }
+    const cleanOrigin = parsed.origin;
+    localStorage.setItem(CUSTOM_BACKEND_STORAGE_KEY, cleanOrigin);
+    return cleanOrigin;
+};
+
 export const isStaticHost = (): boolean => {
     if (typeof window === 'undefined') return false;
     const host = window.location.hostname.toLowerCase();
@@ -237,14 +272,28 @@ export const isStaticHost = (): boolean => {
 
 export const getCandidateBackendEndpoints = (apiPath: string): string[] => {
     const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
-    if (isStaticHost()) {
-        return CLOUD_RUN_BACKENDS.map((b) => `${b}${normalizedPath}`);
+    const customBackend = getCustomBackendUrl();
+    const list: string[] = [];
+
+    if (customBackend) {
+        list.push(`${customBackend}${normalizedPath}`);
     }
+
+    if (!isStaticHost()) {
+        list.push(normalizedPath);
+    }
+
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
-    const fallbacks = CLOUD_RUN_BACKENDS
-        .filter((b) => !currentOrigin || b.toLowerCase() !== currentOrigin.toLowerCase())
-        .map((b) => `${b}${normalizedPath}`);
-    return [normalizedPath, ...fallbacks];
+    for (const backend of CLOUD_RUN_BACKENDS) {
+        if (
+            (!currentOrigin || backend.toLowerCase() !== currentOrigin.toLowerCase()) &&
+            (!customBackend || backend.toLowerCase() !== customBackend.toLowerCase())
+        ) {
+            list.push(`${backend}${normalizedPath}`);
+        }
+    }
+
+    return [...new Set(list)];
 };
 
 export const fetchBackendJson = async <T = any>(
@@ -473,11 +522,19 @@ export const connectLiveApi = (
     callbacks: LiveSessionCallbacks,
     options?: LiveConnectOptions
 ) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const hostPart = isStaticHost()
-        ? CLOUD_RUN_BACKENDS[0].replace(/^https?:\/\//, '')
-        : window.location.host;
-    const wsProtocol = isStaticHost() ? 'wss:' : protocol;
+    const customBackend = getCustomBackendUrl();
+    let wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let hostPart = window.location.host;
+    if (customBackend) {
+        try {
+            const parsed = new URL(customBackend);
+            wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+            hostPart = parsed.host;
+        } catch {}
+    } else if (isStaticHost()) {
+        wsProtocol = 'wss:';
+        hostPart = CLOUD_RUN_BACKENDS[0].replace(/^https?:\/\//, '');
+    }
 
     const queryParams = new URLSearchParams();
     if (options?.model) queryParams.set('model', options.model);
